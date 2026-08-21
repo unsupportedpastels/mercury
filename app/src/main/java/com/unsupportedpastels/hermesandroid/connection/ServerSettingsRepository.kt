@@ -85,6 +85,7 @@ private data class PersistedServerCatalogEntry(
     val origin: String,
     val label: String = "",
     @SerialName("last_used_epoch_seconds") val lastUsedEpochSeconds: Long? = null,
+    @SerialName("connection_mode") val connectionMode: String = ServerConnectionMode.Direct.name,
 )
 
 class DataStoreServerSettingsRepository(
@@ -215,6 +216,7 @@ class DataStoreServerSettingsRepository(
                         origin = ServerOrigin.parse(entry.origin),
                         label = entry.label.take(MAX_SERVER_LABEL_CHARS),
                         lastUsedEpochSeconds = entry.lastUsedEpochSeconds,
+                        connectionMode = ServerConnectionMode.valueOf(entry.connectionMode),
                     )
                 }
             val active = preferences[ActiveOriginKey]
@@ -236,6 +238,7 @@ class DataStoreServerSettingsRepository(
                     origin = entry.origin.value,
                     label = entry.label,
                     lastUsedEpochSeconds = entry.lastUsedEpochSeconds,
+                    connectionMode = entry.connectionMode.name,
                 )
             },
         )

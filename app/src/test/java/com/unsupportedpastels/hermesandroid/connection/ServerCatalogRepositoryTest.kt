@@ -30,6 +30,7 @@ class ServerCatalogRepositoryTest {
                 listOf(ServerOrigin.parse("https://first.example")),
                 state.catalog.entries.map(ServerCatalogEntry::origin),
             )
+            assertEquals(ServerConnectionMode.Direct, state.catalog.activeEntry?.connectionMode)
             cancelAndIgnoreRemainingEvents()
         }
 
@@ -39,6 +40,63 @@ class ServerCatalogRepositoryTest {
             dataStore.current[stringPreferencesKey("active_origin")],
         )
         assertFalse(dataStore.current.contains(stringPreferencesKey("server_origin")))
+    }
+
+    @Test
+    fun missingConnectionModeInExistingCatalogDefaultsToDirect() = runTest {
+        val dataStore = InMemoryCatalogDataStore(
+            preferencesOf(
+                "server_catalog" to "{\"entries\":[{\"origin\":\"https://legacy.example\"}]}",
+                "active_origin" to "https://legacy.example",
+            ),
+        )
+
+        val state = DataStoreServerSettingsRepository(dataStore).states.firstReady()
+
+        assertEquals(ServerConnectionMode.Direct, state.catalog.activeEntry?.connectionMode)
+    }
+
+    @Test
+    fun unknownConnectionModeMakesStrictPersistedCatalogUnavailable() = runTest {
+        val dataStore = InMemoryCatalogDataStore(
+            preferencesOf(
+                "server_catalog" to "{\"entries\":[{\"origin\":\"https://legacy.example\",\"connection_mode\":\"FutureMode\"}]}",
+                "active_origin" to "https://legacy.example",
+            ),
+        )
+
+        assertEquals(
+            ServerSettingsState.Unavailable,
+            DataStoreServerSettingsRepository(dataStore).states.first { it !is ServerSettingsState.Loading },
+        )
+    }
+
+    @Test
+    fun persistsExternalTunnelModeAndPreservesItAcrossLabelSelectAndRemoveOperations() = runTest {
+        val dataStore = InMemoryCatalogDataStore(emptyPreferences())
+        val repository = DataStoreServerSettingsRepository(dataStore, nowEpochSeconds = { 42L })
+        val direct = ServerCatalogEntry(ServerOrigin.parse("https://direct.example"), label = "Direct")
+        val tunnel = ServerCatalogEntry(
+            ServerOrigin.parse("http://localhost:8080"),
+            label = "Tunnel",
+            connectionMode = ServerConnectionMode.ExternalSshTunnel,
+        )
+
+        repository.save(tunnel)
+        repository.save(direct)
+        repository.updateLabel(tunnel.copy(label = "Renamed tunnel"))
+        repository.select(tunnel.origin)
+        assertTrue(repository.remove(direct.origin))
+
+        val state = DataStoreServerSettingsRepository(dataStore).states.firstReady()
+        assertEquals(tunnel.origin, state.activeOrigin)
+        assertEquals("Renamed tunnel", state.catalog.activeEntry?.label)
+        assertEquals(ServerConnectionMode.ExternalSshTunnel, state.catalog.activeEntry?.connectionMode)
+        assertTrue(
+            dataStore.current[stringPreferencesKey("server_catalog")]
+                .orEmpty()
+                .contains("\"connection_mode\":\"ExternalSshTunnel\""),
+        )
     }
 
     @Test
