@@ -110,7 +110,7 @@ class HermesChatIntegrationTest {
         val chat = viewModel.snapshots.value.chatSessions.getValue(durableId)
         assertEquals(listOf("Earlier question", "Earlier answer"), chat.messages.map { it.text })
         assertFalse(chat.isLoading)
-        assertEquals("opaque-access", client.transcriptAccessToken)
+        assertTrue(client.transcriptAccessToken is HermesCredential.NativeBearer)
     }
 
     @Test
@@ -2476,7 +2476,7 @@ private class RejectedAuthenticationClient : HermesConnectionClient {
 
     override suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ): AuthenticatedHermesConnection = throw HermesAuthenticationRejectedException(
         "Hermes authentication returned HTTP 401",
     )
@@ -2491,7 +2491,7 @@ private class MemoryTokenStore(initial: NativeTokenSet?) : NativeTokenStore {
 
 private class ChatConnectionClient : HermesConnectionClient {
     private val durableId = DurableSessionId("durable-1")
-    var transcriptAccessToken: String? = null
+    var transcriptAccessToken: HermesCredential? = null
     var transcriptLoads = 0
     var lastTranscriptDurableId: DurableSessionId? = null
 
@@ -2504,7 +2504,7 @@ private class ChatConnectionClient : HermesConnectionClient {
 
     override suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ) = AuthenticatedHermesConnection(
         userId = "user-1",
         sessions = listOf(SessionSummary(durableId, "Test session")),
@@ -2512,10 +2512,10 @@ private class ChatConnectionClient : HermesConnectionClient {
 
     override suspend fun loadTranscript(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
     ): List<com.unsupportedpastels.hermesandroid.gateway.ChatMessage> {
-        transcriptAccessToken = accessToken
+        transcriptAccessToken = credential
         transcriptLoads += 1
         lastTranscriptDurableId = durableSessionId
         return listOf(
@@ -2539,7 +2539,7 @@ private class UnauthorizedOnceTranscriptClient : HermesConnectionClient {
 
     override suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ) = AuthenticatedHermesConnection(
         userId = "user-1",
         sessions = listOf(SessionSummary(durableId, "Test session")),
@@ -2547,7 +2547,7 @@ private class UnauthorizedOnceTranscriptClient : HermesConnectionClient {
 
     override suspend fun loadTranscript(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
     ): List<com.unsupportedpastels.hermesandroid.gateway.ChatMessage> {
         transcriptLoads += 1
@@ -2588,7 +2588,7 @@ private class FailThenSucceedConnectionClient(
 
     override suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ) = AuthenticatedHermesConnection(
         userId = "user-1",
         sessions = listOf(SessionSummary(durableId, "Test session")),
@@ -2654,7 +2654,7 @@ private class NonCooperativeAuthenticationClient(
 
     override suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ): AuthenticatedHermesConnection {
         if (serverOrigin == firstOrigin) {
             withContext(NonCancellable) {
@@ -2674,7 +2674,7 @@ private class NonCooperativeAuthenticationClient(
 
     override suspend fun loadTranscript(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
     ) = emptyList<com.unsupportedpastels.hermesandroid.gateway.ChatMessage>()
 }
@@ -2692,7 +2692,7 @@ private class BlockingTranscriptClient : HermesConnectionClient {
 
     override suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ) = AuthenticatedHermesConnection(
         userId = "user-1",
         sessions = listOf(SessionSummary(DurableSessionId("durable-1"), "Test session")),
@@ -2700,7 +2700,7 @@ private class BlockingTranscriptClient : HermesConnectionClient {
 
     override suspend fun loadTranscript(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
     ): List<com.unsupportedpastels.hermesandroid.gateway.ChatMessage> = try {
         transcript.await()

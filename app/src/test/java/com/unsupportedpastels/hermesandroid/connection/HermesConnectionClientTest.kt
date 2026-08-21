@@ -66,13 +66,13 @@ class HermesConnectionClientTest {
 
         val updated = client.updateSession(
             origin,
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             id,
             profile = "work profile",
             title = "Renamed",
             pinned = true,
         )
-        client.deleteSession(origin, "opaque-access", id, profile = "work profile")
+        client.deleteSession(origin, "opaque-access".toHermesCredential(), id, profile = "work profile")
 
         assertEquals("Renamed", updated.title)
         assertEquals(true, updated.pinned)
@@ -100,7 +100,7 @@ class HermesConnectionClientTest {
 
         val results = HttpHermesConnectionClient(HttpClient(engine)).searchSessions(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             "lifecycle race",
             profile = "work",
         )
@@ -134,11 +134,11 @@ class HermesConnectionClientTest {
         val client = HttpHermesConnectionClient(HttpClient(engine))
         val origin = ServerOrigin.parse("https://hermes.example")
 
-        val profiles = client.loadProfiles(origin, "opaque-access")
-        val options = client.loadDefaultModelOptions(origin, "opaque-access", "work")
+        val profiles = client.loadProfiles(origin, "opaque-access".toHermesCredential())
+        val options = client.loadDefaultModelOptions(origin, "opaque-access".toHermesCredential(), "work")
         val result = client.setDefaultModel(
             origin,
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             "work",
             ModelSelection("nous", "expensive"),
         )
@@ -174,7 +174,7 @@ class HermesConnectionClientTest {
 
         val options = HttpHermesConnectionClient(HttpClient(engine)).loadDefaultModelOptions(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             "default",
         )
 
@@ -195,7 +195,7 @@ class HermesConnectionClientTest {
         }
         val info = HttpHermesConnectionClient(HttpClient(engine)).loadCurrentModelInfo(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             "work",
         )
 
@@ -222,7 +222,7 @@ class HermesConnectionClientTest {
         }
         HttpHermesConnectionClient(HttpClient(engine)).setProfileReasoningEffort(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             "work",
             "high",
         )
@@ -245,7 +245,7 @@ class HermesConnectionClientTest {
         }
         HttpHermesConnectionClient(HttpClient(engine)).setProfileModelReasoningOverride(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             "work",
             ModelSelection("nous", "anthropic/claude-opus-5"),
             "high",
@@ -274,7 +274,7 @@ class HermesConnectionClientTest {
         )
         val overrides = HttpHermesConnectionClient(HttpClient(engine)).loadProfileReasoningOverrides(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             "work",
             options,
         )
@@ -305,7 +305,7 @@ class HermesConnectionClientTest {
         )
         val overrides = HttpHermesConnectionClient(HttpClient(engine)).loadProfileReasoningOverrides(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             "work",
             options,
         )
@@ -322,7 +322,7 @@ class HermesConnectionClientTest {
         }
         val effort = HttpHermesConnectionClient(HttpClient(engine)).loadProfileReasoningDefault(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             "work",
         )
         assertEquals("medium", effort)
@@ -342,7 +342,7 @@ class HermesConnectionClientTest {
 
         val effort = HttpHermesConnectionClient(HttpClient(engine)).loadProfileReasoningEffort(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             "work",
             "openai",
             "gpt-5.6-sol",
@@ -362,7 +362,7 @@ class HermesConnectionClientTest {
 
         val effort = HttpHermesConnectionClient(HttpClient(engine)).loadProfileReasoningEffort(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             "work",
             "openai",
             "shared-model",
@@ -387,7 +387,7 @@ class HermesConnectionClientTest {
 
         val downloaded = client.downloadManagedImage(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             "/home/mark/project/generated.jpg",
         )
 
@@ -403,12 +403,12 @@ class HermesConnectionClientTest {
 
         val probeFailure = runCatching { cancellingClient().probe(origin) }.exceptionOrNull()
         val authFailure = runCatching {
-            cancellingClient().authenticate(origin, "opaque-access")
+            cancellingClient().authenticate(origin, "opaque-access".toHermesCredential())
         }.exceptionOrNull()
         val transcriptFailure = runCatching {
             cancellingClient().loadTranscript(
                 origin,
-                "opaque-access",
+                "opaque-access".toHermesCredential(),
                 DurableSessionId("durable-cancel"),
             )
         }.exceptionOrNull()
@@ -439,7 +439,7 @@ class HermesConnectionClientTest {
 
         val messages = client.loadTranscript(
             ServerOrigin.parse("https://hermes.example"),
-            accessToken = null,
+            credential = null.toHermesCredential(),
             DurableSessionId("durable-1"),
         )
 
@@ -476,7 +476,7 @@ class HermesConnectionClientTest {
 
         val messages = HttpHermesConnectionClient(HttpClient(engine)).loadTranscript(
             ServerOrigin.parse("https://hermes.example"),
-            accessToken = null,
+            credential = null.toHermesCredential(),
             DurableSessionId("durable-large"),
         )
 
@@ -652,7 +652,7 @@ class HermesConnectionClientTest {
 
         val sessions = HttpHermesConnectionClient(HttpClient(engine)).loadSessionsForProfile(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             profile = "work",
             archivedOnly = true,
         )
@@ -683,7 +683,7 @@ class HermesConnectionClientTest {
 
         val page = HttpHermesConnectionClient(HttpClient(engine)).loadSessionsPageForProfile(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             profile = "default",
             limit = 20,
             offset = 20,
@@ -819,7 +819,7 @@ class HermesConnectionClientTest {
 
         val authenticated = client.authenticate(
             ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = "opaque-access".toHermesCredential(),
         )
 
         assertEquals(listOf("/api/auth/me", "/api/profiles/sessions"), requestedPaths)
@@ -858,7 +858,7 @@ class HermesConnectionClientTest {
 
         val authenticated = client.authenticate(
             ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = "opaque-access".toHermesCredential(),
         )
 
         assertEquals(
@@ -887,7 +887,7 @@ class HermesConnectionClientTest {
 
         val authenticated = client.authenticate(
             ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = "opaque-access".toHermesCredential(),
         )
 
         assertEquals(largeTitle, authenticated.sessions.single().title)
@@ -915,7 +915,7 @@ class HermesConnectionClientTest {
 
         val authenticated = client.authenticate(
             ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = "opaque-access".toHermesCredential(),
         )
 
         assertEquals(20, authenticated.sessions.size)
@@ -939,7 +939,7 @@ class HermesConnectionClientTest {
         val failure = runCatching {
             client.authenticate(
                 ServerOrigin.parse("https://hermes.example"),
-                accessToken = "opaque-access",
+                credential = "opaque-access".toHermesCredential(),
             )
         }.exceptionOrNull()
 
@@ -967,7 +967,7 @@ class HermesConnectionClientTest {
         val failure = runCatching {
             client.authenticate(
                 ServerOrigin.parse("https://hermes.example"),
-                accessToken = "opaque-access",
+                credential = "opaque-access".toHermesCredential(),
             )
         }.exceptionOrNull()
 
@@ -994,7 +994,7 @@ class HermesConnectionClientTest {
         val failure = runCatching {
             client.authenticate(
                 ServerOrigin.parse("https://hermes.example"),
-                accessToken = "opaque-access",
+                credential = "opaque-access".toHermesCredential(),
             )
         }.exceptionOrNull()
 
@@ -1021,7 +1021,7 @@ class HermesConnectionClientTest {
         val failure = runCatching {
             client.authenticate(
                 ServerOrigin.parse("https://hermes.example"),
-                accessToken = "opaque-access",
+                credential = "opaque-access".toHermesCredential(),
             )
         }.exceptionOrNull()
 
@@ -1045,7 +1045,7 @@ class HermesConnectionClientTest {
 
         val messages = client.loadTranscript(
             serverOrigin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = "opaque-access".toHermesCredential(),
             durableSessionId = DurableSessionId("stored-1"),
         )
 
@@ -1079,7 +1079,7 @@ class HermesConnectionClientTest {
 
         val listing = client.loadHostDirectories(
             serverOrigin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = "opaque-access".toHermesCredential(),
             path = "/srv/projects",
         )
 
@@ -1132,7 +1132,7 @@ class HermesConnectionClientTest {
 
         val listing = client.createHostDirectory(
             serverOrigin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = "opaque-access".toHermesCredential(),
             parentPath = "/srv/projects",
             name = "New Folder",
         )
@@ -1158,7 +1158,7 @@ class HermesConnectionClientTest {
 
         val job = HttpHermesConnectionClient(HttpClient(engine)).triggerCronJob(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             "work",
             "job/1",
         )
@@ -1183,7 +1183,7 @@ class HermesConnectionClientTest {
 
         val runs = HttpHermesConnectionClient(HttpClient(engine)).loadCronJobRuns(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             "work",
             "job-1",
             limit = 20,
@@ -1205,7 +1205,7 @@ class HermesConnectionClientTest {
             }),
         )
         val unsupported = runCatching {
-            notFound.loadCronJobRuns(origin, "opaque-access", "default", "job-1")
+            notFound.loadCronJobRuns(origin, "opaque-access".toHermesCredential(), "default", "job-1")
         }.exceptionOrNull()
         assertTrue(unsupported is HermesCronRestUnsupportedException)
         assertTrue(unsupported?.message?.contains("secret") == false)
@@ -1217,7 +1217,7 @@ class HermesConnectionClientTest {
         )
         assertTrue(
             runCatching {
-                methodNotAllowed.triggerCronJob(origin, "opaque-access", "default", "job-1")
+                methodNotAllowed.triggerCronJob(origin, "opaque-access".toHermesCredential(), "default", "job-1")
             }.exceptionOrNull() is HermesCronRestUnsupportedException,
         )
 
@@ -1227,7 +1227,7 @@ class HermesConnectionClientTest {
             }),
         )
         val claimedError = runCatching {
-            claimed.triggerCronJob(origin, "opaque-access", "default", "job-1")
+            claimed.triggerCronJob(origin, "opaque-access".toHermesCredential(), "default", "job-1")
         }.exceptionOrNull()
         assertTrue(claimedError is HermesCronJobClaimedException)
         assertEquals("Cron job is already running or was claimed by another scheduler", claimedError?.message)
@@ -1255,7 +1255,7 @@ class HermesConnectionClientTest {
 
         val result = client.bulkDeleteSessions(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             listOf(DurableSessionId("stored-1"), DurableSessionId("stored-2")),
             profile = "work",
         )
@@ -1272,7 +1272,7 @@ class HermesConnectionClientTest {
                 HttpClient(MockEngine { respond("", status) }),
             )
             val failure = runCatching {
-                client.bulkDeleteSessions(origin, "opaque-access", listOf(DurableSessionId("stored-1")))
+                client.bulkDeleteSessions(origin, "opaque-access".toHermesCredential(), listOf(DurableSessionId("stored-1")))
             }.exceptionOrNull()
             assertTrue(failure is HermesSessionBulkDeleteUnsupportedException)
         }
@@ -1291,7 +1291,7 @@ class HermesConnectionClientTest {
         val failure = runCatching {
             client.bulkDeleteSessions(
                 ServerOrigin.parse("https://hermes.example"),
-                "opaque-access",
+                "opaque-access".toHermesCredential(),
                 (0..500).map { DurableSessionId("stored-$it") },
             )
         }.exceptionOrNull()
@@ -1320,7 +1320,7 @@ class HermesConnectionClientTest {
 
         val sessions = HttpHermesConnectionClient(HttpClient(engine)).loadSessionsForProfile(
             ServerOrigin.parse("https://hermes.example"),
-            "opaque-access",
+            "opaque-access".toHermesCredential(),
             "work",
         )
 
@@ -1338,7 +1338,7 @@ class HermesConnectionClientTest {
         val failure = runCatching {
             legacy.loadCronJobRuns(
                 ServerOrigin.parse("https://hermes.example"),
-                "opaque-access",
+                "opaque-access".toHermesCredential(),
                 "default",
                 "job-1",
             )

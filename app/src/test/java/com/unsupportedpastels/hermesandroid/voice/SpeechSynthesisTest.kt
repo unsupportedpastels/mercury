@@ -3,6 +3,7 @@ package com.unsupportedpastels.hermesandroid.voice
 import com.unsupportedpastels.hermesandroid.connection.HermesConnectionException
 import com.unsupportedpastels.hermesandroid.connection.HttpHermesConnectionClient
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.hermesandroid.connection.toHermesCredential
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -57,7 +58,7 @@ class SpeechSynthesisTest {
         val audio = HttpHermesConnectionClient(HttpClient(engine) { install(HttpTimeout) })
             .speakText(
                 ServerOrigin.parse("https://hermes.example"),
-                accessToken = "t",
+                credential = "t".toHermesCredential(),
                 profile = "work",
                 text = "Hello there",
             )
@@ -73,7 +74,7 @@ class SpeechSynthesisTest {
             HttpHermesConnectionClient(HttpClient(engine) { install(HttpTimeout) })
                 .speakText(
                     ServerOrigin.parse("https://hermes.example"),
-                    accessToken = "t",
+                    credential = "t".toHermesCredential(),
                     profile = "default",
                     text = "hi",
                 )

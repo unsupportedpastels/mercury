@@ -51,6 +51,8 @@ import com.unsupportedpastels.hermesandroid.app.ProjectSummary
 import com.unsupportedpastels.hermesandroid.app.ProcessRow
 import com.unsupportedpastels.hermesandroid.app.RunToolState
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
+import com.unsupportedpastels.hermesandroid.voice.VoiceCapabilities
+import com.unsupportedpastels.hermesandroid.voice.VoiceServerConfig
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
@@ -153,6 +155,25 @@ class HermesConnectionViewModelTest {
         assertEquals(
             listOf("First session"),
             viewModel.snapshots.value.durableSessions.map { it.title },
+        )
+    }
+
+    @Test
+    fun serverWithoutAuthenticationUsesNoCredentialForVoiceRestProbe() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val client = UnauthenticatedVoiceClient()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(ServerSettingsState.Ready(origin)),
+            client = client,
+        )
+
+        advanceUntilIdle()
+        viewModel.refreshVoiceCapabilities()
+
+        assertEquals(AuthenticationState.NotRequired, viewModel.snapshots.value.authenticationState)
+        assertEquals(
+            listOf(HermesCredential.None, HermesCredential.None),
+            client.credentials,
         )
     }
 
@@ -358,7 +379,7 @@ class HermesConnectionViewModelTest {
         val snapshot = viewModel.snapshots.value
         assertEquals(AuthenticationState.Authenticated, snapshot.authenticationState)
         assertEquals(listOf("First session"), snapshot.durableSessions.map { it.title })
-        assertEquals("opaque-access", client.authenticatedWith)
+        assertTrue(client.authenticatedWith is HermesCredential.NativeBearer)
         assertEquals(ProjectId("project-1"), snapshot.projects.single().id)
         assertEquals(false, metadata.closed)
 
@@ -370,10 +391,11 @@ class HermesConnectionViewModelTest {
         val hostFolders = viewModel.loadHostDirectories("/srv")
 
         assertEquals(listOf("app"), hostFolders.directories.map { it.name })
-        assertEquals(
-            listOf(Triple(origin, "opaque-access", "/srv")),
-            client.hostDirectoryRequests,
-        )
+        assertEquals(1, client.hostDirectoryRequests.size)
+        val hostDirectoryRequest = client.hostDirectoryRequests.single()
+        assertEquals(origin, hostDirectoryRequest.first)
+        assertTrue(hostDirectoryRequest.second is HermesCredential.NativeBearer)
+        assertEquals("/srv", hostDirectoryRequest.third)
         assertEquals(1, metadataConnections)
     }
 
@@ -2208,7 +2230,7 @@ class HermesConnectionViewModelTest {
         assertEquals(2, treeLoads)
         assertFalse(viewModel.homeRefreshing.value)
         assertEquals(ProjectLoadState.Loaded(tree.projects), viewModel.snapshots.value.projectState)
-        assertEquals("opaque-access", client.authenticatedWith)
+        assertTrue(client.authenticatedWith is HermesCredential.NativeBearer)
     }
 
     @Test
@@ -2837,7 +2859,7 @@ class HermesConnectionViewModelTest {
         advanceUntilIdle()
 
         assertTrue(login.wasCancelled)
-        assertEquals(emptyList<String>(), client.authenticatedTokens)
+        assertEquals(emptyList<HermesCredential>(), client.authenticatedTokens)
         assertEquals(AuthenticationState.SignInRequired, viewModel.snapshots.value.authenticationState)
     }
 
@@ -3221,6 +3243,36 @@ private class FakeHermesConnectionClient : HermesConnectionClient {
     }
 }
 
+private class UnauthenticatedVoiceClient : HermesConnectionClient {
+    val credentials = mutableListOf<HermesCredential>()
+
+    override suspend fun probe(serverOrigin: ServerOrigin) = HermesConnectionInfo(
+        version = "0.20.0",
+        authRequired = false,
+        nativeOAuthSupported = false,
+        providers = emptyList(),
+        sessions = emptyList(),
+    )
+
+    override suspend fun probeVoiceCapabilities(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+    ): VoiceCapabilities {
+        credentials += credential
+        return VoiceCapabilities.NONE
+    }
+
+    override suspend fun loadVoiceServerConfig(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+    ): VoiceServerConfig {
+        credentials += credential
+        return VoiceServerConfig.DEFAULT
+    }
+}
+
 private class UnauthenticatedRecentSessionsClient : HermesConnectionClient {
     var recentSessionPageCalls = 0
     var sawNullAccessToken = false
@@ -3235,14 +3287,14 @@ private class UnauthenticatedRecentSessionsClient : HermesConnectionClient {
 
     override suspend fun loadSessionsPageForProfile(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         profile: String,
         limit: Int,
         offset: Int,
         archivedOnly: Boolean,
     ): SessionPage {
         recentSessionPageCalls += 1
-        sawNullAccessToken = accessToken == null
+        sawNullAccessToken = credential == HermesCredential.None
         return SessionPage(
             sessions = listOf(
                 SessionSummary(
@@ -3307,18 +3359,18 @@ private data class SessionProfileRequest(
 private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
     val probeResponse = CompletableDeferred<HermesConnectionInfo>()
     val authenticationResponse = CompletableDeferred<AuthenticatedHermesConnection>()
-    var authenticatedWith: String? = null
+    var authenticatedWith: HermesCredential? = null
     var authenticateCalls = 0
     var authenticatedSessionsOverride: List<SessionSummary>? = null
     val authenticateBarriers = ArrayDeque<CompletableDeferred<Unit>>()
     var hostDirectoryResponse = HostDirectoryListing("/srv", emptyList())
-    val hostDirectoryRequests = mutableListOf<Triple<ServerOrigin, String?, String?>>()
+    val hostDirectoryRequests = mutableListOf<Triple<ServerOrigin, HermesCredential, String?>>()
     var defaultModelOptions = ModelOptions(current = null, providers = emptyList())
     var profiles = listOf("default")
     val defaultModelProfiles = mutableListOf<String>()
     var profileReasoningEffort: String? = null
     var profileReasoningFailure: Throwable? = null
-    var currentModelInfoLoader: suspend (ServerOrigin, String, String) -> CurrentModelInfo = { _, _, profile ->
+    var currentModelInfoLoader: suspend (ServerOrigin, HermesCredential, String) -> CurrentModelInfo = { _, _, profile ->
         throw UnsupportedOperationException("current model info not configured for $profile")
     }
     var cronTriggerResponse: CompletableDeferred<CronJob>? = null
@@ -3342,7 +3394,7 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
     }
     val sessionsForProfileRequests = mutableListOf<SessionProfileRequest>()
     var sessionsForProfileFailure: Throwable? = null
-    var sessionsForProfileLoader: suspend (ServerOrigin, String, String, Boolean) -> List<SessionSummary> =
+    var sessionsForProfileLoader: suspend (ServerOrigin, HermesCredential, String, Boolean) -> List<SessionSummary> =
         { _, _, _, _ ->
             authenticatedSessionsOverride?.let { return@let it }
                 ?: authenticationResponse.await().sessions
@@ -3350,14 +3402,14 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
 
     override suspend fun loadSessionsForProfile(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         archivedOnly: Boolean,
     ): List<SessionSummary> {
         sessionsForProfileRequests += SessionProfileRequest(serverOrigin.value, profile, archivedOnly)
         sessionsForProfileFailure?.let { throw it }
         authenticateBarriers.firstOrNull()?.let { it.await() }
-        return sessionsForProfileLoader(serverOrigin, accessToken, profile, archivedOnly)
+        return sessionsForProfileLoader(serverOrigin, credential, profile, archivedOnly)
     }
 
     override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo {
@@ -3372,7 +3424,7 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
 
     override suspend fun bulkDeleteSessions(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         durableSessionIds: Collection<DurableSessionId>,
         profile: String?,
     ): BulkDeleteResult {
@@ -3383,10 +3435,10 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
 
     override suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ): AuthenticatedHermesConnection {
         authenticateCalls += 1
-        authenticatedWith = accessToken
+        authenticatedWith = credential
         authenticateBarriers.firstOrNull()?.let { it.await() }
         val authenticated = authenticationResponse.await()
         return authenticatedSessionsOverride?.let { authenticated.copy(sessions = it) } ?: authenticated
@@ -3394,16 +3446,16 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
 
     override suspend fun loadHostDirectories(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         path: String?,
     ): HostDirectoryListing {
-        hostDirectoryRequests += Triple(serverOrigin, accessToken, path)
+        hostDirectoryRequests += Triple(serverOrigin, credential, path)
         return hostDirectoryResponse
     }
 
     override suspend fun loadDefaultModelOptions(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ): ModelOptions {
         defaultModelProfiles += profile
@@ -3412,18 +3464,18 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
 
     override suspend fun loadProfiles(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ): List<String> = profiles
 
     override suspend fun loadCurrentModelInfo(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
-    ): CurrentModelInfo = currentModelInfoLoader(serverOrigin, accessToken, profile)
+    ): CurrentModelInfo = currentModelInfoLoader(serverOrigin, credential, profile)
 
     override suspend fun loadProfileReasoningEffort(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         provider: String,
         model: String,
@@ -3434,13 +3486,13 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
 
     override suspend fun loadTranscript(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
     ): List<com.unsupportedpastels.hermesandroid.gateway.ChatMessage> = emptyList()
 
     override suspend fun triggerCronJob(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         jobId: String,
     ): CronJob {
@@ -3451,7 +3503,7 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
 
     override suspend fun loadCronJobRuns(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         jobId: String,
         limit: Int,
@@ -3503,16 +3555,16 @@ private class FakeNativeLogin : NativeLogin {
 
 private class SwitchingHermesConnectionClient : HermesConnectionClient {
     val probes = mutableMapOf<ServerOrigin, CompletableDeferred<HermesConnectionInfo>>()
-    val authenticatedTokens = mutableListOf<String>()
+    val authenticatedTokens = mutableListOf<HermesCredential>()
 
     override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo =
         probes.getOrPut(serverOrigin) { CompletableDeferred() }.await()
 
     override suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ): AuthenticatedHermesConnection {
-        authenticatedTokens += accessToken
+        authenticatedTokens += credential
         return AuthenticatedHermesConnection("user", emptyList())
     }
 }

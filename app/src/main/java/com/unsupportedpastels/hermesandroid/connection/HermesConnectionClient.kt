@@ -43,7 +43,6 @@ import com.unsupportedpastels.hermesandroid.voice.audioRequestTimeout
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.plugins.HttpTimeout
-import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
@@ -299,7 +298,7 @@ class HermesCronJobClaimedException(
     val jobId: String,
 ) : HermesConnectionException("Cron job is already running or was claimed by another scheduler")
 
-private class HermesResponseBodyTooLargeException :
+internal class HermesResponseBodyTooLargeException :
     HermesConnectionException("Hermes response body was too large")
 
 private const val MAX_RESPONSE_BODY_BYTES = 64 * 1024
@@ -374,7 +373,7 @@ interface HermesConnectionClient {
      */
     suspend fun probeVoiceCapabilities(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ): VoiceCapabilities = VoiceCapabilities.NONE
 
@@ -384,7 +383,7 @@ interface HermesConnectionClient {
      */
     suspend fun loadVoiceServerConfig(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ): VoiceServerConfig = VoiceServerConfig.DEFAULT
 
@@ -395,7 +394,7 @@ interface HermesConnectionClient {
      */
     suspend fun transcribeAudio(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         dataUrl: String,
         mimeType: String?,
@@ -408,7 +407,7 @@ interface HermesConnectionClient {
      */
     suspend fun speakText(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         text: String,
     ): SpeechAudio = throw UnsupportedOperationException()
@@ -420,7 +419,7 @@ interface HermesConnectionClient {
      */
     suspend fun updateServerConfig(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         config: JsonObject,
     ): Boolean = throw UnsupportedOperationException()
@@ -431,13 +430,13 @@ interface HermesConnectionClient {
      */
     suspend fun listElevenLabsVoices(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ): List<ElevenLabsVoice> = emptyList()
 
     suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ): AuthenticatedHermesConnection = throw UnsupportedOperationException()
 
     /**
@@ -447,27 +446,29 @@ interface HermesConnectionClient {
      */
     suspend fun loadSessionsForProfile(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         archivedOnly: Boolean = false,
-    ): List<SessionSummary> = authenticate(serverOrigin, accessToken).sessions
+    ): List<SessionSummary> = authenticate(serverOrigin, credential).sessions
 
     suspend fun loadSessionsPageForProfile(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         profile: String,
         limit: Int = MAX_DURABLE_SESSIONS,
         offset: Int = 0,
         archivedOnly: Boolean = false,
     ): SessionPage = SessionPage(
-        sessions = accessToken?.let {
+        sessions = if (credential != HermesCredential.None) {
             loadSessionsForProfile(
                 serverOrigin = serverOrigin,
-                accessToken = it,
+                credential = credential,
                 profile = profile,
                 archivedOnly = archivedOnly,
             )
-        }.orEmpty(),
+        } else {
+            emptyList()
+        },
         total = null,
         limit = limit,
         offset = offset,
@@ -475,56 +476,56 @@ interface HermesConnectionClient {
 
     suspend fun loadTranscript(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
     ): List<ChatMessage> = throw UnsupportedOperationException()
 
     suspend fun loadHostDirectories(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         path: String? = null,
     ): HostDirectoryListing = throw UnsupportedOperationException()
 
     suspend fun loadHostFiles(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         path: String? = null,
     ): HostFileListing = throw UnsupportedOperationException()
 
     suspend fun readManagedFile(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         path: String,
     ): HostFileContent = throw UnsupportedOperationException()
 
     suspend fun downloadManagedFile(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         path: String,
     ): HostFileContent = throw UnsupportedOperationException()
 
     suspend fun streamManagedFile(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         path: String,
     ): HostFileContent = throw UnsupportedOperationException()
 
     suspend fun createHostDirectory(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         parentPath: String,
         name: String,
     ): HostDirectoryListing = throw UnsupportedOperationException()
 
     suspend fun downloadManagedImage(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         path: String,
     ): ByteArray = throw UnsupportedOperationException()
 
     suspend fun updateSession(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
         profile: String? = null,
         title: String? = null,
@@ -534,43 +535,43 @@ interface HermesConnectionClient {
 
     suspend fun deleteSession(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
         profile: String? = null,
     ): Unit = throw UnsupportedOperationException()
 
     suspend fun bulkDeleteSessions(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         durableSessionIds: Collection<DurableSessionId>,
         profile: String? = null,
     ): BulkDeleteResult = throw UnsupportedOperationException()
 
     suspend fun searchSessions(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         query: String,
         profile: String? = null,
     ): List<SessionSearchResult> = throw UnsupportedOperationException()
 
-    suspend fun loadProfiles(serverOrigin: ServerOrigin, accessToken: String): List<String> =
+    suspend fun loadProfiles(serverOrigin: ServerOrigin, credential: HermesCredential): List<String> =
         throw UnsupportedOperationException()
 
     suspend fun loadDefaultModelOptions(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ): ModelOptions = throw UnsupportedOperationException()
 
     suspend fun loadCurrentModelInfo(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ): CurrentModelInfo = throw UnsupportedOperationException()
 
     suspend fun loadProfileReasoningEffort(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         provider: String,
         model: String,
@@ -579,7 +580,7 @@ interface HermesConnectionClient {
     /** Load the profile-wide reasoning default without applying a model override. */
     suspend fun loadProfileReasoningDefault(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ): String? = null
 
@@ -590,14 +591,14 @@ interface HermesConnectionClient {
      */
     suspend fun loadProfileReasoningOverrides(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         options: ModelOptions,
     ): Map<ModelSelection, String> = emptyMap()
 
     suspend fun setProfileReasoningEffort(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         effort: String,
     ): Unit = throw UnsupportedOperationException()
@@ -610,7 +611,7 @@ interface HermesConnectionClient {
      */
     suspend fun setProfileModelReasoningOverride(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         selection: ModelSelection,
         effort: String,
@@ -618,7 +619,7 @@ interface HermesConnectionClient {
 
     suspend fun setDefaultModel(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         selection: ModelSelection,
         confirmExpensiveModel: Boolean = false,
@@ -626,14 +627,14 @@ interface HermesConnectionClient {
 
     suspend fun triggerCronJob(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         jobId: String,
     ): CronJob = throw HermesCronRestLegacyUnsupportedException(CronRestEndpoint.Trigger)
 
     suspend fun loadCronJobRuns(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         jobId: String,
         limit: Int = MAX_CRON_RUNS,
@@ -656,11 +657,11 @@ class HttpHermesConnectionClient(
 
     override suspend fun probeVoiceCapabilities(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ): VoiceCapabilities = try {
         val response = client.get("${serverOrigin.value}/api/audio/elevenlabs/voices") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
         }
         val body = response.readBodyTextBounded()
@@ -679,11 +680,11 @@ class HttpHermesConnectionClient(
 
     override suspend fun loadVoiceServerConfig(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ): VoiceServerConfig = try {
         val response = client.get("${serverOrigin.value}/api/config") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
         }
         val body = response.readBodyTextBounded()
@@ -700,13 +701,13 @@ class HttpHermesConnectionClient(
 
     override suspend fun transcribeAudio(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         dataUrl: String,
         mimeType: String?,
     ): TranscriptionResult {
         val response = client.post("${serverOrigin.value}/api/audio/transcribe") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
             contentType(ContentType.Application.Json)
             setBody(
@@ -733,12 +734,12 @@ class HttpHermesConnectionClient(
 
     override suspend fun speakText(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         text: String,
     ): SpeechAudio {
         val response = client.post("${serverOrigin.value}/api/audio/speak") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject { put("text", text) }.toString())
@@ -760,12 +761,12 @@ class HttpHermesConnectionClient(
 
     override suspend fun updateServerConfig(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         config: JsonObject,
     ): Boolean {
         val response = client.put("${serverOrigin.value}/api/config") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject { put("config", config) }.toString())
@@ -778,11 +779,11 @@ class HttpHermesConnectionClient(
 
     override suspend fun listElevenLabsVoices(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ): List<ElevenLabsVoice> {
         val response = client.get("${serverOrigin.value}/api/audio/elevenlabs/voices") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
         }
         if (!response.status.isSuccess()) return emptyList()
@@ -804,7 +805,7 @@ class HttpHermesConnectionClient(
 
     override suspend fun updateSession(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
         profile: String?,
         title: String?,
@@ -815,7 +816,7 @@ class HttpHermesConnectionClient(
         val response = client.patch(
             "${serverOrigin.value}/api/sessions/${durableSessionId.value.encodeURLPathPart()}",
         ) {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             contentType(ContentType.Application.Json)
             setBody(
                 json.encodeToString(
@@ -837,14 +838,14 @@ class HttpHermesConnectionClient(
 
     override suspend fun deleteSession(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
         profile: String?,
     ) {
         val response = client.delete(
             "${serverOrigin.value}/api/sessions/${durableSessionId.value.encodeURLPathPart()}",
         ) {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             profile?.takeIf { it != "default" }?.let { parameter("profile", it) }
         }
         response.readBodyTextBounded()
@@ -855,7 +856,7 @@ class HttpHermesConnectionClient(
 
     override suspend fun bulkDeleteSessions(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         durableSessionIds: Collection<DurableSessionId>,
         profile: String?,
     ): BulkDeleteResult = try {
@@ -870,7 +871,7 @@ class HttpHermesConnectionClient(
             throw IllegalArgumentException("Session profile is invalid")
         }
         val response = client.post("${serverOrigin.value}/api/sessions/bulk-delete") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             contentType(ContentType.Application.Json)
             setBody(
                 json.encodeToString(
@@ -903,14 +904,14 @@ class HttpHermesConnectionClient(
 
     override suspend fun searchSessions(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         query: String,
         profile: String?,
     ): List<SessionSearchResult> {
         val boundedQuery = query.trim().take(256)
         if (boundedQuery.isEmpty()) return emptyList()
         val response = client.get("${serverOrigin.value}/api/sessions/search") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("q", boundedQuery)
             parameter("limit", 20)
             profile?.let { parameter("profile", it) }
@@ -937,9 +938,11 @@ class HttpHermesConnectionClient(
 
     override suspend fun loadProfiles(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ): List<String> {
-        val response = client.get("${serverOrigin.value}/api/profiles") { bearerAuth(accessToken) }
+        val response = client.get("${serverOrigin.value}/api/profiles") {
+            applyHermesCredential(credential, serverOrigin)
+        }
         val body = response.readBodyTextBounded()
         if (!response.status.isSuccess()) {
             throw HermesConnectionException("Hermes profiles returned HTTP ${response.status.value}")
@@ -956,13 +959,13 @@ class HttpHermesConnectionClient(
 
     override suspend fun loadDefaultModelOptions(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ): ModelOptions {
         val boundedProfile = profile.trim().takeIf { it.isNotEmpty() && it.length <= 64 }
             ?: throw HermesConnectionException("Hermes model options profile is invalid")
         val response = client.get("${serverOrigin.value}/api/model/options") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", boundedProfile)
             parameter("explicit_only", 1)
         }
@@ -1003,13 +1006,13 @@ class HttpHermesConnectionClient(
 
     override suspend fun loadCurrentModelInfo(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ): CurrentModelInfo {
         val boundedProfile = profile.trim().takeIf { it.isNotEmpty() && it.length <= 64 }
             ?: throw HermesConnectionException("Hermes model info profile is invalid")
         val response = client.get("${serverOrigin.value}/api/model/info") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", boundedProfile)
         }
         val body = response.readBodyTextBounded()
@@ -1039,13 +1042,13 @@ class HttpHermesConnectionClient(
 
     override suspend fun loadProfileReasoningEffort(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         provider: String,
         model: String,
     ): String? {
         val response = client.get("${serverOrigin.value}/api/config") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
         }
         val body = response.readBodyTextBounded()
@@ -1081,11 +1084,11 @@ class HttpHermesConnectionClient(
 
     override suspend fun loadProfileReasoningDefault(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ): String? {
         val response = client.get("${serverOrigin.value}/api/config") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
         }
         val body = response.readBodyTextBounded()
@@ -1102,12 +1105,12 @@ class HttpHermesConnectionClient(
 
     override suspend fun loadProfileReasoningOverrides(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         options: ModelOptions,
     ): Map<ModelSelection, String> {
         val response = client.get("${serverOrigin.value}/api/config") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
         }
         val body = response.readBodyTextBounded()
@@ -1146,7 +1149,7 @@ class HttpHermesConnectionClient(
 
     override suspend fun setProfileReasoningEffort(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         effort: String,
     ) {
@@ -1155,7 +1158,7 @@ class HttpHermesConnectionClient(
         val canonicalEffort = canonicalProfileReasoningEffort(effort)
             ?: throw HermesConnectionException("Hermes reasoning effort is invalid")
         val response = client.put("${serverOrigin.value}/api/config") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", boundedProfile)
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject {
@@ -1174,7 +1177,7 @@ class HttpHermesConnectionClient(
 
     override suspend fun setProfileModelReasoningOverride(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         selection: ModelSelection,
         effort: String,
@@ -1192,7 +1195,7 @@ class HttpHermesConnectionClient(
         // portal slug (e.g. "nous") and must not be prepended.
         val overrideKey = model
         val response = client.put("${serverOrigin.value}/api/config") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", boundedProfile)
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject {
@@ -1215,13 +1218,13 @@ class HttpHermesConnectionClient(
 
     override suspend fun setDefaultModel(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         selection: ModelSelection,
         confirmExpensiveModel: Boolean,
     ): ModelSwitchResult {
         val response = client.post("${serverOrigin.value}/api/model/set") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject {
@@ -1245,7 +1248,7 @@ class HttpHermesConnectionClient(
 
     override suspend fun triggerCronJob(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         jobId: String,
     ): CronJob = try {
@@ -1254,7 +1257,7 @@ class HttpHermesConnectionClient(
         val response = client.post(
             "${serverOrigin.value}/api/cron/jobs/${boundedJobId.encodeURLPathPart()}/trigger",
         ) {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", boundedProfile)
         }
         val body = response.readBodyTextBounded(MAX_CRON_RESPONSE_BODY_BYTES)
@@ -1272,7 +1275,7 @@ class HttpHermesConnectionClient(
 
     override suspend fun loadCronJobRuns(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         jobId: String,
         limit: Int,
@@ -1283,7 +1286,7 @@ class HttpHermesConnectionClient(
         val response = client.get(
             "${serverOrigin.value}/api/cron/jobs/${boundedJobId.encodeURLPathPart()}/runs",
         ) {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
             parameter("profile", boundedProfile)
             parameter("limit", boundedLimit)
         }
@@ -1386,7 +1389,7 @@ class HttpHermesConnectionClient(
         val sessions = if (status.authRequired) {
             emptyList()
         } else {
-            loadSessionsPage(serverOrigin, accessToken = null).sessions
+            loadSessionsPage(serverOrigin, HermesCredential.None).sessions
         }
         HermesConnectionInfo(
             version = status.version,
@@ -1405,11 +1408,11 @@ class HttpHermesConnectionClient(
 
     override suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ): AuthenticatedHermesConnection = try {
         authenticatedConnectionConcurrently(
-            loadUser = { loadAuthenticatedUser(serverOrigin, accessToken) },
-            loadSessions = { loadSessionsPage(serverOrigin, accessToken).sessions },
+            loadUser = { loadAuthenticatedUser(serverOrigin, credential) },
+            loadSessions = { loadSessionsPage(serverOrigin, credential).sessions },
         )
     } catch (cancelled: CancellationException) {
         throw cancelled
@@ -1424,26 +1427,26 @@ class HttpHermesConnectionClient(
 
     override suspend fun loadSessionsForProfile(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
         archivedOnly: Boolean,
     ): List<SessionSummary> = loadSessionsPageForProfile(
         serverOrigin = serverOrigin,
-        accessToken = accessToken,
+        credential = credential,
         profile = profile,
         archivedOnly = archivedOnly,
     ).sessions
 
     override suspend fun loadSessionsPageForProfile(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         profile: String,
         limit: Int,
         offset: Int,
         archivedOnly: Boolean,
     ): SessionPage = loadSessionsPage(
         serverOrigin = serverOrigin,
-        accessToken = accessToken,
+        credential = credential,
         profile = profile,
         limit = limit,
         offset = offset,
@@ -1452,10 +1455,10 @@ class HttpHermesConnectionClient(
 
     private suspend fun loadAuthenticatedUser(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ): String {
         val response = client.get("${serverOrigin.value}/api/auth/me") {
-            bearerAuth(accessToken)
+            applyHermesCredential(credential, serverOrigin)
         }
         if (!response.status.isSuccess()) {
             response.readBodyTextBounded()
@@ -1476,14 +1479,14 @@ class HttpHermesConnectionClient(
 
     override suspend fun loadTranscript(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
     ): List<ChatMessage> = try {
         TRANSCRIPT_PAGE_LIMITS.forEachIndexed { index, pageLimit ->
             try {
                 return loadTranscriptPage(
                     serverOrigin = serverOrigin,
-                    accessToken = accessToken,
+                    credential = credential,
                     durableSessionId = durableSessionId,
                     pageLimit = pageLimit,
                 )
@@ -1502,13 +1505,13 @@ class HttpHermesConnectionClient(
 
     private suspend fun loadTranscriptPage(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
         pageLimit: Int,
     ): List<ChatMessage> {
         val encodedId = durableSessionId.value.encodeURLPathPart()
         val response = client.get("${serverOrigin.value}/api/sessions/$encodedId/messages") {
-            accessToken?.let { bearerAuth(it) }
+            applyHermesCredential(credential, serverOrigin)
             parameter("limit", pageLimit)
             parameter("order", "latest")
             parameter("profile", "default")
@@ -1560,7 +1563,7 @@ class HttpHermesConnectionClient(
 
     override suspend fun loadHostFiles(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         path: String?,
     ): HostFileListing = try {
         val requestedPath = path?.let {
@@ -1568,7 +1571,7 @@ class HttpHermesConnectionClient(
                 ?: throw HermesConnectionException("Host file path is invalid")
         }
         val response = client.get("${serverOrigin.value}/api/files") {
-            accessToken?.let { bearerAuth(it) }
+            applyHermesCredential(credential, serverOrigin)
             requestedPath?.let { parameter("path", it) }
         }
         if (!response.status.isSuccess()) {
@@ -1588,13 +1591,13 @@ class HttpHermesConnectionClient(
 
     override suspend fun readManagedFile(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         path: String,
     ): HostFileContent = try {
         val canonicalPath = validCanonicalHostFilePath(path)
             ?: throw HermesConnectionException("Host file path is invalid")
         val response = client.get("${serverOrigin.value}/api/files/read") {
-            accessToken?.let { bearerAuth(it) }
+            applyHermesCredential(credential, serverOrigin)
             parameter("path", canonicalPath)
         }
         if (!response.status.isSuccess()) {
@@ -1612,36 +1615,36 @@ class HttpHermesConnectionClient(
 
     override suspend fun downloadManagedFile(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         path: String,
     ): HostFileContent = downloadManagedFileFrom(
         serverOrigin = serverOrigin,
-        accessToken = accessToken,
+        credential = credential,
         path = path,
         endpoint = "/api/files/download",
     )
 
     override suspend fun streamManagedFile(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         path: String,
     ): HostFileContent = downloadManagedFileFrom(
         serverOrigin = serverOrigin,
-        accessToken = accessToken,
+        credential = credential,
         path = path,
         endpoint = "/api/files/stream",
     )
 
     private suspend fun downloadManagedFileFrom(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         path: String,
         endpoint: String,
     ): HostFileContent = try {
         val canonicalPath = validCanonicalHostFilePath(path)
             ?: throw HermesConnectionException("Host file path is invalid")
         val response = client.get("${serverOrigin.value}$endpoint") {
-            accessToken?.let { bearerAuth(it) }
+            applyHermesCredential(credential, serverOrigin)
             parameter("path", canonicalPath)
         }
         if (!response.status.isSuccess()) {
@@ -1678,7 +1681,7 @@ class HttpHermesConnectionClient(
 
     override suspend fun loadHostDirectories(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         path: String?,
     ): HostDirectoryListing = try {
         val requestedPath = path?.let {
@@ -1686,7 +1689,7 @@ class HttpHermesConnectionClient(
                 ?: throw HermesConnectionException("Host folder path is invalid")
         }
         val response = client.get("${serverOrigin.value}/api/files") {
-            accessToken?.let { bearerAuth(it) }
+            applyHermesCredential(credential, serverOrigin)
             requestedPath?.let { parameter("path", it) }
         }
         if (!response.status.isSuccess()) {
@@ -1726,7 +1729,7 @@ class HttpHermesConnectionClient(
 
     override suspend fun createHostDirectory(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         parentPath: String,
         name: String,
     ): HostDirectoryListing = try {
@@ -1736,7 +1739,7 @@ class HttpHermesConnectionClient(
             ?: throw HermesConnectionException("Host folder name is invalid")
         val requestedPath = joinManagedHostPath(validParent, validName)
         val response = client.post("${serverOrigin.value}/api/files/mkdir") {
-            accessToken?.let { bearerAuth(it) }
+            applyHermesCredential(credential, serverOrigin)
             contentType(ContentType.Application.Json)
             setBody(json.encodeToString(HermesManagedDirectoryCreateRequest(requestedPath)))
         }
@@ -1754,7 +1757,7 @@ class HttpHermesConnectionClient(
         }
         val canonicalPath = validProjectWorkspacePath(created.path)
             ?: throw HermesConnectionException("Hermes host folder response was incomplete")
-        loadHostDirectories(serverOrigin, accessToken, canonicalPath)
+        loadHostDirectories(serverOrigin, credential, canonicalPath)
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (error: HermesConnectionException) {
@@ -1765,12 +1768,12 @@ class HttpHermesConnectionClient(
 
     override suspend fun downloadManagedImage(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         path: String,
     ): ByteArray = try {
         require(path.startsWith('/')) { "Managed image path must be absolute" }
         val response = client.get("${serverOrigin.value}/api/files/download") {
-            accessToken?.let { bearerAuth(it) }
+            applyHermesCredential(credential, serverOrigin)
             parameter("path", path)
         }
         if (!response.status.isSuccess()) {
@@ -1823,7 +1826,7 @@ class HttpHermesConnectionClient(
 
     private suspend fun loadSessionsPage(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         profile: String = "default",
         limit: Int = MAX_DURABLE_SESSIONS,
         offset: Int = 0,
@@ -1834,7 +1837,7 @@ class HttpHermesConnectionClient(
         val boundedLimit = limit.coerceIn(1, MAX_SESSION_PAGE_SIZE)
         val boundedOffset = offset.coerceAtLeast(0)
         val sessionsResponse = client.get("${serverOrigin.value}/api/profiles/sessions") {
-            accessToken?.let { bearerAuth(it) }
+            applyHermesCredential(credential, serverOrigin)
             parameter("limit", boundedLimit)
             parameter("offset", boundedOffset)
             parameter("order", "recent")
@@ -1845,7 +1848,7 @@ class HttpHermesConnectionClient(
             sessionsResponse.readBodyTextBounded()
             val message = "Hermes session listing returned HTTP ${sessionsResponse.status.value}"
             if (
-                accessToken != null &&
+                credential != HermesCredential.None &&
                 (sessionsResponse.status.value == 401 || sessionsResponse.status.value == 403)
             ) {
                 throw HermesAuthenticationRejectedException(message)
