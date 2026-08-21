@@ -3,6 +3,8 @@ package com.unsupportedpastels.hermesandroid.connection
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.header
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
 const val HERMES_SESSION_TOKEN_HEADER = "X-Hermes-Session-Token"
 internal const val MAX_HERMES_CREDENTIAL_CHARS = 512
@@ -37,8 +39,17 @@ sealed interface HermesCredential {
         private val token: String,
     ) : HermesCredential {
         internal fun apply(builder: HttpRequestBuilder, requestOrigin: ServerOrigin) {
-            require(requestOrigin == origin) { "Loopback session credential belongs to another origin" }
+            requireMatchingOrigin(requestOrigin)
             builder.header(HERMES_SESSION_TOKEN_HEADER, token)
+        }
+
+        internal fun encodedWebSocketToken(requestOrigin: ServerOrigin): String {
+            requireMatchingOrigin(requestOrigin)
+            return URLEncoder.encode(token, StandardCharsets.UTF_8.name())
+        }
+
+        private fun requireMatchingOrigin(requestOrigin: ServerOrigin) {
+            require(requestOrigin == origin) { "Loopback session credential belongs to another origin" }
         }
 
         override fun toString(): String = "HermesCredential.LoopbackSession(${origin.value}, ***)"
@@ -52,8 +63,10 @@ sealed interface HermesCredential {
     }
 }
 
+/** Adapts the legacy optional-token boundary; null/blank means auth-free. */
 internal fun String?.toHermesCredential(): HermesCredential =
-    this?.let(HermesCredential.NativeBearer::create) ?: HermesCredential.None
+    this?.takeIf(String::isNotBlank)?.let(HermesCredential.NativeBearer::create)
+        ?: HermesCredential.None
 
 internal fun HttpRequestBuilder.applyHermesCredential(
     credential: HermesCredential,

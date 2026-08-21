@@ -137,9 +137,14 @@ class HermesChatIntegrationTest {
             settingsStates = MutableStateFlow(ServerSettingsState.Ready(origin)),
             client = ChatConnectionClient(),
             tokenStore = MemoryTokenStore(tokens),
-            chatConnector = HermesChatConnector { requestedOrigin, accessToken ->
+            chatConnector = HermesChatConnector { requestedOrigin, credential ->
                 assertEquals(origin, requestedOrigin)
-                assertEquals("opaque-access", accessToken)
+                val request = io.ktor.client.request.HttpRequestBuilder()
+                request.applyHermesCredential(credential, requestedOrigin)
+                assertEquals(
+                    "Bearer opaque-access",
+                    request.headers[io.ktor.http.HttpHeaders.Authorization],
+                )
                 session
             },
             nowEpochSeconds = { 1_900_000_000 },
@@ -2363,14 +2368,14 @@ class HermesChatIntegrationTest {
         }
         val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(firstOrigin))
         var now = 1_900_000_000L
-        var connectorToken: String? = null
+        var connectorCredential: HermesCredential? = null
         val viewModel = HermesConnectionViewModel(
             settingsStates = settings,
             client = ChatConnectionClient(),
             tokenStore = tokenStore,
             refreshClient = refreshClient,
-            chatConnector = HermesChatConnector { _, accessToken ->
-                connectorToken = accessToken
+            chatConnector = HermesChatConnector { _, credential ->
+                connectorCredential = credential
                 StreamingChatSession()
             },
             nowEpochSeconds = { now },
@@ -2390,7 +2395,12 @@ class HermesChatIntegrationTest {
         viewModel.sendMessage(durableId, "Current origin prompt")
         advanceUntilIdle()
 
-        assertEquals(secondTokens.accessToken, connectorToken)
+        val request = io.ktor.client.request.HttpRequestBuilder()
+        request.applyHermesCredential(checkNotNull(connectorCredential), secondOrigin)
+        assertEquals(
+            "Bearer ${secondTokens.accessToken}",
+            request.headers[io.ktor.http.HttpHeaders.Authorization],
+        )
     }
 
     @Test

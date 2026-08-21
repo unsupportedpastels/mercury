@@ -2,6 +2,7 @@ package com.unsupportedpastels.hermesandroid.gateway
 
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.hermesandroid.connection.HermesCredential
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -194,9 +195,9 @@ class HermesHamGatewayTest {
     private suspend fun kotlinx.coroutines.test.TestScope.newHamConnection(socket: HamSocket): HermesChatSession =
         HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "access",
+            credential = HermesCredential.NativeBearer.create("access"),
             ticketClient = object : WsTicketClient {
-                override suspend fun mintTicket(origin: ServerOrigin, accessToken: String) = WsTicket("ticket", 30)
+                override suspend fun mintTicket(origin: ServerOrigin, credential: HermesCredential.NativeBearer) = WsTicket("ticket", 30)
             },
             socketFactory = object : ChatWebSocketFactory {
                 override suspend fun connect(url: String) = socket

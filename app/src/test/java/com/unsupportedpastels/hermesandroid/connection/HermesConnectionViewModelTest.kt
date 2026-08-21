@@ -2609,7 +2609,7 @@ class HermesConnectionViewModelTest {
             project = tree.projects.single(),
             sessions = listOf(SessionSummary(DurableSessionId("stored-1"), "Session")),
         )
-        val connectorTokens = mutableListOf<String>()
+        val connectorCredentials = mutableListOf<HermesCredential>()
         var connections = 0
         val client = AuthenticatingHermesConnectionClient()
         val viewModel = HermesConnectionViewModel(
@@ -2617,8 +2617,8 @@ class HermesConnectionViewModelTest {
             client = client,
             tokenStore = tokenStore,
             refreshClient = refreshClient,
-            projectConnector = HermesChatConnector { _, accessToken ->
-                connectorTokens += accessToken
+            projectConnector = HermesChatConnector { _, credential ->
+                connectorCredentials += credential
                 connections += 1
                 if (connections == 1) {
                     MetadataOnlyProjectSession(tree)
@@ -2639,7 +2639,14 @@ class HermesConnectionViewModelTest {
         viewModel.openProject(projectId).join()
 
         assertEquals(1, refreshCalls)
-        assertEquals(listOf("initial-access", "refreshed-access"), connectorTokens)
+        assertEquals(
+            listOf("Bearer initial-access", "Bearer refreshed-access"),
+            connectorCredentials.map { credential ->
+                val request = io.ktor.client.request.HttpRequestBuilder()
+                request.applyHermesCredential(credential, origin)
+                request.headers[io.ktor.http.HttpHeaders.Authorization]
+            },
+        )
         val loaded = viewModel.snapshots.value.projectSessionStates.getValue(projectId)
             as ProjectSessionLoadState.Loaded
         assertEquals("Session", loaded.sessions.single().title)

@@ -46,6 +46,14 @@ class HermesCredentialTest {
     }
 
     @Test
+    fun optionalTokenBoundaryMapsNullAndBlankToNoCredential() {
+        assertEquals(HermesCredential.None, null.toHermesCredential())
+        assertEquals(HermesCredential.None, "".toHermesCredential())
+        assertEquals(HermesCredential.None, "   ".toHermesCredential())
+        assertTrue("opaque".toHermesCredential() is HermesCredential.NativeBearer)
+    }
+
+    @Test
     fun protectedRestRequestsApplyCredentialSpecificHeaders() = runTest {
         val observed = mutableListOf<Pair<String?, String?>>()
         val engine = MockEngine { request ->

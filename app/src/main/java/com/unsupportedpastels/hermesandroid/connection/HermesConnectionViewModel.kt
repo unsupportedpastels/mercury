@@ -1061,7 +1061,7 @@ class HermesConnectionViewModel(
         val connector = speechStreamConnector ?: return null
         if (!mutableVoiceCapabilities.value.canStreamSpeech) return null
         return withHermesRestOperation { origin, token ->
-            connector.connect(origin, token.orEmpty(), mutableSnapshots.value.selectedProfile)
+            connector.connect(origin, token.toHermesCredential(), mutableSnapshots.value.selectedProfile)
         }
     }
 
@@ -1100,7 +1100,7 @@ class HermesConnectionViewModel(
     ): HermesChatSession {
         val connector = projectConnector
             ?: throw HermesChatMethodNotFoundException("projects.tree")
-        val candidate = connector.connect(serverOrigin, accessToken)
+        val candidate = connector.connect(serverOrigin, accessToken.toHermesCredential())
         try {
             currentCoroutineContext().ensureActive()
             if (!isCurrentOrigin(serverOrigin, originGeneration)) {
@@ -4034,7 +4034,7 @@ class HermesConnectionViewModel(
         if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
             throw CancellationException("Chat operation was replaced")
         }
-        val session = connector.connect(origin, accessToken)
+        val session = connector.connect(origin, accessToken.toHermesCredential())
         try {
             val creatingDraft = durableSessionId in pendingDraftSessions
             val resumed = if (creatingDraft) {
@@ -4511,7 +4511,7 @@ class HermesConnectionViewModel(
                 val token = accessTokenForRequest(origin, originGeneration)
                     ?: throw HermesConnectionException("Sign in is required to reconnect")
                 if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
-                candidate = connector.connect(origin, token)
+                candidate = connector.connect(origin, token.toHermesCredential())
                 if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                     closeChatSessionNonCancellably(candidate)
                     return
@@ -5968,10 +5968,10 @@ class HermesConnectionViewModel(
                     pingIntervalMillis = 30_000L
                 }
             }
-            fun newConnector() = HermesChatConnector { origin, accessToken ->
+            fun newConnector() = HermesChatConnector { origin, credential ->
                 HermesChatGateway(
                     origin = origin,
-                    accessToken = accessToken,
+                    credential = credential,
                     ticketClient = KtorWsTicketClient(httpClient),
                     socketFactory = KtorChatWebSocketFactory(httpClient),
                 ).connect()

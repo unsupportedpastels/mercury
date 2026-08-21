@@ -14,6 +14,7 @@ import com.unsupportedpastels.hermesandroid.app.RunTodoStatus
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.hermesandroid.connection.HermesCredential
 import com.unsupportedpastels.hermesandroid.connection.readBodyTextBounded
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.webSocketSession
@@ -90,7 +91,10 @@ data class WsTicket(
 }
 
 interface WsTicketClient {
-    suspend fun mintTicket(origin: ServerOrigin, accessToken: String): WsTicket
+    suspend fun mintTicket(
+        origin: ServerOrigin,
+        credential: HermesCredential.NativeBearer,
+    ): WsTicket
 }
 
 interface HermesChatSocket {
@@ -441,7 +445,7 @@ enum class UnsupportedBlockingKind {
 }
 
 fun interface HermesChatConnector {
-    suspend fun connect(origin: ServerOrigin, accessToken: String): HermesChatSession
+    suspend fun connect(origin: ServerOrigin, credential: HermesCredential): HermesChatSession
 }
 
 interface HermesChatSession {
@@ -627,30 +631,36 @@ interface HermesChatSession {
  */
 class HermesChatGateway(
     private val origin: ServerOrigin,
-    private val accessToken: String,
+    private val credential: HermesCredential,
     private val ticketClient: WsTicketClient,
     private val socketFactory: ChatWebSocketFactory,
     private val maxFrameBytes: Int = DEFAULT_MAX_FRAME_BYTES,
     private val parentScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
     init {
-        require(accessToken.isNotBlank()) { "Hermes access token must not be blank" }
         require(maxFrameBytes in 1..MAX_CONFIGURED_FRAME_BYTES) {
             "Hermes frame limit is out of bounds"
         }
     }
 
     suspend fun connect(): HermesChatConnection {
-        val ticket = ticketClient.mintTicket(origin, accessToken)
-        val socketUrl = websocketUrl(origin, ticket.ticket)
+        val socketUrl = when (val current = credential) {
+            is HermesCredential.NativeBearer -> {
+                val ticket = ticketClient.mintTicket(origin, current)
+                ticketWebSocketUrl(origin, ticket.ticket)
+            }
+            is HermesCredential.LoopbackSession ->
+                "${origin.webSocketValue}/api/ws?token=${current.encodedWebSocketToken(origin)}"
+            HermesCredential.None -> "${origin.webSocketValue}/api/ws"
+        }
         val socket = try {
             socketFactory.connect(socketUrl)
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: HermesChatException) {
-            throw error
-        } catch (error: Exception) {
-            throw HermesChatTransportException("Could not connect to Hermes chat", error)
+        } catch (_: CancellationException) {
+            throw CancellationException("Hermes chat connection cancelled")
+        } catch (_: Exception) {
+            // The factory has seen a signed URL. Never retain its arbitrary
+            // exception/cause chain because it may echo that URL verbatim.
+            throw HermesChatTransportException("Could not connect to Hermes chat")
         }
         return HermesChatConnection(
             socket = socket,
@@ -659,7 +669,7 @@ class HermesChatGateway(
         )
     }
 
-    private fun websocketUrl(origin: ServerOrigin, ticket: String): String {
+    private fun ticketWebSocketUrl(origin: ServerOrigin, ticket: String): String {
         val encodedTicket = URLEncoder.encode(ticket, StandardCharsets.UTF_8.name())
         return "${origin.webSocketValue}/api/ws?ticket=$encodedTicket"
     }
@@ -1959,11 +1969,13 @@ class KtorWsTicketClient(
     private val client: HttpClient,
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) : WsTicketClient {
-    override suspend fun mintTicket(origin: ServerOrigin, accessToken: String): WsTicket {
-        if (accessToken.isBlank()) throw HermesChatException("Hermes access token must not be blank")
+    override suspend fun mintTicket(
+        origin: ServerOrigin,
+        credential: HermesCredential.NativeBearer,
+    ): WsTicket {
         return try {
             val response = client.post("${origin.value}/api/auth/ws-ticket") {
-                bearerAuth(accessToken)
+                credential.apply(this)
             }
             val body = response.readBodyTextBounded(MAX_TICKET_RESPONSE_BYTES)
             if (!response.status.isSuccess()) {
@@ -1994,10 +2006,11 @@ class KtorChatWebSocketFactory(
     override suspend fun connect(url: String): HermesChatSocket {
         return try {
             KtorHermesChatSocket(client.webSocketSession { url(url) })
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            throw HermesChatTransportException("Could not connect to Hermes chat", error)
+        } catch (_: CancellationException) {
+            throw CancellationException("Hermes chat connection cancelled")
+        } catch (_: Exception) {
+            // Ktor failures may include the signed request URL.
+            throw HermesChatTransportException("Could not connect to Hermes chat")
         }
     }
 }
