@@ -37,6 +37,7 @@ The current HAM probe treats `auth_required:false` as meaning that protected API
 - Protected REST routes require `X-Hermes-Session-Token` (legacy `Bearer` is also accepted).
 - `/api/ws` and other protected WebSockets require `?token=<session-token>`.
 - The loopback dashboard injects the token into its shell HTML as `window.__HERMES_SESSION_TOKEN__="..."`.
+- The shell response is marked `no-store`/`no-cache`; HAM must fetch it again instead of relying on HTTP cache state.
 - Invalid WebSocket credentials close with code `4401`.
 
 Observed against Hermes `v0.20.4` on 2026-08-21:
@@ -49,6 +50,8 @@ GET /api/auth/me (legacy token)         -> 401
 ```
 
 This explains why the same Termius forward works in a browser but HAM reports `Could not reach Hermes Serve`: the browser dashboard adopts the bootstrap token; HAM does not.
+
+The server token is process-scoped: Hermes uses `HERMES_DASHBOARD_SESSION_TOKEN` when the operator explicitly supplies one, otherwise it generates a random token at process start. The design must work correctly in both cases and must not require operators to pin a stable token.
 
 Relevant current code:
 
@@ -149,6 +152,7 @@ Introduce an explicit, non-secret authorization abstraction rather than continui
 
 ```kotlin
 sealed interface HermesCredential {
+    data object None : HermesCredential
     class NativeBearer private constructor(/* secret */) : HermesCredential
     class LoopbackSession private constructor(/* secret */) : HermesCredential
 }
@@ -164,6 +168,7 @@ Requirements:
 REST mapping:
 
 ```text
+None            -> no credential (legacy servers that truly expose protected reads)
 NativeBearer    -> Authorization: Bearer <access-token>
 LoopbackSession -> X-Hermes-Session-Token: <session-token>
 ```
@@ -303,6 +308,37 @@ HAM cannot start the third-party tunnel. A button may retry HAM’s connection, 
 
 Only one connection/rebootstrap job may run for an origin generation. Existing stale-generation checks must continue preventing old tunnel/token results from publishing after server switching.
 
+The current app reconnects on foreground only when its published state is already `Disconnected`. A dead Termius tunnel can leave an idle connection looking `Connected` until the next protected operation fails. The new policy must therefore run a debounced read-only reachability probe on foreground even from a stale `Connected` state; success leaves the state unchanged, while failure moves to tunnel recovery without discarding cached metadata.
+
+### Platform-independent recovery reducer
+
+Model retry and lifecycle decisions in a small reducer rather than distributing more timers and booleans through the ViewModel:
+
+```text
+Unconfigured
+Probing(attempt)
+Ready(auth = None | OAuth | LoopbackSession)
+WaitingForTunnel(failureClass, attempt, nextRetryAt)
+RefreshingCredential
+RecoveringTurn(sessionId, attempt)
+Suspended(lastReachableState)
+```
+
+Reducer inputs include settings/origin changes, foreground/background, debounced network availability, probe success/failure, protected REST `401`, WebSocket closure, retry timer, manual Retry, and process start.
+
+Rules:
+
+1. Every effect carries normalized origin plus generation; stale effects are discarded.
+2. At most one global probe, bootstrap, retry timer, and credential refresh may exist per origin generation.
+3. Foreground, manual Retry, and network-available events may trigger an immediate debounced probe. Android network state is only a hint; a successful loopback Hermes handshake is authoritative.
+4. Background with no active turn enters `Suspended` and cancels idle retry timers.
+5. Cached metadata remains visible while waiting for the tunnel and is labeled offline/cached.
+6. Existing active-turn recovery remains per-session and bounded; it must not close the shared runtime.
+7. Credential rejection causes one rebootstrap. Automatically retry only idempotent reads; mutations and controller input require user retry unless the official endpoint has an idempotency contract.
+8. Transport/5xx failures retain credentials. Definitive credential rejection clears only the matching origin generation.
+
+The current code exposes `ConnectionState.Recovering` in UI but does not publish it from global connection logic. Implementation should either make the reducer own that state consistently or remove the dead global presentation path; it must not add a second competing recovery state machine.
+
 ### Process recreation and device reboot
 
 - App process recreation: DataStore restores origin and connection mode; HAM reacquires the token and reconnects automatically.
@@ -393,6 +429,7 @@ HAM verifies only the final Hermes protocol and token. It cannot prove which SSH
 
 1. **Android loopback is device-wide, not app-private.** Another local app can potentially connect to the forwarded port and read the bootstrap token. The feature assumes a trusted/non-compromised device.
 2. **Local-port impersonation.** A malicious process can bind the configured port before the SSH app and imitate enough protocol to deceive HAM. Validating Hermes response shape and optionally remembering `install_id` can detect accidents, but `install_id` is not cryptographic authentication and must not be presented as such.
+   Repointing the same local port to a different legitimate Hermes host has the same origin-identity problem. Document one immutable remote host per local port; when observed identity/auth characteristics change unexpectedly, clear the in-memory credential and require explicit trust/reset rather than sending the previous token onward.
 3. **Credential in WebSocket URL.** The upstream legacy contract requires `?token=`. URLs and exceptions containing it must never be logged, persisted, included in crash reports, or displayed.
 4. **HTML bootstrap parsing.** Parse a bounded exact assignment without executing HTML/JavaScript. Redirects are forbidden.
 5. **Token lifetime.** Treat tokens as ephemeral and invalidate on origin change, credential rejection, app shutdown, or generation replacement.
@@ -475,6 +512,13 @@ This is intentionally a compile-guided broad signature change. A global Ktor def
   - automatically rebootstrap once on REST `401` or WS `4401`;
   - use specific tunnel/bootstrap/auth errors;
   - preserve existing foreground reconnect, controller-generation, reconciliation, and no-close-on-disconnect rules.
+  - replace scattered global retry decisions with the platform-independent recovery reducer;
+  - probe on foreground even when the last idle state is stale `Connected`;
+  - ensure `onCleared()` socket cleanup does not rely on launching new work into a ViewModel scope that is already being cancelled.
+- Add a small Android network-observer adapter around `ConnectivityManager.NetworkCallback`
+  - debounce callbacks into reducer inputs;
+  - treat them only as retry hints, never as proof that the external SSH listener is healthy;
+  - register/unregister without adding exported components or a boot receiver.
 
 ### Documentation
 
