@@ -142,6 +142,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
+                    onPasswordSignIn = connectionViewModel::signInWithPassword,
                     onCloudSignIn = {
                         cloudViewModel.signIn { verificationUrl ->
                             launchBrowserAndAwaitReturn(HermesWindowFocus.state) {
@@ -228,6 +229,7 @@ internal fun HermesAppHost(
     requestedSessionRequestId: Long? = null,
     onVisibleSessionChanged: (DurableSessionId?) -> Unit = {},
     onSignIn: () -> Unit = {},
+    onPasswordSignIn: (String, String) -> Unit = { _, _ -> },
     onCloudSignIn: () -> Unit = {},
     onOpenProject: (ProjectId) -> Unit = {},
     onCreateProjectSession: (ProjectId) -> DurableSessionId? = { null },
@@ -405,6 +407,7 @@ internal fun HermesAppHost(
         },
         onLogout = { connectionViewModel?.logout() },
         onSignIn = onSignIn,
+        onPasswordSignIn = onPasswordSignIn,
         onRetryConnection = { connectionViewModel?.retryConnection() },
         onOpenProject = onOpenProject,
         onCreateProjectSession = onCreateProjectSession,

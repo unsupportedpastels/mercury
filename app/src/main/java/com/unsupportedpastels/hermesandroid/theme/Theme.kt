@@ -29,14 +29,14 @@ val LocalHermesSemanticColors = staticCompositionLocalOf {
 }
 
 private val LightColors = lightColorScheme(
-    primary = Color(0xFF006A68),
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFF9CF2EC),
-    onPrimaryContainer = Color(0xFF00201F),
-    secondary = Color(0xFF4C6361),
+    primary = Color(0xFF1B6969),
+    onPrimary = Color(0xFFE0FFFE),
+    primaryContainer = Color(0xFFA8EFEE),
+    onPrimaryContainer = Color(0xFF005C5C),
+    secondary = Color(0xFF4A6463),
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFCFE8E5),
-    onSecondaryContainer = Color(0xFF071F1D),
+    secondaryContainer = Color(0xFFCCE8E7),
+    onSecondaryContainer = Color(0xFF3D5656),
     tertiary = Color(0xFF765A00),
     onTertiary = Color.White,
     tertiaryContainer = Color(0xFFFFDF92),
@@ -62,22 +62,23 @@ private val LightColors = lightColorScheme(
     outlineVariant = Color(0xFFBEC9C6),
     inverseSurface = Color(0xFF2D3130),
     inverseOnSurface = Color(0xFFEFF1EF),
-    inversePrimary = Color(0xFF80D5CF),
+    inversePrimary = Color(0xFF9BD0CF),
     scrim = Color.Black,
 )
 
 // AMOLED dark palette: pure-black canvases with neutral gray surfaces,
-// ChatGPT-style restrained chrome. Teal/gold accents intentionally unchanged;
-// only neutrals were retuned (green-tinted grays removed, contrast raised).
+// ChatGPT-style restrained chrome. Teal accents reseeded from the canonical
+// Hermes Teal (LENS_0 #041C1C, hue 196.8°) via the Material 3 tonal palette;
+// neutrals stay gray (green-tinted grays removed, contrast raised).
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFF80D5CF),
-    onPrimary = Color(0xFF003735),
-    primaryContainer = Color(0xFF00504E),
-    onPrimaryContainer = Color(0xFF9CF2EC),
+    primary = Color(0xFF9BD0CF),
+    onPrimary = Color(0xFF0C4848),
+    primaryContainer = Color(0xFF255A5A),
+    onPrimaryContainer = Color(0xFFB7EDEC),
     secondary = Color(0xFFC5C5C5),
     onSecondary = Color(0xFF1A1A1A),
-    secondaryContainer = Color(0xFF344B49),
-    onSecondaryContainer = Color(0xFFD9F2EF),
+    secondaryContainer = Color(0xFF27403F),
+    onSecondaryContainer = Color(0xFFA9C5C4),
     tertiary = Color(0xFFF2C64D),
     onTertiary = Color(0xFF3F2E00),
     tertiaryContainer = Color(0xFF5B4400),
@@ -103,7 +104,7 @@ private val DarkColors = darkColorScheme(
     outlineVariant = Color(0xFF3A3A3A),
     inverseSurface = Color(0xFFE8E8E8),
     inverseOnSurface = Color(0xFF1C1C1C),
-    inversePrimary = Color(0xFF006A68),
+    inversePrimary = Color(0xFF336767),
     scrim = Color.Black,
 )
 

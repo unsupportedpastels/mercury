@@ -444,6 +444,7 @@ fun HermesApp(
     onSetModelReasoningOverride: suspend (ModelSelection, String) -> Result<Unit> = { _, _ -> Result.success(Unit) },
     onLogout: suspend () -> Unit = {},
     onSignIn: () -> Unit = {},
+    onPasswordSignIn: (String, String) -> Unit = { _, _ -> },
     onRetryConnection: () -> Unit = {},
     onOpenProject: (ProjectId) -> Unit = {},
     onOpenSession: (DurableSessionId) -> Unit = {},
@@ -897,6 +898,7 @@ fun HermesApp(
                     onConfigureServer = openServerSettings,
                     onRetryConnection = onRetryConnection,
                     onSignIn = onSignIn,
+                    onPasswordSignIn = onPasswordSignIn,
                     onProjectSelected = navigateToProject,
                     onSessionSelected = navigateToSession,
                     onRecentSessionsSelected = navigateToRecentSessions,
@@ -2303,6 +2305,7 @@ private fun SessionListScreen(
     onConfigureServer: () -> Unit,
     onRetryConnection: () -> Unit = {},
     onSignIn: () -> Unit,
+    onPasswordSignIn: (String, String) -> Unit = { _, _ -> },
     onProjectSelected: (ProjectId) -> Unit,
     onSessionSelected: (DurableSessionId) -> Unit,
     onRecentSessionsSelected: () -> Unit,
@@ -2332,6 +2335,52 @@ private fun SessionListScreen(
     var pendingDelete by remember { mutableStateOf<SessionSummary?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
     val sessionActionScope = rememberCoroutineScope()
+    var passwordSignInOpen by rememberSaveable { mutableStateOf(false) }
+    var passwordUsername by rememberSaveable { mutableStateOf("admin") }
+    var passwordValue by remember { mutableStateOf("") }
+    val hasPasswordProvider = snapshot.authProviders.any { it.supportsPassword }
+    if (passwordSignInOpen) {
+        AlertDialog(
+            onDismissRequest = { if (snapshot.authenticationState != AuthenticationState.SigningIn) passwordSignInOpen = false },
+            title = { Text("Sign in to Hermes") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = passwordUsername,
+                        onValueChange = { passwordUsername = it.take(256) },
+                        label = { Text("Username") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = passwordValue,
+                        onValueChange = { passwordValue = it.take(4_096) },
+                        label = { Text("Password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        singleLine = true,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = passwordUsername.isNotBlank() && passwordValue.isNotEmpty() &&
+                        snapshot.authenticationState != AuthenticationState.SigningIn,
+                    onClick = {
+                        val submittedPassword = passwordValue
+                        passwordValue = ""
+                        passwordSignInOpen = false
+                        onPasswordSignIn(passwordUsername, submittedPassword)
+                    },
+                ) { Text("Sign in") }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = snapshot.authenticationState != AuthenticationState.SigningIn,
+                    onClick = { passwordSignInOpen = false },
+                ) { Text("Cancel") }
+            },
+        )
+    }
     val currentFilter = SessionListFilter.fromSearchQuery(searchQuery)
     val pinnedOnly = currentFilter.pinnedOnly
     val archivedOnly = currentFilter.archivedOnly
@@ -2647,6 +2696,14 @@ private fun SessionListScreen(
                         ) {
                             Button(onClick = dropUnlessResumed { onSignIn() }) {
                                 Text("Sign in with Nous")
+                            }
+                        }
+                        if (
+                            snapshot.authenticationState == AuthenticationState.SignInRequired &&
+                            hasPasswordProvider
+                        ) {
+                            Button(onClick = dropUnlessResumed { passwordSignInOpen = true }) {
+                                Text("Sign in with username and password")
                             }
                         } else if (
                             connectionState == ConnectionState.Disconnected &&
@@ -4165,7 +4222,7 @@ internal fun ServerSettingsScreen(
                                             }
                                             IconButton(
                                                 onClick = { pendingRemoval = entry },
-                                                enabled = !selected,
+                                                enabled = !isSaving,
                                                 modifier = Modifier.semantics {
                                                     contentDescription = "Remove ${entry.origin.value}"
                                                 },
@@ -4470,7 +4527,7 @@ internal fun ServerSettingsScreen(
                                 pendingRemoval = null
                             } else {
                                 pendingRemoval = null
-                                saveError = "Could not remove server. Select another active server first."
+                                saveError = "Could not remove server. Try again."
                             }
                         }
                     },

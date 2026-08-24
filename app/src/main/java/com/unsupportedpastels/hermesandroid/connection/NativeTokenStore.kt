@@ -90,10 +90,12 @@ class EncryptedNativeTokenStore(
         "token_" + sha256(serverOrigin.value).toHex()
 
     private fun validate(tokens: NativeTokenSet) {
-        require(tokens.accessToken.isNotBlank()) { "Native token response was incomplete" }
         require(tokens.provider.isNotBlank()) { "Native token response was incomplete" }
         require(tokens.userId.isNotBlank()) { "Native token response was incomplete" }
-        require(tokens.expiresAt > 0) { "Native token response was incomplete" }
+        if (tokens.provider != "basic") {
+            require(tokens.accessToken.isNotBlank()) { "Native token response was incomplete" }
+            require(tokens.expiresAt > 0) { "Native token response was incomplete" }
+        }
         requireTokenSize(tokens.accessToken)
         requireTokenSize(tokens.refreshToken)
         requireTokenSize(tokens.provider)

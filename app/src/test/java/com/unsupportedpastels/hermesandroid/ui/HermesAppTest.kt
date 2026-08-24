@@ -13,6 +13,7 @@ import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -2585,6 +2586,47 @@ class HermesAppTest {
         composeRule.onNodeWithText("Sign in with Nous").performClick()
 
         assertTrue(signInRequested)
+    }
+
+    @Test
+    fun reachableGatedServerPasswordSignInInvokesCallbackWithCredentials() {
+        var submitted: Pair<String, String>? = null
+        composeRule.setContent {
+            HermesAndroidTheme {
+                HermesApp(
+                    snapshot = HermesGatewaySnapshot(
+                        connectionState = ConnectionState.Connected,
+                        authenticationState = AuthenticationState.SignInRequired,
+                        serverVersion = "0.20.0",
+                        authProviders = listOf(
+                            HermesAuthProvider(
+                                name = "basic",
+                                displayName = "Username & Password",
+                                supportsPassword = true,
+                            ),
+                        ),
+                    ),
+                    serverSettingsState = ServerSettingsState.Ready(
+                        ServerOrigin.parse("https://hermes.example"),
+                    ),
+                    onPasswordSignIn = { username, password ->
+                        submitted = username to password
+                    },
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Sign in with username and password").performClick()
+        // Dialog opens with username defaulting to "admin". Fill the password
+        // field and submit. The password field is the node carrying the
+        // Password semantics flag (set by PasswordVisualTransformation).
+        composeRule.onNode(
+            hasSetTextAction() and
+                SemanticsMatcher.keyIsDefined(SemanticsProperties.Password),
+        ).performTextInput("hunter2")
+        composeRule.onNodeWithText("Sign in").performClick()
+
+        assertEquals("admin" to "hunter2", submitted)
     }
 
     @Test

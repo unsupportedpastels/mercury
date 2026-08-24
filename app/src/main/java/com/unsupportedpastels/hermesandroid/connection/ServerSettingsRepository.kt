@@ -71,7 +71,7 @@ interface ServerSettingsRepository {
         save(entry)
     }
 
-    /** Returns true only when an inactive entry was removed. */
+    /** Returns true when a catalog entry was removed; active removal selects the best remaining entry. */
     suspend fun remove(serverOrigin: ServerOrigin): Boolean = false
 }
 
@@ -181,15 +181,21 @@ class DataStoreServerSettingsRepository(
         var removed = false
         dataStore.edit { preferences ->
             val current = readCatalog(preferences)
-            if (current.activeOrigin == serverOrigin) return@edit
             if (current.entries.none { it.origin == serverOrigin }) return@edit
+            val remaining = current.entries.filterNot { it.origin == serverOrigin }
+            val nextActive = remaining.withIndex()
+                .maxWithOrNull(
+                    compareBy<IndexedValue<ServerCatalogEntry>>(
+                        { it.value.lastUsedEpochSeconds ?: Long.MIN_VALUE },
+                        { it.index },
+                    ),
+                )
+                ?.value
+                ?.origin
             removed = true
             writeCatalog(
                 preferences = preferences,
-                catalog = ServerCatalog.normalized(
-                    current.entries.filterNot { it.origin == serverOrigin },
-                    current.activeOrigin,
-                ),
+                catalog = ServerCatalog.normalized(remaining, nextActive),
             )
         }
         return removed

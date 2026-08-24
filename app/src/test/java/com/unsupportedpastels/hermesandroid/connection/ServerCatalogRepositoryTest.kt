@@ -64,7 +64,7 @@ class ServerCatalogRepositoryTest {
     }
 
     @Test
-    fun selectingAndRemovingAreOriginScopedAndActiveRemovalIsRejected() = runTest {
+    fun selectingAndRemovingAreOriginScopedAndActiveRemovalSelectsAnotherEntry() = runTest {
         val dataStore = InMemoryCatalogDataStore(emptyPreferences())
         val repository = DataStoreServerSettingsRepository(
             dataStore = dataStore,
@@ -76,11 +76,11 @@ class ServerCatalogRepositoryTest {
         repository.save(ServerCatalogEntry(first, label = "First"))
         repository.save(ServerCatalogEntry(second, label = "Second"))
 
-        assertTrue(repository.remove(first))
+        assertTrue(repository.remove(second))
         assertFalse(repository.remove(second))
         val state = repository.states.firstReady()
-        assertEquals(second, state.activeOrigin)
-        assertEquals(listOf(second), state.catalog.entries.map(ServerCatalogEntry::origin))
+        assertEquals(first, state.activeOrigin)
+        assertEquals(listOf(first), state.catalog.entries.map(ServerCatalogEntry::origin))
     }
 
     @Test

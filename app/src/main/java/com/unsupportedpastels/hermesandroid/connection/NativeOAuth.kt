@@ -8,6 +8,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.URLBuilder
 import io.ktor.http.Url
 import io.ktor.http.content.TextContent
+import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -230,6 +231,60 @@ class HttpHermesNativeAuthClient(
             "Hermes token exchange failed (${error.javaClass.simpleName})",
             error,
         )
+    }
+}
+
+interface NativePasswordLogin {
+    suspend fun signIn(
+        serverOrigin: ServerOrigin,
+        provider: String,
+        username: String,
+        password: String,
+    ): NativeTokenSet
+}
+
+class HttpHermesPasswordAuthClient(
+    private val client: HttpClient,
+) : NativePasswordLogin {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override suspend fun signIn(
+        serverOrigin: ServerOrigin,
+        provider: String,
+        username: String,
+        password: String,
+    ): NativeTokenSet {
+        val boundedUsername = username.trim().takeIf { it.isNotEmpty() && it.length <= 256 }
+            ?: throw HermesAuthenticationRejectedException("Invalid credentials")
+        if (password.isEmpty() || password.length > 4_096) {
+            throw HermesAuthenticationRejectedException("Invalid credentials")
+        }
+        val response = client.post("${serverOrigin.value}/auth/password-login") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                json.encodeToString(
+                    mapOf(
+                        "provider" to provider,
+                        "username" to boundedUsername,
+                        "password" to password,
+                        "next" to "/",
+                    ),
+                ),
+            )
+        }
+        response.readBodyTextBounded()
+        if (!response.status.isSuccess()) {
+            if (response.status.value == 401 || response.status.value == 403) {
+                throw HermesAuthenticationRejectedException("Invalid credentials")
+            }
+            throw HermesConnectionException(
+                "Hermes password sign-in returned HTTP ${response.status.value}",
+            )
+        }
+        // Basic auth is cookie-backed. The shared Ktor client captures the
+        // HttpOnly session cookies; an empty access token deliberately prevents
+        // the REST layer from adding a bogus Bearer header.
+        return NativeTokenSet(accessToken = "", provider = provider, userId = boundedUsername, expiresAt = 0)
     }
 }
 

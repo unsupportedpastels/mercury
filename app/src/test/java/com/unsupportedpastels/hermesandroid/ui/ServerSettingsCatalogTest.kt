@@ -1,7 +1,7 @@
 package com.unsupportedpastels.hermesandroid.ui
 
-import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -59,7 +59,9 @@ class ServerSettingsCatalogTest {
             }
         }
 
-        composeRule.onNodeWithContentDescription("Remove ${first.value}").assertIsNotEnabled()
+        composeRule.onNodeWithContentDescription("Remove ${first.value}").assertIsEnabled().performClick()
+        composeRule.onNodeWithText("Remove server?").assertIsDisplayed()
+        composeRule.onAllNodesWithText("Cancel")[1].performClick()
         composeRule.onNodeWithContentDescription("Select ${second.value}").performClick()
         composeRule.onNodeWithContentDescription("Remove ${second.value}").performClick()
         composeRule.onNodeWithText("Remove server?").assertIsDisplayed()
