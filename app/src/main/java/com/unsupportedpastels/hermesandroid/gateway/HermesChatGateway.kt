@@ -634,7 +634,10 @@ class HermesChatGateway(
     private val parentScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
     init {
-        require(accessToken.isNotBlank()) { "Hermes access token must not be blank" }
+        // A blank access token is valid for cookie-backed sessions (basic auth):
+        // the ticket is minted from the shared client's session cookie, and the
+        // ticket client omits the bearer header when the token is blank. Only
+        // bearer/OAuth sessions carry a non-blank token here.
         require(maxFrameBytes in 1..MAX_CONFIGURED_FRAME_BYTES) {
             "Hermes frame limit is out of bounds"
         }
@@ -1960,10 +1963,9 @@ class KtorWsTicketClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) : WsTicketClient {
     override suspend fun mintTicket(origin: ServerOrigin, accessToken: String): WsTicket {
-        if (accessToken.isBlank()) throw HermesChatException("Hermes access token must not be blank")
         return try {
             val response = client.post("${origin.value}/api/auth/ws-ticket") {
-                bearerAuth(accessToken)
+                accessToken.takeIf(String::isNotBlank)?.let(::bearerAuth)
             }
             val body = response.readBodyTextBounded(MAX_TICKET_RESPONSE_BYTES)
             if (!response.status.isSuccess()) {

@@ -37,9 +37,8 @@ class ServerSettingsViewModel(
 
     fun remove(serverOrigin: ServerOrigin): Deferred<Result<Unit>> = viewModelScope.async {
         runCatching {
-            check(repository.remove(serverOrigin)) {
-                "Select another server before removing the active server"
-            }
+            repository.remove(serverOrigin)
+            Unit
         }
     }
 

@@ -104,6 +104,7 @@ import com.unsupportedpastels.hermesandroid.session.toggleBulkSelection
 import com.unsupportedpastels.hermesandroid.ui.isSlashCommandContext
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.plugins.websocket.WebSockets
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -310,6 +311,7 @@ class HermesConnectionViewModel(
     settingsStates: Flow<ServerSettingsState>,
     private val client: HermesConnectionClient,
     private val nativeLogin: NativeLogin? = null,
+    private val passwordLogin: NativePasswordLogin? = null,
     private val closeResources: () -> Unit = {},
     private val tokenStore: NativeTokenStore? = null,
     private val refreshClient: NativeRefreshClient? = null,
@@ -2312,6 +2314,55 @@ class HermesConnectionViewModel(
         if (projects != snapshot.projects) {
             mutableSnapshots.value = snapshot.copy(projects = projects)
         }
+    }
+
+    fun signInWithPassword(username: String, password: String): Job {
+        signInJob?.cancel()
+        val job = viewModelScope.launch {
+            val serverOrigin = activeOrigin ?: return@launch
+            val currentGeneration = generation
+            val login = passwordLogin ?: return@launch
+            val beforeSignIn = mutableSnapshots.value
+            val provider = beforeSignIn.authProviders.firstOrNull { it.supportsPassword }
+                ?: return@launch
+            if (beforeSignIn.authenticationState != AuthenticationState.SignInRequired) return@launch
+            mutableSnapshots.value = beforeSignIn.copy(
+                authenticationState = AuthenticationState.SigningIn,
+                connectionError = null,
+            )
+            try {
+                val tokens = login.signIn(serverOrigin, provider.name, username, password)
+                currentCoroutineContext().ensureActive()
+                if (generation != currentGeneration || activeOrigin != serverOrigin) return@launch
+                val authenticated = client.authenticate(serverOrigin, tokens.accessToken)
+                currentCoroutineContext().ensureActive()
+                if (generation != currentGeneration || activeOrigin != serverOrigin) return@launch
+                tokenStore?.save(serverOrigin, tokens)
+                activeTokens = ActiveTokenRecord(serverOrigin, currentGeneration, tokens)
+                mutableSnapshots.value = mutableSnapshots.value.copy(
+                    authenticationState = AuthenticationState.Authenticated,
+                    connectionError = null,
+                    durableSessions = authenticated.sessions,
+                )
+                startProjectTreeLoad(
+                    serverOrigin = serverOrigin,
+                    originGeneration = currentGeneration,
+                    accessToken = tokens.accessToken,
+                    durableSessions = authenticated.sessions,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (generation != currentGeneration || activeOrigin != serverOrigin) return@launch
+                mutableSnapshots.value = mutableSnapshots.value.copy(
+                    authenticationState = AuthenticationState.SignInRequired,
+                    connectionError = (error as? HermesConnectionException)?.message
+                        ?: "Hermes sign-in failed",
+                )
+            }
+        }
+        signInJob = job
+        return job
     }
 
     fun signIn(openBrowser: suspend (String) -> Unit): Job {
@@ -5926,6 +5977,7 @@ class HermesConnectionViewModel(
         private val settingsStates: Flow<ServerSettingsState>,
         private val client: HermesConnectionClient,
         private val nativeLogin: NativeLogin? = null,
+        private val passwordLogin: NativePasswordLogin? = null,
         private val closeResources: () -> Unit = {},
         private val tokenStore: NativeTokenStore? = null,
         private val refreshClient: NativeRefreshClient? = null,
@@ -5942,6 +5994,7 @@ class HermesConnectionViewModel(
                 settingsStates = settingsStates,
                 client = client,
                 nativeLogin = nativeLogin,
+                passwordLogin = passwordLogin,
                 closeResources = closeResources,
                 tokenStore = tokenStore,
                 refreshClient = refreshClient,
@@ -5963,6 +6016,9 @@ class HermesConnectionViewModel(
             require(modelClass.isAssignableFrom(HermesConnectionViewModel::class.java))
             val httpClient = HttpClient(CIO) {
                 configureHermesHttpClient()
+                install(HttpCookies) {
+                    storage = EncryptedHermesCookieStorage(context)
+                }
                 install(WebSockets) {
                     maxFrameSize = HERMES_CHAT_MAX_FRAME_BYTES.toLong()
                     pingIntervalMillis = 30_000L
@@ -5987,6 +6043,7 @@ class HermesConnectionViewModel(
                         HermesWindowFocus.state.first { it }
                     },
                 ),
+                passwordLogin = HttpHermesPasswordAuthClient(httpClient),
                 closeResources = httpClient::close,
                 tokenStore = EncryptedNativeTokenStore(context),
                 refreshClient = HttpHermesNativeRefreshClient(httpClient),

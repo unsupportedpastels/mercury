@@ -44,6 +44,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
@@ -326,6 +327,10 @@ internal fun HttpClientConfig<*>.configureHermesHttpClient() {
     // engine-level timeout behaviour. Long-running `/api/audio/…` calls opt into
     // extended windows per-request via HttpRequestBuilder.audioRequestTimeout().
     install(HttpTimeout)
+}
+
+internal fun HttpRequestBuilder.hermesAuth(accessToken: String?) {
+    accessToken?.takeIf(String::isNotBlank)?.let(::bearerAuth)
 }
 
 internal suspend fun HttpResponse.readBodyTextBounded(
@@ -660,7 +665,7 @@ class HttpHermesConnectionClient(
         profile: String,
     ): VoiceCapabilities = try {
         val response = client.get("${serverOrigin.value}/api/audio/elevenlabs/voices") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", profile.take(64))
         }
         val body = response.readBodyTextBounded()
@@ -683,7 +688,7 @@ class HttpHermesConnectionClient(
         profile: String,
     ): VoiceServerConfig = try {
         val response = client.get("${serverOrigin.value}/api/config") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", profile.take(64))
         }
         val body = response.readBodyTextBounded()
@@ -706,7 +711,7 @@ class HttpHermesConnectionClient(
         mimeType: String?,
     ): TranscriptionResult {
         val response = client.post("${serverOrigin.value}/api/audio/transcribe") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", profile.take(64))
             contentType(ContentType.Application.Json)
             setBody(
@@ -738,7 +743,7 @@ class HttpHermesConnectionClient(
         text: String,
     ): SpeechAudio {
         val response = client.post("${serverOrigin.value}/api/audio/speak") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", profile.take(64))
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject { put("text", text) }.toString())
@@ -765,7 +770,7 @@ class HttpHermesConnectionClient(
         config: JsonObject,
     ): Boolean {
         val response = client.put("${serverOrigin.value}/api/config") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", profile.take(64))
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject { put("config", config) }.toString())
@@ -782,7 +787,7 @@ class HttpHermesConnectionClient(
         profile: String,
     ): List<ElevenLabsVoice> {
         val response = client.get("${serverOrigin.value}/api/audio/elevenlabs/voices") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", profile.take(64))
         }
         if (!response.status.isSuccess()) return emptyList()
@@ -815,7 +820,7 @@ class HttpHermesConnectionClient(
         val response = client.patch(
             "${serverOrigin.value}/api/sessions/${durableSessionId.value.encodeURLPathPart()}",
         ) {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             contentType(ContentType.Application.Json)
             setBody(
                 json.encodeToString(
@@ -844,7 +849,7 @@ class HttpHermesConnectionClient(
         val response = client.delete(
             "${serverOrigin.value}/api/sessions/${durableSessionId.value.encodeURLPathPart()}",
         ) {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             profile?.takeIf { it != "default" }?.let { parameter("profile", it) }
         }
         response.readBodyTextBounded()
@@ -870,7 +875,7 @@ class HttpHermesConnectionClient(
             throw IllegalArgumentException("Session profile is invalid")
         }
         val response = client.post("${serverOrigin.value}/api/sessions/bulk-delete") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             contentType(ContentType.Application.Json)
             setBody(
                 json.encodeToString(
@@ -910,7 +915,7 @@ class HttpHermesConnectionClient(
         val boundedQuery = query.trim().take(256)
         if (boundedQuery.isEmpty()) return emptyList()
         val response = client.get("${serverOrigin.value}/api/sessions/search") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("q", boundedQuery)
             parameter("limit", 20)
             profile?.let { parameter("profile", it) }
@@ -939,7 +944,7 @@ class HttpHermesConnectionClient(
         serverOrigin: ServerOrigin,
         accessToken: String,
     ): List<String> {
-        val response = client.get("${serverOrigin.value}/api/profiles") { bearerAuth(accessToken) }
+        val response = client.get("${serverOrigin.value}/api/profiles") { hermesAuth(accessToken) }
         val body = response.readBodyTextBounded()
         if (!response.status.isSuccess()) {
             throw HermesConnectionException("Hermes profiles returned HTTP ${response.status.value}")
@@ -962,7 +967,7 @@ class HttpHermesConnectionClient(
         val boundedProfile = profile.trim().takeIf { it.isNotEmpty() && it.length <= 64 }
             ?: throw HermesConnectionException("Hermes model options profile is invalid")
         val response = client.get("${serverOrigin.value}/api/model/options") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", boundedProfile)
             parameter("explicit_only", 1)
         }
@@ -1009,7 +1014,7 @@ class HttpHermesConnectionClient(
         val boundedProfile = profile.trim().takeIf { it.isNotEmpty() && it.length <= 64 }
             ?: throw HermesConnectionException("Hermes model info profile is invalid")
         val response = client.get("${serverOrigin.value}/api/model/info") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", boundedProfile)
         }
         val body = response.readBodyTextBounded()
@@ -1045,7 +1050,7 @@ class HttpHermesConnectionClient(
         model: String,
     ): String? {
         val response = client.get("${serverOrigin.value}/api/config") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", profile.take(64))
         }
         val body = response.readBodyTextBounded()
@@ -1085,7 +1090,7 @@ class HttpHermesConnectionClient(
         profile: String,
     ): String? {
         val response = client.get("${serverOrigin.value}/api/config") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", profile.take(64))
         }
         val body = response.readBodyTextBounded()
@@ -1107,7 +1112,7 @@ class HttpHermesConnectionClient(
         options: ModelOptions,
     ): Map<ModelSelection, String> {
         val response = client.get("${serverOrigin.value}/api/config") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", profile.take(64))
         }
         val body = response.readBodyTextBounded()
@@ -1155,7 +1160,7 @@ class HttpHermesConnectionClient(
         val canonicalEffort = canonicalProfileReasoningEffort(effort)
             ?: throw HermesConnectionException("Hermes reasoning effort is invalid")
         val response = client.put("${serverOrigin.value}/api/config") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", boundedProfile)
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject {
@@ -1192,7 +1197,7 @@ class HttpHermesConnectionClient(
         // portal slug (e.g. "nous") and must not be prepended.
         val overrideKey = model
         val response = client.put("${serverOrigin.value}/api/config") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", boundedProfile)
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject {
@@ -1221,7 +1226,7 @@ class HttpHermesConnectionClient(
         confirmExpensiveModel: Boolean,
     ): ModelSwitchResult {
         val response = client.post("${serverOrigin.value}/api/model/set") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", profile.take(64))
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject {
@@ -1254,7 +1259,7 @@ class HttpHermesConnectionClient(
         val response = client.post(
             "${serverOrigin.value}/api/cron/jobs/${boundedJobId.encodeURLPathPart()}/trigger",
         ) {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", boundedProfile)
         }
         val body = response.readBodyTextBounded(MAX_CRON_RESPONSE_BODY_BYTES)
@@ -1283,7 +1288,7 @@ class HttpHermesConnectionClient(
         val response = client.get(
             "${serverOrigin.value}/api/cron/jobs/${boundedJobId.encodeURLPathPart()}/runs",
         ) {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
             parameter("profile", boundedProfile)
             parameter("limit", boundedLimit)
         }
@@ -1455,7 +1460,7 @@ class HttpHermesConnectionClient(
         accessToken: String,
     ): String {
         val response = client.get("${serverOrigin.value}/api/auth/me") {
-            bearerAuth(accessToken)
+            hermesAuth(accessToken)
         }
         if (!response.status.isSuccess()) {
             response.readBodyTextBounded()

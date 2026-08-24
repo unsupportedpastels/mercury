@@ -268,6 +268,37 @@ class HermesChatGatewayTest {
     }
 
     @Test
+    fun connectsWithBlankAccessTokenForCookieBackedBasicAuth() = runTest {
+        // Basic auth is cookie-backed: the access token is deliberately blank and
+        // the WebSocket ticket is minted from the shared client's session cookie.
+        // The gateway must NOT reject a blank token — doing so broke project-tree
+        // and chat loading under basic auth (they threw before any request).
+        val ticketClient = RecordingTicketClient("ticket-cookie")
+        val socket = ScriptedSocket()
+        val socketFactory = RecordingSocketFactory(socket)
+
+        val gateway = HermesChatGateway(
+            origin = ServerOrigin.parse("https://hermes.example"),
+            accessToken = "",
+            ticketClient = ticketClient,
+            socketFactory = socketFactory,
+            parentScope = backgroundScope,
+        )
+        val connection = gateway.connect()
+
+        // The (blank) token is still forwarded to the ticket client, which omits
+        // the bearer header for a blank value and relies on the session cookie.
+        assertEquals(listOf(""), ticketClient.accessTokens)
+        assertEquals(
+            listOf("wss://hermes.example/api/ws?ticket=ticket-cookie"),
+            socketFactory.urls,
+        )
+
+        connection.close()
+    }
+
+
+    @Test
     fun connectsToHttpOriginUsingUnencryptedWebSocketTransport() = runTest {
         val socket = ScriptedSocket()
         val socketFactory = RecordingSocketFactory(socket)
