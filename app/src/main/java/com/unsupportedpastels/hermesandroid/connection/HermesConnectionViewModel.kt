@@ -49,6 +49,7 @@ import com.unsupportedpastels.hermesandroid.gateway.HermesChatResponseStatus
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatGateway
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatSession
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatTransportException
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatUnauthorizedException
 import com.unsupportedpastels.hermesandroid.gateway.HermesGatewaySnapshot
 import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryListing
 import com.unsupportedpastels.hermesandroid.gateway.RecentSessionsState
@@ -139,6 +140,11 @@ private const val MAX_SESSION_TITLE_CHARS = 256
 private const val SLASH_COMPLETION_DEBOUNCE_MS = 60L
 private const val OPERATIONAL_STATUS_POLL_INTERVAL_MILLIS = 60_000L
 private const val RECENT_SESSIONS_PAGE_SIZE = 20
+// Consecutive HTTP-503 auth-provider-unavailable connect failures tolerated
+// (with a silent reconnect) before the client stops looping and surfaces a
+// recoverable sign-in prompt. Small enough that the user isn't stuck for long,
+// large enough to ride out a genuinely brief upstream-IDP blip.
+private const val MAX_AUTH_503_BEFORE_SIGN_IN = 3
 
 internal suspend fun <Probe, SavedToken : Any> probeAndLoadSavedTokenConcurrently(
     probe: suspend () -> Probe,
@@ -379,6 +385,14 @@ class HermesConnectionViewModel(
     // settings change. Cleared only when the active origin actually changes.
     private var lastReadySettings: ServerSettingsState.Ready? = null
     private var foregroundReconnectJob: Job? = null
+    // Consecutive auth-provider-unavailable (HTTP 503) failures on the connect
+    // path. A single 503 is a transient upstream-IDP blip worth a silent retry,
+    // but a *persistent* 503 is indistinguishable, from the client, from a
+    // server that will never validate this session's token again. After
+    // MAX_AUTH_503_BEFORE_SIGN_IN consecutive 503s we stop looping "reconnecting"
+    // and surface a recoverable sign-in prompt so the user can obtain a fresh
+    // token. Reset on any successful connect or a terminal auth outcome.
+    private var consecutiveAuthProviderUnavailable = 0
     private val chatJobs = mutableMapOf<DurableSessionId, Job>()
     private val chatOperationGenerations = mutableMapOf<DurableSessionId, Long>()
     private val liveControllers = mutableMapOf<DurableSessionId, LiveChatController>()
@@ -597,6 +611,11 @@ class HermesConnectionViewModel(
         val settings = lastReadySettings ?: return
         if (activeOrigin != settings.activeOrigin) return
         if (mutableSnapshots.value.connectionState == ConnectionState.Connecting) return
+        // A deliberate sign-in prompt (e.g. after persistent auth-provider 503s)
+        // must not be silently overwritten by an auto-reconnect: the user needs
+        // to complete sign-in to mint a fresh token. Leave the sign-in state in
+        // place; the sign-in flow drives the next connect.
+        if (mutableSnapshots.value.authenticationState == AuthenticationState.SignInRequired) return
         val currentGeneration = ++generation
         connectionJob?.cancel()
         val job = viewModelScope.launch {
@@ -747,15 +766,33 @@ class HermesConnectionViewModel(
                 return
             }
 
-            val usableTokens = stored?.let { refreshIfNeeded(serverOrigin, it) }
+            // Route the establishment refresh through the SAME serialization
+            // (tokenRefreshMutex) every other caller uses. After an outage the app
+            // wakes several drivers at once — foreground reconnect, live-chat
+            // recovery, and this establishment connect — and refreshing here
+            // OUTSIDE the lock let two of them each spend the single-use rotated
+            // refresh token: one rotated RT1->RT2 and won, the loser presented the
+            // now-consumed RT1 and got 401 session_expired, flip-flopping forever
+            // (16.9k refresh failures / 3k successes observed). Seeding activeTokens
+            // first lets refreshAndPublishTokensLocked refresh, persist, and publish
+            // the rotation atomically under the mutex; a terminal expiry surfaces as
+            // NativeRefreshExpiredException (handled below -> clean sign-in).
+            val usableTokens = if (stored != null) {
+                activeTokens = ActiveTokenRecord(serverOrigin, currentGeneration, stored)
+                accessTokenForRequest(serverOrigin, currentGeneration)
+                currentCoroutineContext().ensureActive()
+                if (generation != currentGeneration || activeOrigin != serverOrigin) return
+                activeTokens
+                    ?.takeIf { it.origin == serverOrigin && it.generation == currentGeneration }
+                    ?.tokens
+            } else {
+                null
+            }
             currentCoroutineContext().ensureActive()
             if (generation != currentGeneration || activeOrigin != serverOrigin) return
             if (usableTokens != null) {
-                if (store != null && usableTokens != stored) {
-                    store.save(serverOrigin, usableTokens)
-                    currentCoroutineContext().ensureActive()
-                    if (generation != currentGeneration || activeOrigin != serverOrigin) return
-                }
+                // refreshAndPublishTokensLocked already persisted and published any
+                // rotation under the mutex, so no extra store.save is needed here.
                 val authenticated: AuthenticatedHermesConnection
                 val prefetchedSession: HermesChatSession?
                 if (projectConnector != null) {
@@ -791,6 +828,7 @@ class HermesConnectionViewModel(
                     return
                 }
                 activeTokens = ActiveTokenRecord(serverOrigin, currentGeneration, usableTokens)
+                consecutiveAuthProviderUnavailable = 0
                 mutableSnapshots.value = HermesGatewaySnapshot(
                     connectionState = ConnectionState.Connected,
                     authenticationState = AuthenticationState.Authenticated,
@@ -834,22 +872,54 @@ class HermesConnectionViewModel(
             throw cancelled
         } catch (_: NativeRefreshExpiredException) {
             if (generation != currentGeneration || activeOrigin != serverOrigin) return
+            consecutiveAuthProviderUnavailable = 0
             tokenStore?.clear(serverOrigin)
             activeTokens = null
             disconnectChat()
             publishSignInRequired()
         } catch (_: HermesAuthenticationRejectedException) {
             if (generation != currentGeneration || activeOrigin != serverOrigin) return
+            consecutiveAuthProviderUnavailable = 0
             tokenStore?.clear(serverOrigin)
             activeTokens = null
             disconnectChat()
             publishSignInRequired()
-        } catch (_: Exception) {
+        } catch (error: Exception) {
             if (generation != currentGeneration || activeOrigin != serverOrigin) return
-            mutableSnapshots.value = mutableSnapshots.value.copy(
-                connectionState = ConnectionState.Disconnected,
-                connectionError = "Could not reach Hermes Serve",
-            )
+            val isAuthProviderUnavailable =
+                error is HermesAuthProviderUnavailableException ||
+                    error is NativeRefreshTransientException
+            if (isAuthProviderUnavailable) {
+                // The server's auth provider is unavailable (HTTP 503) — from
+                // /api/auth/me (HermesAuthProviderUnavailableException) or the
+                // token refresh (NativeRefreshTransientException). The transport
+                // is healthy and the token may be valid, so a single 503 is a
+                // transient blip we retry silently as a normal disconnect. But a
+                // *persistent* 503 is, from the client's side, indistinguishable
+                // from a server that will never validate this session's token
+                // again (e.g. an upstream-IDP classification bug). Rather than
+                // loop "reconnecting" forever with no escape, after
+                // MAX_AUTH_503_BEFORE_SIGN_IN consecutive 503s we clear the
+                // (possibly poisoned) token and surface a recoverable sign-in.
+                consecutiveAuthProviderUnavailable += 1
+                if (consecutiveAuthProviderUnavailable >= MAX_AUTH_503_BEFORE_SIGN_IN) {
+                    consecutiveAuthProviderUnavailable = 0
+                    tokenStore?.clear(serverOrigin)
+                    activeTokens = null
+                    disconnectChat()
+                    publishSignInRequired()
+                } else {
+                    mutableSnapshots.value = mutableSnapshots.value.copy(
+                        connectionState = ConnectionState.Disconnected,
+                        connectionError = "Hermes authentication is temporarily unavailable",
+                    )
+                }
+            } else {
+                mutableSnapshots.value = mutableSnapshots.value.copy(
+                    connectionState = ConnectionState.Disconnected,
+                    connectionError = "Could not reach Hermes Serve",
+                )
+            }
         }
     }
 
@@ -2933,6 +3003,14 @@ class HermesConnectionViewModel(
                     disconnectChat()
                     publishSignInRequired()
                 }
+            } catch (_: HermesChatUnauthorizedException) {
+                // A ws-ticket/connect 401 despite a just-refreshed access token means
+                // the session is terminally rejected — drop to a clean sign-in rather
+                // than spinning recovery against a credential the server won't accept.
+                if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
+                    disconnectChat()
+                    publishSignInRequired()
+                }
             } catch (error: Exception) {
                 if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return@launch
                 if (stagingFailed) {
@@ -4626,6 +4704,16 @@ class HermesConnectionViewModel(
                 closeChatSessionNonCancellably(candidate)
                 throw cancelled
             } catch (_: NativeRefreshExpiredException) {
+                closeChatSessionNonCancellably(candidate)
+                if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
+                    disconnectChat()
+                    publishSignInRequired()
+                }
+                return
+            } catch (_: HermesChatUnauthorizedException) {
+                // Ticket/connect 401 during recovery: the session is terminally
+                // rejected. Stop the backoff loop and drop to sign-in instead of
+                // retrying a credential the server will never accept.
                 closeChatSessionNonCancellably(candidate)
                 if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                     disconnectChat()

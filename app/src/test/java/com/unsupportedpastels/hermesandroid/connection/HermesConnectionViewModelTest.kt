@@ -572,6 +572,75 @@ class HermesConnectionViewModelTest {
     }
 
     @Test
+    fun singleAuthProvider503RetriesSilentlyWithoutForcingSignIn() = runTest(dispatcher) {
+        // One HTTP-503 on the auth path is a transient upstream-IDP blip: the
+        // client should surface a normal Disconnected (silent-retry) state, NOT
+        // force a sign-in and NOT clear the token.
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val client = AuthenticatingHermesConnectionClient()
+        client.authenticateFailure = HermesAuthProviderUnavailableException()
+        val tokenStore = FixedTokenStore()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = settings,
+            client = client,
+            tokenStore = tokenStore,
+        )
+
+        runCurrent()
+        client.probeResponse.complete(authRequiredInfo())
+        advanceUntilIdle()
+
+        val snapshot = viewModel.snapshots.value
+        assertEquals(ConnectionState.Disconnected, snapshot.connectionState)
+        assertTrue(snapshot.authenticationState != AuthenticationState.SignInRequired)
+        assertEquals(0, tokenStore.clearCalls)
+    }
+
+    @Test
+    fun persistentAuthProvider503SurfacesRecoverableSignInInsteadOfLoopingForever() =
+        runTest(dispatcher) {
+            // A PERSISTENT 503 on the auth path is, from the client's side,
+            // indistinguishable from a server that will never validate this
+            // session's token again (the gateway<->thin-client auth race where a
+            // malformed token is misclassified as provider-unavailable). Rather
+            // than loop "reconnecting" forever with no escape, after a small bound
+            // of consecutive 503s the client must clear the poisoned token and
+            // surface a recoverable sign-in prompt.
+            val origin = ServerOrigin.parse("https://hermes.example")
+            val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+            val client = AuthenticatingHermesConnectionClient()
+            client.authenticateFailure = HermesAuthProviderUnavailableException()
+            val tokenStore = FixedTokenStore()
+            val viewModel = HermesConnectionViewModel(
+                settingsStates = settings,
+                client = client,
+                tokenStore = tokenStore,
+            )
+
+            runCurrent()
+            client.probeResponse.complete(authRequiredInfo())
+            advanceUntilIdle()
+
+            // First failure: silent retry, still not sign-in.
+            assertTrue(
+                viewModel.snapshots.value.authenticationState != AuthenticationState.SignInRequired,
+            )
+
+            // Drive additional connect attempts (as foreground/manual retry would)
+            // until the bound is exceeded. The client tolerates a few consecutive
+            // 503s before escalating; a handful of retries reliably crosses it.
+            repeat(4) {
+                viewModel.retryConnection().join()
+                advanceUntilIdle()
+            }
+
+            val snapshot = viewModel.snapshots.value
+            assertEquals(AuthenticationState.SignInRequired, snapshot.authenticationState)
+            assertTrue("token must be cleared so a fresh one can be minted", tokenStore.clearCalls >= 1)
+        }
+
+    @Test
     fun unsupportedProjectMetadataPreservesAuthenticatedFlatSessions() = runTest(dispatcher) {
         val origin = ServerOrigin.parse("https://hermes.example")
         val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
@@ -2714,6 +2783,73 @@ class HermesConnectionViewModelTest {
     }
 
     @Test
+    fun establishmentRefreshWithExpiringTokenRotatesOnceThroughSerializedPath() = runTest(dispatcher) {
+        // Regression: connect()'s establishment refresh used to run OUTSIDE
+        // tokenRefreshMutex, letting a post-outage wake-up race double-spend the
+        // single-use refresh token. It now routes through the same serialized
+        // refresh/publish helper. With an access token already expiring at connect
+        // time, establishment must refresh exactly once, persist the rotated
+        // refresh token, and reach Authenticated (never a spurious sign-in).
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val now = 2_000_000_000L
+        var storedTokens = NativeTokenSet(
+            accessToken = "initial-access",
+            refreshToken = "opaque-refresh",
+            expiresAt = now, // already at expiry -> establishment must refresh
+            provider = "nous",
+            userId = "user",
+        )
+        var currentRefreshToken = "opaque-refresh"
+        var refreshCalls = 0
+        val tokenStore = object : NativeTokenStore {
+            override suspend fun load(serverOrigin: ServerOrigin) = storedTokens
+            override suspend fun save(serverOrigin: ServerOrigin, tokens: NativeTokenSet) {
+                storedTokens = tokens
+            }
+            override suspend fun clear(serverOrigin: ServerOrigin) = Unit
+        }
+        val refreshClient = object : NativeRefreshClient {
+            override suspend fun refresh(
+                serverOrigin: ServerOrigin,
+                refreshToken: String,
+                provider: String,
+            ): NativeTokenSet {
+                refreshCalls += 1
+                // Single-use rotation: presenting a burned token must fail.
+                if (refreshToken != currentRefreshToken) throw NativeRefreshExpiredException()
+                currentRefreshToken = "rotated-refresh"
+                return storedTokens.copy(
+                    accessToken = "refreshed-access",
+                    refreshToken = currentRefreshToken,
+                    expiresAt = 2_100_000_000L,
+                )
+            }
+        }
+        val client = AuthenticatingHermesConnectionClient()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = settings,
+            client = client,
+            tokenStore = tokenStore,
+            refreshClient = refreshClient,
+            nowEpochSeconds = { now },
+        )
+
+        runCurrent()
+        client.probeResponse.complete(authRequiredInfo())
+        runCurrent()
+        client.authenticationResponse.complete(AuthenticatedHermesConnection("user", emptyList()))
+        advanceUntilIdle()
+
+        assertEquals(1, refreshCalls)
+        assertEquals(AuthenticationState.Authenticated, viewModel.snapshots.value.authenticationState)
+        assertEquals("refreshed-access", storedTokens.accessToken)
+        assertEquals("rotated-refresh", storedTokens.refreshToken)
+        // The token the server accepted must have been the rotated one.
+        assertEquals("refreshed-access", client.authenticatedWith)
+    }
+
+    @Test
     fun lateProjectSessionsFromOldOriginAreRejectedAndMetadataSessionCloses() = runTest(dispatcher) {
         val originA = ServerOrigin.parse("https://a.example")
         val originB = ServerOrigin.parse("https://b.example")
@@ -3309,6 +3445,7 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
     val authenticationResponse = CompletableDeferred<AuthenticatedHermesConnection>()
     var authenticatedWith: String? = null
     var authenticateCalls = 0
+    var authenticateFailure: Throwable? = null
     var authenticatedSessionsOverride: List<SessionSummary>? = null
     val authenticateBarriers = ArrayDeque<CompletableDeferred<Unit>>()
     var hostDirectoryResponse = HostDirectoryListing("/srv", emptyList())
@@ -3388,6 +3525,7 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
         authenticateCalls += 1
         authenticatedWith = accessToken
         authenticateBarriers.firstOrNull()?.let { it.await() }
+        authenticateFailure?.let { throw it }
         val authenticated = authenticationResponse.await()
         return authenticatedSessionsOverride?.let { authenticated.copy(sessions = it) } ?: authenticated
     }
