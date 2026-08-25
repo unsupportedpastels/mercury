@@ -279,6 +279,24 @@ class HermesUnauthorizedException(
     message: String = "Hermes request returned HTTP 401",
 ) : HermesConnectionException(message)
 
+/**
+ * The server could not validate credentials because its auth provider was
+ * unavailable — HTTP 503 on an authenticated path (`/api/auth/me`,
+ * `/auth/native/refresh`). This is neither a bad credential (401) nor an
+ * unreachable host: the transport is fine and the token may be perfectly valid,
+ * but the server's upstream IDP check is failing transiently.
+ *
+ * It MUST be distinguished from a plain transport failure so the connect layer
+ * can bound its retries and surface a recoverable, user-actionable state
+ * (re-sign-in) instead of looping "reconnecting" forever. A persistent 503 here
+ * is indistinguishable, from the client, from a server that will never recover
+ * this session's token — so after a few attempts we stop silently retrying and
+ * let the user re-authenticate to obtain a fresh token.
+ */
+class HermesAuthProviderUnavailableException(
+    message: String = "Hermes auth provider is temporarily unavailable (HTTP 503)",
+) : HermesConnectionException(message)
+
 enum class CronRestEndpoint {
     Trigger,
     Runs,
@@ -1468,6 +1486,15 @@ class HttpHermesConnectionClient(
             if (response.status.value == 401 || response.status.value == 403) {
                 throw HermesAuthenticationRejectedException(message)
             }
+            // 503 = server's auth provider (upstream IDP) is unavailable. The
+            // transport is fine and the token may be valid; distinguish it so
+            // connect() can bound retries and offer re-sign-in instead of an
+            // endless silent "reconnecting" loop.
+            if (response.status.value == 503) {
+                throw HermesAuthProviderUnavailableException(
+                    "Hermes authentication provider unavailable (HTTP 503)",
+                )
+            }
             throw HermesConnectionException(message)
         }
         val user = json.decodeFromString<HermesAuthenticatedUser>(
@@ -1854,6 +1881,15 @@ class HttpHermesConnectionClient(
                 (sessionsResponse.status.value == 401 || sessionsResponse.status.value == 403)
             ) {
                 throw HermesAuthenticationRejectedException(message)
+            }
+            // 503 = server's auth provider (upstream IDP) is unavailable. The
+            // connect() path reaches this via authenticate(); classify it so the
+            // connect layer can bound retries and offer re-sign-in instead of an
+            // endless silent "reconnecting" loop (parity with loadAuthenticatedUser).
+            if (sessionsResponse.status.value == 503) {
+                throw HermesAuthProviderUnavailableException(
+                    "Hermes authentication provider unavailable (HTTP 503)",
+                )
             }
             throw HermesConnectionException(message)
         }

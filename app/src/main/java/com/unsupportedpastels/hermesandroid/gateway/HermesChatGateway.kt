@@ -125,6 +125,18 @@ class HermesChatTransportException(
     cause: Throwable? = null,
 ) : HermesChatException(message, cause)
 
+/**
+ * An authenticated Hermes request was rejected with HTTP 401/403. Distinct from
+ * [HermesChatTransportException]: the transport is healthy but the presented
+ * access token is stale/rejected, so callers must refresh or drop to sign-in
+ * rather than blindly retrying the same token — retrying spins a reconnect loop
+ * against a credential the server will never accept.
+ */
+class HermesChatUnauthorizedException(
+    message: String = "Hermes rejected the request as unauthorized",
+    cause: Throwable? = null,
+) : HermesChatException(message, cause)
+
 data class ResumedChatSession(
     val runtimeSessionId: RuntimeSessionId,
     val durableSessionId: DurableSessionId?,
@@ -1969,6 +1981,15 @@ class KtorWsTicketClient(
             }
             val body = response.readBodyTextBounded(MAX_TICKET_RESPONSE_BYTES)
             if (!response.status.isSuccess()) {
+                // 401/403 means the presented access token is stale/rejected — an
+                // auth condition a refresh or sign-in must heal. Surfacing it as a
+                // transport error spins the reconnect/recovery loop against a token
+                // the server will never accept (the outage-reconnect wedge).
+                if (response.status.value == 401 || response.status.value == 403) {
+                    throw HermesChatUnauthorizedException(
+                        "Hermes ticket request was unauthorized (HTTP ${response.status.value})",
+                    )
+                }
                 throw HermesChatTransportException(
                     "Hermes ticket request returned HTTP ${response.status.value}",
                 )

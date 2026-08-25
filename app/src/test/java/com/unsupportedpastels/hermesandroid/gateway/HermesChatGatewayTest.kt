@@ -7,6 +7,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.HttpMethod
 import io.ktor.http.headersOf
 import kotlinx.coroutines.CancellationException
@@ -1312,6 +1313,64 @@ class HermesChatGatewayTest {
 
         assertEquals("fresh-ticket", ticket.ticket)
         assertEquals(30, ticket.ttlSeconds)
+        client.close()
+    }
+
+    @Test
+    fun mintTicketMapsUnauthorizedToUnauthorizedNotTransport() = runTest {
+        // A 401 on /api/auth/ws-ticket means the access token is stale/rejected —
+        // an auth condition a refresh or sign-in must heal, NOT a retryable
+        // transport drop. Classifying it as transport spins the reconnect loop
+        // against a token the server will never accept (outage-reconnect wedge).
+        for (status in listOf(HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden)) {
+            val engine = MockEngine {
+                respond(
+                    content = "",
+                    status = status,
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+            }
+            val client = HttpClient(engine)
+            val error = runCatching {
+                KtorWsTicketClient(client).mintTicket(
+                    origin = ServerOrigin.parse("https://hermes.example"),
+                    accessToken = "stale-access",
+                )
+            }.exceptionOrNull()
+            assertTrue(
+                "status=$status should map to HermesChatUnauthorizedException, was $error",
+                error is HermesChatUnauthorizedException,
+            )
+            assertFalse(
+                "unauthorized must not also be a transport error",
+                error is HermesChatTransportException,
+            )
+            client.close()
+        }
+    }
+
+    @Test
+    fun mintTicketMapsServerErrorToTransport() = runTest {
+        // 5xx / other non-2xx remain retryable transport failures.
+        val engine = MockEngine {
+            respond(
+                content = "",
+                status = HttpStatusCode.ServiceUnavailable,
+                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+        val client = HttpClient(engine)
+        val error = runCatching {
+            KtorWsTicketClient(client).mintTicket(
+                origin = ServerOrigin.parse("https://hermes.example"),
+                accessToken = "opaque-access",
+            )
+        }.exceptionOrNull()
+        assertTrue(
+            "5xx should stay transport, was $error",
+            error is HermesChatTransportException,
+        )
+        assertFalse(error is HermesChatUnauthorizedException)
         client.close()
     }
 
