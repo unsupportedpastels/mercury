@@ -17,7 +17,7 @@
 - Responds to tool approvals, clarify questions, and secret prompts from the phone; parked requests return correctly after a reconnect.
 - Opens artifacts and browses host files the agent produced, with images and documents rendered natively.
 - Shares images, PDFs, and text from any Android app straight into a session — staged in the composer for review, never auto-sent.
-- Supports native Nous OAuth with system-browser PKCE, origin-scoped encrypted credentials, refresh, and reconnect/reconciliation.
+- Supports native Nous OAuth with system-browser PKCE and cookie-backed username/password basic auth, with origin-scoped encrypted credentials, refresh, and reconnect/reconciliation.
 - Adapts cleanly across compact phones, Fold cover screens, unfolded layouts, split screen, freeform windows, and DeX.
 - Preserves a Mercury-started live turn when you navigate away; it does not take over or close another client's runtime.
 - Speaks and listens through your server's audited voice stack: app-owned dictation into the composer with a stop control, per-message read-aloud, streaming speech that overlaps generation, and a hands-free voice conversation with spoken stop phrases and barge-in. Voice controls appear only when the connected server exposes the official `/api/audio/…` routes, audio is never persisted on the device, and the microphone permission is requested only when you first use voice.
@@ -52,19 +52,24 @@ Mercury uses the available window and posture — not a device name or orientati
 
 Mercury is a client, not an agent host. Install and configure Hermes Agent on a machine you control (or deploy an always-on **Hermes Cloud** instance from the [Nous Portal](https://portal.nousresearch.com/cloud)), then keep a compatible Hermes backend running before connecting from Android. The host remains authoritative for your agent, tools, files, sessions, and data.
 
-Both paths authenticate the same way — **Sign in with Nous**. Mercury's Connect screen has two modes:
+For a self-hosted server, Mercury detects the authentication providers advertised by the backend and shows the matching sign-in option:
+
+- **Nous OAuth** — system-browser PKCE through Nous Portal. This is the recommended choice for any host reachable beyond your trusted network.
+- **Username & password (basic auth)** — cookie-backed sign-in for a host on a trusted LAN, VPN, or Tailscale network.
 
 - **Hermes Cloud** — sign in once to Nous Portal and pick from the agents on your account; no URL to paste. Mercury discovers your deployed [Hermes Cloud](https://portal.nousresearch.com/cloud) agents automatically and connects to the one you choose. Multi-org accounts get an org picker.
 - **Server URL** — enter the HTTP/HTTPS origin of a Hermes host you run yourself. Use this for self-hosting (below) or to connect to a known instance by hand.
 
 The rest of this section covers self-hosting.
 
-### Self-hosted authentication: Nous OAuth is required
+### Self-hosted authentication: OAuth or basic username/password
 
-Mercury signs in through the Nous Portal (system-browser PKCE), so your host's dashboard must advertise **Nous OAuth**. A username/password (`dashboard.basic_auth`) setup will NOT work: Mercury reaches the server but shows *"Server reachable · Sign in required"* with no way to sign in.
+Mercury supports both authentication modes when the Hermes backend advertises them. Choose **Nous OAuth** for a public or otherwise internet-reachable host. Choose **basic username/password** for a trusted LAN, VPN, or Tailscale connection.
+
+#### Nous OAuth
 
 1. Check the agent's Nous login on the host: `hermes auth status`. If not logged in, run `hermes portal` first.
-2. Register the dashboard's OAuth client: `hermes dashboard register`. This provisions a Nous Portal client and writes `HERMES_DASHBOARD_OAUTH_CLIENT_ID` to `~/.hermes/.env`. If Hermes prompts you to choose an auth provider, **do not pick username & password**.
+2. Register the dashboard's OAuth client: `hermes dashboard register`. This provisions a Nous Portal client and writes `HERMES_DASHBOARD_OAUTH_CLIENT_ID` to `~/.hermes/.env`.
 3. Restart the dashboard so it picks up the registered client.
 4. Verify from the host:
 
@@ -74,11 +79,25 @@ Mercury signs in through the Nous Portal (system-browser PKCE), so your host's d
 
    The JSON must show `"auth_required": true`, list `nous` in `auth_providers`, and list `native_pkce` in `auth_flows`. If `nous` is missing, repeat step 2 before continuing.
 
+#### Basic username/password
+
+Configure the bundled basic provider in `~/.hermes/.env` (keep the file mode `0600`):
+
+```dotenv
+HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
+HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=<long-unique-password>
+HERMES_DASHBOARD_BASIC_AUTH_SECRET=<stable-random-signing-secret>
+```
+
+Use `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH` instead of the plaintext password when you prefer a scrypt hash at rest. Restart the dashboard after changing the credentials. The backend should advertise `"basic"` in `auth_providers`, and `GET /api/auth/providers` should report `supports_password: true`; Mercury will then show **Sign in with username and password**.
+
+Basic auth is intended for a trusted LAN, VPN, or Tailscale network. If you intentionally expose a basic-auth backend to the open internet, stop and reconsider OAuth first; if you continue, use a long, unique, randomly generated password, HTTPS, and a strong network boundary. Never reuse the password elsewhere.
+
 ### Recommended public access: HTTPS through Cloudflare Tunnel
 
 For a remote phone connection, keep Hermes bound to loopback and publish only a public HTTPS hostname through a named [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/). Do not expose port 9119 directly to the internet.
 
-1. Configure authentication per [Self-hosted authentication](#self-hosted-authentication-nous-oauth-is-required) above — Nous OAuth, not a shared password. Follow the current [Hermes remote-backend documentation](https://hermes-agent.nousresearch.com/docs/user-guide/desktop#connecting-to-a-remote-backend).
+1. Configure authentication per [Self-hosted authentication](#self-hosted-authentication-oauth-or-basic-usernamepassword) above. OAuth is recommended for public access; basic auth is supported for a trusted network. Follow the current [Hermes remote-backend documentation](https://hermes-agent.nousresearch.com/docs/user-guide/desktop#connecting-to-a-remote-backend).
 2. Start the recommended Dashboard backend on the host and keep it supervised by your service manager:
 
    ```bash
@@ -110,11 +129,11 @@ Cloudflare terminates public TLS while the tunnel carries traffic back to the lo
 
 If the phone and Hermes host belong to the same Tailnet, [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) is a private alternative to publishing a public hostname. Keep Hermes authentication enabled, expose it with Tailscale Serve, and enter the exact HTTPS `.ts.net` address reported by `tailscale serve status` in Mercury. Install and sign in to Tailscale on the phone before connecting.
 
-Tailscale is appropriate for private Tailnet-only access; use the Cloudflare plus OAuth path when the host must be reachable outside the Tailnet. Do not use plain HTTP or expose port 9119 directly to the internet.
+Tailscale is appropriate for private Tailnet-only access; basic auth is a good fit there. Use the Cloudflare plus OAuth path when the host must be reachable outside the Tailnet. Do not use plain HTTP or expose port 9119 directly to the internet.
 
 ### Already running the dashboard for the desktop app?
 
-If you've already run `hermes dashboard` with Nous Portal auth for the Hermes desktop app, you're set — just make sure it's bound to an address your phone can reach (not `127.0.0.1`) and go straight to Mercury's Connect screen. Verify the surface Mercury needs with `GET /api/status`: it should report `auth_required: true`, list `nous` in `auth_providers`, and list `native_pkce` in `auth_flows`. If `nous` is missing from `auth_providers`, run `hermes dashboard register` on the host — a username/password setup will not work.
+If you've already run `hermes dashboard` with Nous OAuth or basic auth for the Hermes desktop app, you're set — just make sure it's bound to an address your phone can reach (not `127.0.0.1`) and go straight to Mercury's Connect screen. Verify the surface Mercury needs with `GET /api/status`: it should report `auth_required: true`; OAuth should list `nous` in `auth_providers` and `native_pkce` in `auth_flows`, while basic auth should list `basic` in `auth_providers` and report `supports_password: true` from `GET /api/auth/providers`.
 
 ### Keeping it available and troubleshooting
 
@@ -132,7 +151,7 @@ These are connection examples, not a server provisioner: Mercury does not create
 
 1. Download the [latest signed APK](https://github.com/unsupportedpastels/mercury/releases/latest) (Android 10+ / API 29).
 2. Tap the file and allow installs from your browser when Android asks.
-3. On first launch, enter your server origin and **Sign in with Nous**.
+3. On first launch, enter your server origin and complete the authentication flow the server advertises — Nous OAuth or username/password basic auth.
 
 Releases are built and signed in CI. Verify the signature with `apksigner verify --verbose` before installing if you like. A Play Store listing is in progress; until then the signed APK on GitHub Releases is the official build. The sideload APK and a future Play install are signed differently and won't upgrade over each other.
 
