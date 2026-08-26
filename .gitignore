@@ -32,3 +32,6 @@ local.properties
 # Keep them in a temp directory instead (e.g. /tmp/mercury-qa-screenshots).
 /mercury-*.png
 /docs/design/mockups/mercury-project-home-*.png
+
+# Agent-authored implementation plans are local working artifacts.
+/docs/plans/
