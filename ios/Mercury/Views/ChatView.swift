@@ -165,6 +165,7 @@ struct ChatView: View {
     // MARK: Live connection
 
     @State private var connection: ChatConnection?
+    @State private var connectionOwnership = ChatConnectionOwnership()
     @State private var runtimeSessionID: String?
     /// Durable session id adopted from `session.create`'s stored_session_id
     /// once the gateway persists the new runtime session.
@@ -386,7 +387,11 @@ struct ChatView: View {
             dictation?.cancel()
             readAloud?.stop()
             eventTask?.cancel()
-            Task { await connection?.close() }
+            eventTask = nil
+            let closingConnection = connection
+            connectionOwnership.invalidate()
+            connection = nil
+            Task { await closingConnection?.close() }
         }
         .sheet(isPresented: $showModelPicker) {
             ModelPickerSheet(
@@ -789,6 +794,7 @@ struct ChatView: View {
         guard let origin = appModel.serverOrigin else { return false }
         let token = storedAccessToken(origin: origin)
 
+        var candidateConnection: ChatConnection?
         do {
             let ticketClient = WsTicketClient(session: .shared)
             let gateway = try ChatGateway(
@@ -799,29 +805,15 @@ struct ChatView: View {
             )
             // Tickets are single-use: every attempt mints a fresh one.
             let socket = try await gateway.connect()
-            let connection = try ChatConnection(socket: socket)
-            self.connection = connection
+            let candidate = try ChatConnection(socket: socket)
+            candidateConnection = candidate
+            let stream = candidate.start()
 
-            let stream = connection.start()
-            eventTask = Task { [weak connection] in
-                for await event in stream {
-                    guard connection != nil else { break }
-                    await handleEvent(event)
-                }
-                await MainActor.run {
-                    self.connection = nil
-                    self.clearSlashCompletion()
-                }
-                // Unexpected stream end (peer drop / transport death) —
-                // deliberate close() never reaches here with closedByUs false.
-                await MainActor.run {
-                    guard !closedByUs else { return }
-                    scheduleReconnect()
-                }
-            }
-
+            // Keep the candidate private until create/resume proves it owns a
+            // valid runtime. Publishing earlier lets a failed or stale attempt
+            // clear a newer connection when its event stream finishes.
             if isNewSession {
-                let created = try await connection.createSession(
+                let created = try await candidate.createSession(
                     profile: nil,
                     workspacePath: newSessionWorkspacePath
                 )
@@ -835,7 +827,7 @@ struct ChatView: View {
                     appModel.markSessionEngaged(stored)
                 }
             } else {
-                let resumed = try await connection.resume(durableSessionID: sessionID, profile: nil)
+                let resumed = try await candidate.resume(durableSessionID: sessionID, profile: nil)
                 runtimeSessionID = resumed.runtimeSessionID
                 transcript.ownSessionIDs.insert(resumed.runtimeSessionID)
                 if let provider = resumed.provider, let model = resumed.model {
@@ -872,6 +864,41 @@ struct ChatView: View {
                     transcript.finishStreamingAssistant()
                 }
             }
+
+            // Task cancellation is cooperative: a socket/create/resume await
+            // may return normally after dismissal or a manual retry cancelled
+            // this attempt. Never let that stale candidate become active.
+            guard let ownershipToken = connectionOwnership.publish(
+                when: !Task.isCancelled && !closedByUs
+            ) else {
+                await candidate.close()
+                return false
+            }
+            connection = candidate
+            eventTask?.cancel()
+            eventTask = Task { [weak candidate] in
+                guard let candidate else { return }
+                for await event in stream {
+                    let stillOwnsConnection = await MainActor.run {
+                        connectionOwnership.isCurrent(ownershipToken)
+                            && connection === candidate
+                    }
+                    guard stillOwnsConnection else { break }
+                    handleEvent(event)
+                }
+                await MainActor.run {
+                    guard connectionOwnership.isCurrent(ownershipToken),
+                          connection === candidate else { return }
+                    _ = connectionOwnership.release(ifCurrent: ownershipToken)
+                    connection = nil
+                    clearSlashCompletion()
+                    // Unexpected stream end (peer drop / transport death) —
+                    // deliberate close() never reaches here with closedByUs false.
+                    guard !closedByUs else { return }
+                    scheduleReconnect()
+                }
+            }
+
             if let durableID {
                 transcript.ownSessionIDs.insert(durableID)
             }
@@ -886,7 +913,9 @@ struct ChatView: View {
             await loadProcessRows()
             return true
         } catch {
-            connection = nil
+            if let candidateConnection {
+                await candidateConnection.close()
+            }
             return false
         }
     }
