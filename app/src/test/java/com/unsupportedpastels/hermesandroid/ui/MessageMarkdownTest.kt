@@ -47,7 +47,7 @@ class MessageMarkdownTest {
 
     @Test
     fun parsesGatewayLocalMediaDirectiveAsImageBlockInsteadOfRawPath() {
-        val path = "/home/mark/project/design/generated-mockup.jpg"
+        val path = "/workspace/project/design/generated-mockup.jpg"
 
         val blocks = parseMessageMarkdown("Result:\n\nMEDIA:$path\n\nDone")
 

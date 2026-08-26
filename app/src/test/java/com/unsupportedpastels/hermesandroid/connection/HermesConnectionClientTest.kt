@@ -376,7 +376,7 @@ class HermesConnectionClientTest {
         val bytes = byteArrayOf(1, 2, 3, 4)
         val engine = MockEngine { request ->
             assertEquals("/api/files/download", request.url.encodedPath)
-            assertEquals("/home/mark/project/generated.jpg", request.url.parameters["path"])
+            assertEquals("/workspace/project/generated.jpg", request.url.parameters["path"])
             assertEquals("Bearer opaque-access", request.headers[HttpHeaders.Authorization])
             respond(
                 content = bytes,
@@ -388,7 +388,7 @@ class HermesConnectionClientTest {
         val downloaded = client.downloadManagedImage(
             ServerOrigin.parse("https://hermes.example"),
             "opaque-access",
-            "/home/mark/project/generated.jpg",
+            "/workspace/project/generated.jpg",
         )
 
         assertTrue(downloaded.contentEquals(bytes))

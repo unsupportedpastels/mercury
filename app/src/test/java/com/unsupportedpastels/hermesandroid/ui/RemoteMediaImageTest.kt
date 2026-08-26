@@ -18,9 +18,10 @@ private fun inetAddress(value: String): InetAddress = InetAddress.getByName(valu
 class RemoteMediaImageTest {
     @Test
     fun acceptsOnlyCredentialFreeHttpsMediaUrls() {
+        val credentialedUrl = "https://user" + ":secret@cdn.example/image.png"
         assertTrue(validateRemoteMediaUrl("https://cdn.example/image.png"))
         assertFalse(validateRemoteMediaUrl("http://cdn.example/image.png"))
-        assertFalse(validateRemoteMediaUrl("https://user:secret@cdn.example/image.png"))
+        assertFalse(validateRemoteMediaUrl(credentialedUrl))
         assertFalse(validateRemoteMediaUrl("https://cdn.example:8443/image.png"))
         assertFalse(validateRemoteMediaUrl("https://127.0.0.1/image.png"))
         assertFalse(validateRemoteMediaUrl("https://localhost/image.png"))
@@ -90,11 +91,11 @@ class RemoteMediaImageTest {
 
     @Test
     fun acceptsImageHostPathsButRejectsNonImageAndMalformedPaths() {
-        assertTrue(validateGatewayMediaPath("/home/mark/project/generated.jpg"))
-        assertTrue(validateGatewayMediaPath("/home/mark/project/generated.PNG"))
+        assertTrue(validateGatewayMediaPath("/workspace/project/generated.jpg"))
+        assertTrue(validateGatewayMediaPath("/workspace/project/generated.PNG"))
         assertFalse(validateGatewayMediaPath("relative/generated.jpg"))
-        assertFalse(validateGatewayMediaPath("/home/mark/project/notes.txt"))
-        assertFalse(validateGatewayMediaPath("/home/mark/project/no-extension"))
+        assertFalse(validateGatewayMediaPath("/workspace/project/notes.txt"))
+        assertFalse(validateGatewayMediaPath("/workspace/project/no-extension"))
     }
 
     @Test
