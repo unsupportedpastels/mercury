@@ -18,6 +18,13 @@ struct SignInView: View {
         appModel.authProviders.contains(where: \.supportsPassword)
     }
 
+    static func nousButtonTitle(isSigningIn: Bool, authenticationError: String?) -> String {
+        if !isSigningIn, authenticationError != nil {
+            return "Retry sign in"
+        }
+        return "Sign in with Nous"
+    }
+
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
@@ -71,7 +78,10 @@ struct SignInView: View {
                         if appModel.isSigningIn {
                             ProgressView().controlSize(.small)
                         }
-                        Text("Sign in with Nous")
+                        Text(Self.nousButtonTitle(
+                            isSigningIn: appModel.isSigningIn,
+                            authenticationError: appModel.authenticationError
+                        ))
                             .fontWeight(.semibold)
                     }
                     .frame(maxWidth: .infinity)

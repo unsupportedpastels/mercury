@@ -32,4 +32,19 @@ final class ChatConnectionOwnershipTests: XCTestCase {
         XCTAssertFalse(ownership.isCurrent(published))
         XCTAssertFalse(ownership.release(ifCurrent: published))
     }
+
+    func testActiveTurnDisappearancePreservesConnectionAndObserver() {
+        XCTAssertEqual(
+            ChatDisappearancePolicy.action(turnInFlight: true, isSending: false),
+            .preserveConnectionAndObserver
+        )
+        XCTAssertEqual(
+            ChatDisappearancePolicy.action(turnInFlight: false, isSending: true),
+            .preserveConnectionAndObserver
+        )
+        XCTAssertEqual(
+            ChatDisappearancePolicy.action(turnInFlight: false, isSending: false),
+            .tearDown
+        )
+    }
 }

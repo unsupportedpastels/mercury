@@ -98,4 +98,70 @@ final class PKCETests: XCTestCase {
         let callback = URL(string: "http://127.0.0.1:49152/callback?state=S")!
         XCTAssertThrowsError(try NativePKCEFlow.validate(callbackURL: callback, expectedState: "S"))
     }
+
+    // MARK: - Browser callback grace period
+
+    func testBrowserReturnToAppStartsGracePeriodEvenWithoutCompletionCallback() {
+        XCTAssertEqual(
+            NativePKCEFlow.callbackRaceDecision(for: .browserReturnedToApp),
+            .startGracePeriod
+        )
+    }
+
+    func testBrowserCloseStartsGracePeriodBeforeRetry() {
+        XCTAssertEqual(
+            NativePKCEFlow.callbackRaceDecision(for: .browserClosed),
+            .startGracePeriod
+        )
+    }
+
+    func testGraceExpiryFinishesWithoutCallback() {
+        XCTAssertEqual(
+            NativePKCEFlow.callbackRaceDecision(for: .graceExpired),
+            .finish(nil)
+        )
+    }
+
+    func testValidCallbackWinsDuringGracePeriod() {
+        let callback = CallbackResult(code: "fresh-code", state: "expected")
+        XCTAssertEqual(
+            NativePKCEFlow.callbackRaceDecision(for: .callback(callback)),
+            .finish(callback)
+        )
+    }
+
+    func testStateMismatchRemainsFatalThroughCallbackRace() {
+        let event = NativePKCEFlow.callbackRaceEvent(
+            for: FlowError.stateMismatch,
+            fallback: .listenerEnded
+        )
+        XCTAssertEqual(event, .fatal(.stateMismatch))
+        XCTAssertEqual(
+            NativePKCEFlow.callbackRaceDecision(for: event),
+            .fail(.stateMismatch)
+        )
+    }
+
+    @MainActor
+    func testBrowserCompletionGateCancellationResumesExactlyOnce() async {
+        let gate = BrowserAuthenticationSession.CompletionGate()
+        let waiter = Task {
+            try await withCheckedThrowingContinuation { continuation in
+                gate.install(continuation)
+            } as URL
+        }
+        await Task.yield()
+
+        gate.resolve(.failure(CancellationError()))
+        gate.resolve(.success(URL(string: "http://127.0.0.1/late")!))
+
+        do {
+            _ = try await waiter.value
+            XCTFail("cancellation must terminate the suspended browser waiter")
+        } catch is CancellationError {
+            // Expected: the later callback must not double-resume or win.
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
 }

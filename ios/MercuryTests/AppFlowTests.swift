@@ -341,6 +341,27 @@ final class AppFlowTests: XCTestCase {
         XCTAssertNil(model.sessionsError)
     }
 
+    func testNousButtonBecomesRetryAfterIncompleteSignIn() {
+        XCTAssertEqual(
+            SignInView.nousButtonTitle(isSigningIn: false, authenticationError: nil),
+            "Sign in with Nous"
+        )
+        XCTAssertEqual(
+            SignInView.nousButtonTitle(
+                isSigningIn: false,
+                authenticationError: "Sign-in did not complete. Try again."
+            ),
+            "Retry sign in"
+        )
+        XCTAssertEqual(
+            SignInView.nousButtonTitle(
+                isSigningIn: true,
+                authenticationError: "Sign-in did not complete. Try again."
+            ),
+            "Sign in with Nous"
+        )
+    }
+
     func testSuccessfulPasswordSignInValidatesCookieAndConnects() async throws {
         let cookieStore = HTTPCookieStorage.shared
         func clearFixtureCookies() {

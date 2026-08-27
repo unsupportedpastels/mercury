@@ -194,6 +194,7 @@ final class ConnectionController {
         }
 
         appModel.setSigningIn(true)
+        appModel.setAuthenticationError(nil)
         defer { appModel.setSigningIn(false) }
 
         let flow = signInFlowFactory(origin)
@@ -227,7 +228,16 @@ final class ConnectionController {
             authDebug("failed")
             flow.cancel()
             guard appModel.serverOrigin == origin else { return }
-            appModel.setPhase(.failed("Sign-in failed"))
+            if case FlowError.stateMismatch = error {
+                appModel.setPhase(.failed("Sign-in failed"))
+            } else {
+                // Portal authentication can require a second browser hop or
+                // return a transient rejection. Keep the user on the sign-in
+                // screen with a retryable state instead of requiring an app
+                // restart to clear the in-flight button state.
+                appModel.setAuthenticationError("Sign-in did not complete. Try again.")
+                appModel.setPhase(.signInRequired)
+            }
         }
     }
 

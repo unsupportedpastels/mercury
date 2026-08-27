@@ -30,3 +30,14 @@ struct ChatConnectionOwnership {
         generation &+= 1
     }
 }
+
+enum ChatDisappearanceAction: Equatable {
+    case preserveConnectionAndObserver
+    case tearDown
+}
+
+enum ChatDisappearancePolicy {
+    static func action(turnInFlight: Bool, isSending: Bool) -> ChatDisappearanceAction {
+        turnInFlight || isSending ? .preserveConnectionAndObserver : .tearDown
+    }
+}

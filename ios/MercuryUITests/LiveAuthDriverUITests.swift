@@ -4,7 +4,10 @@ import XCTest
 final class LiveAuthDriverUITests: XCTestCase {
     func testEnterPortalCodeAndVerifyMercury() throws {
         let app = XCUIApplication()
-        app.launchArguments = ["-uitest-probe", try LiveUITestConfiguration.origin()]
+        app.launchArguments = [
+            "-uitest-probe", try LiveUITestConfiguration.origin(),
+            "-uitest-auth-debug",
+        ]
         app.launch()
 
         let signIn = app.buttons["Sign in with Nous"]
@@ -12,9 +15,12 @@ final class LiveAuthDriverUITests: XCTestCase {
         signIn.tap()
 
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let continueButton = springboard.buttons["Continue"]
-        if continueButton.waitForExistence(timeout: 15) {
-            continueButton.tap()
+        let springboardContinue = springboard.buttons["Continue"]
+        let appContinue = app.buttons["Continue"]
+        if springboardContinue.waitForExistence(timeout: 8) {
+            springboardContinue.tap()
+        } else if appContinue.waitForExistence(timeout: 8) {
+            appContinue.tap()
         }
 
         // The Portal may land on its public overview page (no session

@@ -7,6 +7,8 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import java.io.EOFException
+import java.io.IOException
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -312,5 +314,49 @@ class HermesCloudClientTest {
 
         assertEquals("at", token.accessToken)
         assertTrue(calls >= 6)
+    }
+
+    @Test
+    fun awaitDeviceTokenKeepsPollingThroughClosedResponseStream() = runTest {
+        // CIO can establish the request while the app is backgrounded, then
+        // lose the response stream as Android freezes/unfreezes the process.
+        // Both observed shapes are retryable for RFC 8628 device polling.
+        var calls = 0
+        val engine = MockEngine { _ ->
+            calls += 1
+            when (calls) {
+                1 -> throw EOFException("response ended early")
+                2 -> throw IOException("connection closed")
+                3 -> respond(
+                    content = """{"error":"authorization_pending"}""",
+                    status = HttpStatusCode.BadRequest,
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                else -> respond(
+                    content = """{"access_token":"at","refresh_token":"rt","expires_in":3600}""",
+                    status = HttpStatusCode.OK,
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+            }
+        }
+        var now = 0L
+        val client = HttpHermesCloudClient(
+            client = HttpClient(engine),
+            delayMillis = { now += 1 },
+            nowSeconds = { now },
+        )
+        val device = PortalDeviceCode(
+            deviceCode = "dc",
+            userCode = "u",
+            verificationUri = "https://portal.nousresearch.com",
+            verificationUriComplete = "https://portal.nousresearch.com",
+            expiresInSeconds = 600L,
+            intervalSeconds = 1L,
+        )
+
+        val token = client.awaitDeviceToken(portal, device)
+
+        assertEquals("at", token.accessToken)
+        assertEquals(4, calls)
     }
 }
