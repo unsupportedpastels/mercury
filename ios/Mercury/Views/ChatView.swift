@@ -357,13 +357,15 @@ struct ChatView: View {
         .toolbarBackground(Color.amoledBlack, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .task {
+            // Visibility can change while SwiftUI retains this view and restarts
+            // its task. Restore it even when the connection is already owned.
+            appModel.setVisibleSession(notificationSessionID)
             // SwiftUI may recreate the task while the view is still mounted.
             // Android's ViewModel refuses a second open for an already-owned
             // session; make the same admission decision before any await.
             guard !didOpen else { return }
             didOpen = true
             applyIncomingShare()
-            appModel.setVisibleSession(notificationSessionID)
             if let notifyID = notificationSessionID {
                 // Engaged scope: background reconciliation may notify about a
                 // session only after the app has opened it (Android parity).
@@ -387,10 +389,11 @@ struct ChatView: View {
             // ViewModel; preserve the iOS connection while a turn is active so
             // the next foreground/open can resume the same runtime instead of
             // creating a second visible attempt.
-            guard !turnInFlight && !isSending else {
+            if ChatDisappearancePolicy.action(
+                turnInFlight: turnInFlight,
+                isSending: isSending
+            ) == .preserveConnectionAndObserver {
                 appModel.setVisibleSession(nil)
-                eventTask?.cancel()
-                eventTask = nil
                 return
             }
             // Deliberate teardown for an idle session: no reconnect may fire

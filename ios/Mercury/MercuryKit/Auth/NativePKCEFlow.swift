@@ -33,12 +33,14 @@ final class NativePKCEFlow {
         case browserReturnedToApp
         case listenerEnded
         case graceExpired
+        case fatal(FlowError)
     }
 
     enum CallbackRaceDecision: Equatable {
         case keepWaiting
         case startGracePeriod
         case finish(CallbackResult?)
+        case fail(FlowError)
     }
 
     let origin: String
@@ -97,7 +99,7 @@ final class NativePKCEFlow {
         // ASWebAuthenticationSession and the final hop through loopback (or
         // vice versa). Do not discard the browser callback and wait forever on
         // only one transport: accept the first valid callback from either path.
-        let result = await withTaskGroup(of: CallbackRaceEvent.self) { group -> CallbackResult? in
+        let raceResult = await withTaskGroup(of: CallbackRaceEvent.self) { group -> Result<CallbackResult?, FlowError> in
             // Register before presenting ASWebAuthenticationSession so the
             // resign-active edge cannot be missed on a fast browser launch.
             group.addTask {
@@ -113,7 +115,7 @@ final class NativePKCEFlow {
                         try Self.validate(callbackURL: callbackURL, expectedState: expectedState)
                     )
                 } catch {
-                    return .listenerEnded
+                    return Self.callbackRaceEvent(for: error, fallback: .listenerEnded)
                 }
             }
             group.addTask {
@@ -126,7 +128,7 @@ final class NativePKCEFlow {
                         try Self.validate(callbackURL: callbackURL, expectedState: expectedState)
                     )
                 } catch {
-                    return .browserClosed
+                    return Self.callbackRaceEvent(for: error, fallback: .browserClosed)
                 }
             }
 
@@ -157,10 +159,17 @@ final class NativePKCEFlow {
                     await MainActor.run {
                         BrowserAuthenticationSession.shared.cancel()
                     }
-                    return callback
+                    return .success(callback)
+                case .fail(let error):
+                    group.cancelAll()
+                    listener.stop()
+                    await MainActor.run {
+                        BrowserAuthenticationSession.shared.cancel()
+                    }
+                    return .failure(error)
                 }
             }
-            return nil
+            return .success(nil)
         }
 
         listener.stop()
@@ -169,8 +178,13 @@ final class NativePKCEFlow {
         }
         self.listener = nil
         debug("callback-received")
-        guard let result else { throw FlowError.badResponse }
-        return result
+        switch raceResult {
+        case .success(let callback):
+            guard let callback else { throw FlowError.badResponse }
+            return callback
+        case .failure(let error):
+            throw error
+        }
     }
 
     /// Exchanges the authorization code for tokens or cookies.
@@ -296,7 +310,19 @@ final class NativePKCEFlow {
             return .keepWaiting
         case .graceExpired:
             return .finish(nil)
+        case .fatal(let error):
+            return .fail(error)
         }
+    }
+
+    /// Preserve security-sensitive validation failures instead of collapsing
+    /// them into an ordinary browser/listener completion signal.
+    static func callbackRaceEvent(for error: Error, fallback: CallbackRaceEvent) -> CallbackRaceEvent {
+        if let flowError = error as? FlowError,
+           case .stateMismatch = flowError {
+            return .fatal(flowError)
+        }
+        return fallback
     }
 
     /// Collects Set-Cookie name→value pairs from an HTTP response.

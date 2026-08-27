@@ -130,6 +130,18 @@ final class PKCETests: XCTestCase {
         )
     }
 
+    func testStateMismatchRemainsFatalThroughCallbackRace() {
+        let event = NativePKCEFlow.callbackRaceEvent(
+            for: FlowError.stateMismatch,
+            fallback: .listenerEnded
+        )
+        XCTAssertEqual(event, .fatal(.stateMismatch))
+        XCTAssertEqual(
+            NativePKCEFlow.callbackRaceDecision(for: event),
+            .fail(.stateMismatch)
+        )
+    }
+
     @MainActor
     func testBrowserCompletionGateCancellationResumesExactlyOnce() async {
         let gate = BrowserAuthenticationSession.CompletionGate()
