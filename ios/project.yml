@@ -1,0 +1,185 @@
+name: Mercury
+
+options:
+  bundleIdPrefix: com.unsupportedpastels
+  deploymentTarget:
+    iOS: "17.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    CODE_SIGN_STYLE: Automatic
+    MERCURY_APP_GROUP_IDENTIFIER: group.com.unsupportedpastels.mercury
+
+targets:
+  MercuryShareKit:
+    type: framework
+    platform: iOS
+    sources:
+      - MercuryShareKit
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.unsupportedpastels.mercury.sharekit
+
+  # Shared pure Live Activity model (status/sanitizer/policy + ActivityKit
+  # attributes) used by the app, the unit tests, and the widget extension.
+  MercuryRunActivityKit:
+    type: framework
+    platform: iOS
+    sources:
+      - MercuryRunActivityKit
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.unsupportedpastels.mercury.runactivitykit
+
+  Mercury:
+    type: application
+    platform: iOS
+    sources:
+      - Mercury
+      - Resources
+    dependencies:
+      - target: MercuryShareKit
+      - target: MercuryRunActivityKit
+      - target: MercuryShare
+        embed: true
+      - target: MercuryRunActivityWidget
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.unsupportedpastels.mercury
+        CODE_SIGN_ENTITLEMENTS: Mercury/Mercury.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: Mercury/Info.plist
+      properties:
+        UILaunchScreen: {}
+        CFBundleDisplayName: Mercury
+        ITSAppUsesNonExemptEncryption: false
+        NSMicrophoneUsageDescription: Mercury uses the microphone only while you dictate a message draft.
+        NSSpeechRecognitionUsageDescription: Mercury uses speech recognition to place dictated words into your message draft.
+        MercuryAppGroupIdentifier: $(MERCURY_APP_GROUP_IDENTIFIER)
+        # Best-effort background notifications (no APNs): iOS may opportunistically
+        # wake the app to reconcile session state and post local notifications.
+        UIBackgroundModes:
+          - fetch
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.unsupportedpastels.mercury.reconcile
+        # Local-only Live Activities (pushType: nil). No aps-environment, no
+        # remote-notification background mode — release invariants.
+        NSSupportsLiveActivities: true
+        # Canonical session deep links (notification/Live Activity taps).
+        CFBundleURLTypes:
+          - CFBundleURLName: com.unsupportedpastels.mercury.session
+            CFBundleURLSchemes:
+              - mercury
+
+  MercuryShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - MercuryShare
+    dependencies:
+      - target: MercuryShareKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.unsupportedpastels.mercury.share
+        CODE_SIGN_ENTITLEMENTS: MercuryShare/MercuryShare.entitlements
+    info:
+      path: MercuryShare/Info.plist
+      properties:
+        CFBundleDisplayName: Add to Mercury
+        MercuryAppGroupIdentifier: $(MERCURY_APP_GROUP_IDENTIFIER)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsImageWithMaxCount: 5
+              NSExtensionActivationSupportsFileWithMaxCount: 5
+
+  # WidgetKit extension rendering the Lock Screen / Dynamic Island Live
+  # Activity. Local ActivityKit only — no push tokens, no APNs.
+  MercuryRunActivityWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - MercuryRunActivityWidget
+    dependencies:
+      - target: MercuryRunActivityKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.unsupportedpastels.mercury.runactivity
+    info:
+      path: MercuryRunActivityWidget/Info.plist
+      properties:
+        CFBundleDisplayName: Mercury Run
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+
+  MercuryTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - MercuryTests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: Mercury
+      - target: MercuryShareKit
+      - target: MercuryRunActivityKit
+
+  # Live integration tests: hit an operator-supplied Hermes origin and Nous Portal.
+  # Kept in a separate target so the default MercuryTests suite stays hermetic
+  # and offline. Run explicitly: -scheme MercuryLiveTests.
+  MercuryLiveTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - MercuryLiveTests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: Mercury
+
+  # XCUITest driver for simulator verification (simctl cannot tap/type).
+  MercuryUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - MercuryUITests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: Mercury
+
+schemes:
+  Mercury:
+    build:
+      targets:
+        Mercury: all
+    test:
+      targets:
+        - MercuryTests
+  MercuryLiveTests:
+    build:
+      targets:
+        Mercury: all
+        MercuryLiveTests: all
+    test:
+      targets:
+        - MercuryLiveTests
+  MercuryUITests:
+    build:
+      targets:
+        Mercury: all
+        MercuryUITests: all
+    test:
+      targets:
+        - MercuryUITests

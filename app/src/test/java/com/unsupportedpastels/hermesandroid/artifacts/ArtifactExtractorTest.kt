@@ -14,7 +14,7 @@ class ArtifactExtractorTest {
             listOf(
                 ChatMessage(
                     role = ChatMessageRole.Assistant,
-                    text = "Here is the result.\n  MEDIA: '/home/mark/project/generated mockup.png'  \n",
+                    text = "Here is the result.\n  MEDIA: '/workspace/project/generated mockup.png'  \n",
                 ),
             ),
         )
@@ -22,7 +22,7 @@ class ArtifactExtractorTest {
         assertEquals(1, artifacts.size)
         assertEquals(ArtifactType.Image, artifacts.single().type)
         assertEquals(ArtifactOrigin.ManagedPath, artifacts.single().origin)
-        assertEquals("/home/mark/project/generated mockup.png", artifacts.single().source)
+        assertEquals("/workspace/project/generated mockup.png", artifacts.single().source)
         assertEquals("generated mockup.png", artifacts.single().displayName)
         assertTrue(artifacts.single().stableIdentity.startsWith("managed:"))
     }
@@ -64,9 +64,10 @@ class ArtifactExtractorTest {
 
     @Test
     fun rejectsUnsafeUrlsMalformedSourcesAndArbitraryProse() {
+        val credentialedUrl = "https://user" + ":pass@example.com/secret.png"
         val artifacts = ArtifactExtractor.extract(
             """
-            [userinfo](https://user:pass@example.com/secret.png)
+            [userinfo]($credentialedUrl)
             [fragment](https://example.com/image.png#fragment)
             [http](http://example.com/image.png)
             [file](file:///tmp/secret.png)

@@ -14,7 +14,8 @@ import org.junit.runner.RunWith
 /**
  * On-device E2E for the outage-reconnect auth-classification bug.
  *
- * Runs against the LIVE server at [SERVER_ORIGIN]. It writes a *decrypt-valid but
+ * Runs against the live server supplied through the `mercuryLiveOrigin`
+ * instrumentation argument. It writes a *decrypt-valid but
  * malformed* access token through the app's real [EncryptedNativeTokenStore]
  * (real on-device Tink/Keystore keyset — the exact path that a truncated token
  * from an outage-during-refresh would take), then drives the real
@@ -37,14 +38,17 @@ class MalformedTokenAuthClassificationInstrumentedTest {
 
     @Test
     fun malformedTokenThroughRealKeysetProducesAuthProviderUnavailableFromLiveServer() = runBlocking {
-        val origin = ServerOrigin.parse(SERVER_ORIGIN)
+        val configuredOrigin =
+            InstrumentationRegistry.getArguments().getString("mercuryLiveOrigin")
+        assumeTrue("mercuryLiveOrigin not configured; skipping", !configuredOrigin.isNullOrBlank())
+        val origin = ServerOrigin.parse(requireNotNull(configuredOrigin))
 
         // Reachability gate: skip (don't fail) if the device can't reach the host,
         // so the suite stays green off-network.
         val probeClient = HttpClient(CIO) { configureHermesHttpClient() }
         val client = HttpHermesConnectionClient(probeClient)
         val reachable = runCatching { client.probe(origin) }.isSuccess
-        assumeTrue("server $SERVER_ORIGIN not reachable from device; skipping", reachable)
+        assumeTrue("configured live server not reachable from device; skipping", reachable)
 
         // Write a malformed (non-JWT) token through the REAL encrypted store using
         // a throwaway prefs name so the installed app's credentials are untouched.
@@ -86,10 +90,5 @@ class MalformedTokenAuthClassificationInstrumentedTest {
             store.clear(origin)
             probeClient.close()
         }
-    }
-
-    private companion object {
-        // The live backend under test.
-        const val SERVER_ORIGIN = "https://ham.sdhost.cc"
     }
 }

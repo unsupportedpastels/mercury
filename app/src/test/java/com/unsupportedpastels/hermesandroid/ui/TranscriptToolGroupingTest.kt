@@ -15,7 +15,7 @@ class TranscriptToolGroupingTest {
             message(ChatMessageRole.Assistant, "on it"),
             message(ChatMessageRole.Tool, "web_extract · https://example.com/"),
             message(ChatMessageRole.Tool, "terminal · curl -fsSL https://example.com"),
-            message(ChatMessageRole.Tool, "patch · /home/mark/site/index.html"),
+            message(ChatMessageRole.Tool, "patch · /workspace/site/index.html"),
             message(ChatMessageRole.Assistant, "Deployed successfully."),
         )
 

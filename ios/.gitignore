@@ -1,0 +1,14 @@
+# XcodeGen output — regenerate with `xcodegen`
+*.xcodeproj
+
+# Build artifacts
+DerivedData/
+.build/
+.swiftpm/
+*.xcresult
+
+# Per-user Xcode state
+xcuserdata/
+
+# macOS noise
+.DS_Store

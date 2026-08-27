@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="430" height="932" viewBox="0 0 430 932">
+  <rect width="430" height="932" fill="#000000"/>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; }
+    .primary { fill:#f7f7f8; }
+    .secondary { fill:#99999f; }
+    .muted { fill:#6f7076; }
+    .accent { fill:#706cf6; }
+  </style>
+
+  <text x="28" y="31" class="primary" font-size="15" font-weight="700">3:18</text>
+  <g transform="translate(345 18)" fill="none" stroke="#f7f7f8" stroke-width="2" stroke-linecap="round">
+    <path d="M0 10h2M6 8h2M12 5h2M18 2h2"/>
+    <path d="M31 9c4-5 10-5 14 0M34 12c2-3 6-3 8 0"/>
+    <rect x="53" y="2" width="22" height="11" rx="3"/><path d="M76 6v3"/>
+  </g>
+
+  <rect x="18" y="52" width="116" height="48" rx="24" fill="#171719"/>
+  <circle cx="43" cy="76" r="12" fill="none" stroke="#9a9ba1" stroke-width="1.8"/>
+  <circle cx="43" cy="72" r="4" fill="#9a9ba1"/>
+  <path d="M36 84c1-6 13-6 14 0" fill="#9a9ba1"/>
+  <text x="62" y="82" class="secondary" font-size="15">default</text>
+
+  <rect x="194" y="52" width="218" height="48" rx="24" fill="#171719"/>
+  <g fill="none" stroke="#9a9ba1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M220 72h19v13h-19zM220 72l4-5h7l3 5"/>
+    <path d="M270 66v20M260 76h20"/>
+    <circle cx="322" cy="76" r="9"/><path d="M322 62v4M322 86v4M308 76h4M332 76h4"/>
+    <path d="M369 68h18v15h-18zM373 68v-3h10v3M374 75h8"/>
+  </g>
+
+  <text x="20" y="145" class="primary" font-size="38" font-weight="750">Mercury</text>
+  <text x="22" y="176" class="secondary" font-size="14" font-weight="600">Hermes 0.20.5</text>
+
+  <!-- Android-informed compact Home hierarchy -->
+  <g transform="translate(20 213)">
+    <text x="0" y="0" class="primary" font-size="21" font-weight="750">Projects</text>
+    <text x="390" y="0" class="accent" font-size="14" font-weight="650" text-anchor="end">View all</text>
+  </g>
+
+  <!-- Project row 1 -->
+  <rect x="18" y="232" width="394" height="112" rx="23" fill="#111113"/>
+  <g transform="translate(38 259)">
+    <rect x="0" y="0" width="38" height="38" rx="11" fill="#242338"/>
+    <path d="M9 15h20v14H9zM9 15l4-5h7l3 5" fill="none" stroke="#8d89ff" stroke-width="2" stroke-linejoin="round"/>
+    <text x="52" y="15" class="primary" font-size="18" font-weight="700">Mobile Client</text>
+    <text x="335" y="15" class="secondary" font-size="12" text-anchor="end">27 sessions</text>
+    <text x="52" y="38" class="secondary" font-size="12">/workspace/mobile-client</text>
+    <text x="52" y="67" class="primary" font-size="13">Latest · Prepare mobile release</text>
+  </g>
+
+  <!-- Project row 2 -->
+  <rect x="18" y="355" width="394" height="112" rx="23" fill="#111113"/>
+  <g transform="translate(38 382)">
+    <rect x="0" y="0" width="38" height="38" rx="11" fill="#1e2926"/>
+    <path d="M10 11h18v18H10zM14 7h10v5" fill="none" stroke="#64d8ad" stroke-width="2"/>
+    <circle cx="29" cy="10" r="4" fill="#64d8ad"/>
+    <text x="52" y="15" class="primary" font-size="18" font-weight="700">Security Dashboard</text>
+    <text x="335" y="15" class="secondary" font-size="12" text-anchor="end">18 sessions</text>
+    <text x="52" y="38" class="secondary" font-size="12">/workspace/security-dashboard</text>
+    <text x="52" y="67" class="primary" font-size="13">Latest · Review finding clusters</text>
+  </g>
+
+  <!-- Project row 3 -->
+  <rect x="18" y="478" width="394" height="112" rx="23" fill="#111113"/>
+  <g transform="translate(38 505)">
+    <rect x="0" y="0" width="38" height="38" rx="11" fill="#282319"/>
+    <path d="M9 15h20v14H9zM9 15l4-5h7l3 5" fill="none" stroke="#e4b45d" stroke-width="2" stroke-linejoin="round"/>
+    <text x="52" y="15" class="primary" font-size="18" font-weight="700">Data Pipeline</text>
+    <text x="335" y="15" class="secondary" font-size="12" text-anchor="end">12 sessions</text>
+    <text x="52" y="38" class="secondary" font-size="12">/workspace/data-pipeline</text>
+    <text x="52" y="67" class="primary" font-size="13">Latest · Check synchronization status</text>
+  </g>
+
+  <g transform="translate(20 632)">
+    <text x="0" y="0" class="primary" font-size="21" font-weight="750">Recent Sessions</text>
+    <text x="390" y="0" class="accent" font-size="14" font-weight="650" text-anchor="end">View all</text>
+  </g>
+
+  <rect x="18" y="650" width="394" height="194" rx="24" fill="#0a0a0b"/>
+  <g transform="translate(38 681)">
+    <text x="0" y="0" class="primary" font-size="18" font-weight="700">Prepare mobile release</text>
+    <text x="0" y="25" class="secondary" font-size="13">Mobile Client</text>
+    <text x="340" y="17" class="muted" font-size="24">›</text>
+    <line x1="0" y1="70" x2="354" y2="70" stroke="#29292c"/>
+  </g>
+  <g transform="translate(38 777)">
+    <text x="0" y="0" class="primary" font-size="18" font-weight="700">Review finding clusters</text>
+    <text x="0" y="25" class="secondary" font-size="13">Security Dashboard</text>
+    <text x="340" y="17" class="muted" font-size="24">›</text>
+  </g>
+
+  <rect x="247" y="855" width="165" height="54" rx="27" fill="#706cf6"/>
+  <path d="M276 876v14M269 883h14" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="307" y="888" fill="#ffffff" font-size="15" font-weight="700">New chat</text>
+</svg>

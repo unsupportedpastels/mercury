@@ -223,7 +223,7 @@ class HermesAppTest {
                     messages = listOf(
                         ChatMessage(ChatMessageRole.User, "deploy the site"),
                         ChatMessage(ChatMessageRole.Tool, "web_extract · https://example.com/"),
-                        ChatMessage(ChatMessageRole.Tool, "patch · /home/mark/site/index.html"),
+                        ChatMessage(ChatMessageRole.Tool, "patch · /workspace/site/index.html"),
                         ChatMessage(ChatMessageRole.Tool, "terminal · curl -fsSL https://example.com"),
                         ChatMessage(ChatMessageRole.Assistant, "Deployed successfully."),
                     ),
@@ -1007,9 +1007,9 @@ class HermesAppTest {
     @Config(sdk = [35], qualifiers = "w884dp-h707dp-land")
     fun createProjectFooterRemainsVisibleWithScrollableHostFoldersOnFoldLandscape() {
         val listing = HostDirectoryListing(
-            path = "/home/mark",
+            path = "/workspace",
             directories = (1..12).map { index ->
-                HostDirectoryEntry("folder-$index", "/home/mark/folder-$index")
+                HostDirectoryEntry("folder-$index", "/workspace/folder-$index")
             },
         )
         composeRule.setContent {
@@ -3414,7 +3414,7 @@ class HermesAppTest {
         val homeProject = ProjectSummary(
             ProjectId("project-home"),
             "Home",
-            "/home/mark",
+            "/workspace",
             0,
             emptyList(),
         )

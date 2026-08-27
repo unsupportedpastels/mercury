@@ -46,6 +46,14 @@ Your chosen server’s operator and configuration determine how server-side data
 
 Mercury does not request location, contacts, camera, or storage-wide file permissions. Attachments use Android’s user-mediated document picker. Device Voice input uses an installed Android speech service, which may request microphone access in its own interface; server-backed dictation and voice conversation use Mercury’s explicitly requested `RECORD_AUDIO` permission described above.
 
+## iOS notifications and Live Activities
+
+- **Local and best-effort only.** iOS alerts and Live Activities are generated on your device from your own server's data. Mercury uses **no push service** (no APNs, no third-party notification relay) and makes no server changes; delivery depends on iOS letting Mercury run, so it is best-effort, and a Live Activity stops receiving updates once iOS suspends the app. When Mercury next runs it reconciles honestly — an unproven outcome shows "Status unknown" rather than pretending success.
+- **Permission is asked only when you choose.** Mercury never shows the notification permission prompt at launch; it appears only when you tap Enable in Settings → Notifications.
+- **What the Lock Screen can show.** A Live Activity carries only: an opaque local server identifier (a random UUID from your device's own server list — never the server address), the profile name, the durable session ID, the session title, a generic status line (e.g. "Running command", "Needs approval"), and timing/staleness flags. Prompts, commands, tool arguments, file paths, secure input, approval payloads, and raw error text never appear.
+- **Response excerpts are off by default.** When you explicitly enable them, a short cleaned excerpt of the assistant's reply appears on the Lock Screen, where anyone looking at the phone can read it.
+- **Notification taps** carry a `mercury://session` link containing only those same opaque identifiers. Opening one never bypasses authentication — if the target server requires sign-in, you sign in first.
+
 ## Security
 
 Cleartext network traffic is disabled. Mercury scopes credentials, connection settings, and cached transcript data by server origin, and it does not carry credentials to a newly selected origin.

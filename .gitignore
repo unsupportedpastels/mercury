@@ -25,3 +25,13 @@ play-service-account*.json
 local.properties
 /.claude/
 /.hermes/
+
+/.private/
+
+# QA/verification screenshots are throwaway artifacts, never tracked.
+# Keep them in a temp directory instead (e.g. /tmp/mercury-qa-screenshots).
+/mercury-*.png
+/docs/design/mockups/mercury-project-home-*.png
+
+# Agent-authored implementation plans are local working artifacts.
+/docs/plans/
