@@ -357,6 +357,11 @@ struct ChatView: View {
         .toolbarBackground(Color.amoledBlack, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .task {
+            // SwiftUI may recreate the task while the view is still mounted.
+            // Android's ViewModel refuses a second open for an already-owned
+            // session; make the same admission decision before any await.
+            guard !didOpen else { return }
+            didOpen = true
             applyIncomingShare()
             appModel.setVisibleSession(notificationSessionID)
             if let notifyID = notificationSessionID {
@@ -377,7 +382,19 @@ struct ChatView: View {
             scheduleSlashCompletion(for: draft)
         }
         .onDisappear {
-            // Deliberate teardown: no reconnect may fire after dismissal.
+            // A transient SwiftUI disappearance must not interrupt an active
+            // server-side turn. Android keeps its live controller in the
+            // ViewModel; preserve the iOS connection while a turn is active so
+            // the next foreground/open can resume the same runtime instead of
+            // creating a second visible attempt.
+            guard !turnInFlight && !isSending else {
+                appModel.setVisibleSession(nil)
+                eventTask?.cancel()
+                eventTask = nil
+                return
+            }
+            // Deliberate teardown for an idle session: no reconnect may fire
+            // after dismissal.
             closedByUs = true
             appModel.setVisibleSession(nil)
             reconnectTask?.cancel()
