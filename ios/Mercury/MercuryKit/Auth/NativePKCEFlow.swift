@@ -27,6 +27,20 @@ enum TokenOutcome: Equatable {
 /// Flow: `begin()` → open returned authorize URL in browser → Portal 302s to
 /// the loopback listener → `awaitCallback()` → `exchange(code:)`.
 final class NativePKCEFlow {
+    enum CallbackRaceEvent: Equatable {
+        case callback(CallbackResult)
+        case browserClosed
+        case browserReturnedToApp
+        case listenerEnded
+        case graceExpired
+    }
+
+    enum CallbackRaceDecision: Equatable {
+        case keepWaiting
+        case startGracePeriod
+        case finish(CallbackResult?)
+    }
+
     let origin: String
     let provider: String
 
@@ -79,24 +93,84 @@ final class NativePKCEFlow {
             throw FlowError.badResponse
         }
 
-        let browserTask = Task { @MainActor in
-            try? await BrowserAuthenticationSession.shared.authenticate(
-                url: url,
-                callbackURLScheme: "http"
-            )
-        }
-        defer {
-            browserTask.cancel()
-            Task { @MainActor in
-                BrowserAuthenticationSession.shared.cancel()
+        // The Portal may complete the first authentication hop through
+        // ASWebAuthenticationSession and the final hop through loopback (or
+        // vice versa). Do not discard the browser callback and wait forever on
+        // only one transport: accept the first valid callback from either path.
+        let result = await withTaskGroup(of: CallbackRaceEvent.self) { group -> CallbackResult? in
+            // Register before presenting ASWebAuthenticationSession so the
+            // resign-active edge cannot be missed on a fast browser launch.
+            group.addTask {
+                let returned = await BrowserAuthenticationSession.shared.waitForReturnToApp()
+                return returned ? .browserReturnedToApp : .listenerEnded
             }
+            await Task.yield()
+
+            group.addTask {
+                do {
+                    let callbackURL = try await listener.waitForCallback()
+                    return .callback(
+                        try Self.validate(callbackURL: callbackURL, expectedState: expectedState)
+                    )
+                } catch {
+                    return .listenerEnded
+                }
+            }
+            group.addTask {
+                do {
+                    let callbackURL = try await BrowserAuthenticationSession.shared.authenticate(
+                        url: url,
+                        callbackURLScheme: "http"
+                    )
+                    return .callback(
+                        try Self.validate(callbackURL: callbackURL, expectedState: expectedState)
+                    )
+                } catch {
+                    return .browserClosed
+                }
+            }
+
+            var gracePeriodStarted = false
+            while let event = await group.next() {
+                switch Self.callbackRaceDecision(for: event) {
+                case .keepWaiting:
+                    continue
+                case .startGracePeriod:
+                    guard !gracePeriodStarted else { continue }
+                    gracePeriodStarted = true
+                    group.addTask {
+                        do {
+                            try await Task.sleep(nanoseconds: 10_000_000_000)
+                            return .graceExpired
+                        } catch {
+                            return .listenerEnded
+                        }
+                    }
+                case .finish(let callback):
+                    // A task group waits for every child before returning. Cancel
+                    // both callback transports synchronously so the losing child
+                    // can finish; scheduling browser cancellation in an unawaited
+                    // MainActor task deadlocks when this flow already owns that
+                    // actor and is waiting for the group to drain.
+                    group.cancelAll()
+                    listener.stop()
+                    await MainActor.run {
+                        BrowserAuthenticationSession.shared.cancel()
+                    }
+                    return callback
+                }
+            }
+            return nil
         }
 
-        let callbackURL = try await listener.waitForCallback()
         listener.stop()
+        await MainActor.run {
+            BrowserAuthenticationSession.shared.cancel()
+        }
         self.listener = nil
-        debug("callback-listener-returned")
-        return try Self.validate(callbackURL: callbackURL, expectedState: expectedState)
+        debug("callback-received")
+        guard let result else { throw FlowError.badResponse }
+        return result
     }
 
     /// Exchanges the authorization code for tokens or cookies.
@@ -206,6 +280,23 @@ final class NativePKCEFlow {
             throw FlowError.badResponse
         }
         return CallbackResult(code: code, state: query["state"]!)
+    }
+
+    /// Pure policy for the two callback transports. Closing the browser without
+    /// a callback starts a bounded grace period because the loopback redirect can
+    /// arrive just after the sheet disappears. Expiry returns control to the UI
+    /// so the user can start a fresh PKCE transaction instead of remaining stuck.
+    static func callbackRaceDecision(for event: CallbackRaceEvent) -> CallbackRaceDecision {
+        switch event {
+        case .callback(let callback):
+            return .finish(callback)
+        case .browserClosed, .browserReturnedToApp:
+            return .startGracePeriod
+        case .listenerEnded:
+            return .keepWaiting
+        case .graceExpired:
+            return .finish(nil)
+        }
     }
 
     /// Collects Set-Cookie name→value pairs from an HTTP response.
