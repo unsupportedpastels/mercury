@@ -14,6 +14,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 import io.ktor.http.content.TextContent
 import io.ktor.http.isSuccess
+import java.io.IOException
 import java.net.UnknownHostException
 import java.nio.channels.UnresolvedAddressException
 import kotlinx.coroutines.CancellationException
@@ -142,6 +143,18 @@ class HttpHermesCloudClient(
         generateSequence<Throwable>(this) { it.cause }
             .any { it is UnknownHostException || it is UnresolvedAddressException }
 
+    /**
+     * Device-token polling is explicitly replayable until the RFC 8628 code's
+     * deadline. Once the initial device-code request has established Portal TLS,
+     * an I/O failure here means Android tore down the background response stream,
+     * not that the user's authorization was rejected. Keep this broader policy
+     * local to polling: refresh-token POSTs rotate credentials and must not be
+     * replayed after an ambiguous response failure.
+     */
+    private fun Throwable.isTransientDevicePollFailure(): Boolean =
+        generateSequence<Throwable>(this) { it.cause }
+            .any { it is IOException || it is UnknownHostException || it is UnresolvedAddressException }
+
     override suspend fun requestDeviceCode(portalOrigin: ServerOrigin): PortalDeviceCode = try {
         val response = httpWithDnsRetry(
             "${portalOrigin.value}/api/oauth/device/code",
@@ -208,8 +221,8 @@ class HttpHermesCloudClient(
             // authorization_pending. Swallow transient network failures and keep
             // polling until the code's own deadline, or the sign-in dies the
             // instant the browser steals focus.
-            val response = try {
-                httpWithDnsRetry(
+            val (response, body) = try {
+                val response = httpWithDnsRetry(
                     "${portalOrigin.value}/api/oauth/token",
                     HttpMethod.Post,
                 ) {
@@ -225,13 +238,13 @@ class HttpHermesCloudClient(
                         ),
                     )
                 }
+                response to response.readBodyTextBounded()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                if (error.isTransientNetworkFailure()) continue
+                if (error.isTransientDevicePollFailure()) continue
                 throw error
             }
-            val body = response.readBodyTextBounded()
             if (response.status.isSuccess()) {
                 return parseTokenBody(body)
             }
