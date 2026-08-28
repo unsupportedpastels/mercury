@@ -2,7 +2,9 @@
 
 ## Product boundary
 
-This is a native Android client for the official interfaces of an unchanged shared `hermes serve` process. Do not add, require, or assume custom server routes, plugins, forks, dashboard extensions, or gateway workers.
+This is a native Android client for the official interfaces of an unchanged shared `hermes serve` process. Direct mode must never add, require, or assume custom server routes, forks, dashboard extensions, or gateway workers, and must keep working with no Mercury plugin installed.
+
+One scoped exception exists: **Mercury Relay** is an optional, separately paired transport (iOS first) that carries the same official Hermes JSON-RPC session contract end-to-end encrypted through the Mercury Relay host plugin and an opaque hosted router. Relay code must stay isolated from direct-mode connection, credential, and catalog state; it never changes Hermes itself, tunnels no private Hermes route, and is never a requirement for any direct-mode feature.
 
 Released Hermes compatibility is conservative: observe durable/live metadata without implicit transport takeover. Resume or activate another remote connected client's runtime only after explicit user action. Never close a shared runtime merely because this client disconnects. Capability-gate multi-subscriber streaming until a safe released transport advertises it.
 

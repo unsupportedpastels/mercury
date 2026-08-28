@@ -6,6 +6,7 @@ import SwiftUI
 enum ConnectionMode: String, CaseIterable, Identifiable {
     case selfHosted
     case hermesCloud
+    case mercuryRelay
 
     var id: String { rawValue }
 
@@ -13,6 +14,7 @@ enum ConnectionMode: String, CaseIterable, Identifiable {
         switch self {
         case .selfHosted: "Self-hosted"
         case .hermesCloud: "Hermes Cloud"
+        case .mercuryRelay: "Relay"
         }
     }
 
@@ -22,6 +24,8 @@ enum ConnectionMode: String, CaseIterable, Identifiable {
             "Your own server — VPS, homelab, or LAN"
         case .hermesCloud:
             "Always-on agents from Nous Portal"
+        case .mercuryRelay:
+            "End-to-end encrypted pairing with your Mercury host"
         }
     }
 
@@ -29,6 +33,7 @@ enum ConnectionMode: String, CaseIterable, Identifiable {
         switch self {
         case .selfHosted: "server.rack"
         case .hermesCloud: "cloud.fill"
+        case .mercuryRelay: "qrcode.viewfinder"
         }
     }
 }
