@@ -82,4 +82,30 @@ final class SessionInboxModelsTests: XCTestCase {
         XCTAssertEqual(SessionInboxPolicy.metadata(model: "sol", messageCount: 12), "sol · 12 messages")
         XCTAssertEqual(SessionInboxPolicy.metadata(model: nil, messageCount: 0), "0 messages")
     }
+
+    func testRecencyUsesOnlyTheLargestMinuteOrHourUnit() {
+        let now = Date(timeIntervalSince1970: 10_000)
+
+        XCTAssertEqual(
+            SessionInboxPolicy.recency(since: now.addingTimeInterval(-(3 * 60 + 21)), now: now),
+            "3 min"
+        )
+        XCTAssertEqual(
+            SessionInboxPolicy.recency(since: now.addingTimeInterval(-(60 * 60 + 2 * 60)), now: now),
+            "1 hr"
+        )
+        XCTAssertEqual(
+            SessionInboxPolicy.recency(since: now.addingTimeInterval(-(2 * 60 * 60 + 59 * 60)), now: now),
+            "2 hr"
+        )
+    }
+
+    func testRecencyNeverDisplaysSeconds() {
+        let now = Date(timeIntervalSince1970: 10_000)
+
+        XCTAssertEqual(
+            SessionInboxPolicy.recency(since: now.addingTimeInterval(-59), now: now),
+            "0 min"
+        )
+    }
 }
