@@ -19,11 +19,13 @@ struct SessionInboxRow: View {
                         .lineLimit(1)
                     Spacer(minLength: 8)
                     if let lastActive = session.lastActive {
-                        Text(lastActive, style: .relative)
-                            .font(.caption)
-                            .foregroundStyle(Color.secondary)
-                            .lineLimit(1)
-                            .accessibilityLabel("Last active time")
+                        TimelineView(.periodic(from: .now, by: 60)) { context in
+                            Text(SessionInboxPolicy.recency(since: lastActive, now: context.date))
+                                .font(.caption)
+                                .foregroundStyle(Color.secondary)
+                                .lineLimit(1)
+                                .accessibilityLabel("Last active time")
+                        }
                     }
                 }
 

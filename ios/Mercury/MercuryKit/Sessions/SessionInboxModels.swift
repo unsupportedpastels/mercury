@@ -106,6 +106,15 @@ enum SessionInboxPolicy {
         return "\(model) · \(messages)"
     }
 
+    static func recency(since lastActive: Date, now: Date) -> String {
+        let elapsedSeconds = max(0, Int(now.timeIntervalSince(lastActive)))
+        let elapsedMinutes = elapsedSeconds / 60
+        if elapsedMinutes < 60 {
+            return "\(elapsedMinutes) min"
+        }
+        return "\(elapsedMinutes / 60) hr"
+    }
+
     private static func normalizedPath(_ path: String?) -> String? {
         guard var path = path?.trimmingCharacters(in: .whitespacesAndNewlines),
               path.hasPrefix("/") else { return nil }
