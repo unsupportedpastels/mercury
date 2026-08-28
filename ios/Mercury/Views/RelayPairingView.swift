@@ -9,6 +9,7 @@ struct RelayPairingView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var pastedCode = ""
+    @State private var cameraHint: String?
 
     var body: some View {
         NavigationStack {
@@ -64,12 +65,21 @@ struct RelayPairingView: View {
                 .font(.subheadline)
                 .foregroundStyle(Color.secondary)
 
-            RelayQRScannerView { scanned in
-                Task { await relay.beginPairing(scannedText: scanned) }
-            }
+            RelayQRScannerView(
+                onScan: { scanned in
+                    Task { await relay.beginPairing(scannedText: scanned) }
+                },
+                onUnavailable: { hint in cameraHint = hint }
+            )
             .frame(maxWidth: .infinity)
             .frame(height: 320)
             .clipShape(RoundedRectangle(cornerRadius: 12))
+
+            if let cameraHint {
+                Label(cameraHint, systemImage: "camera.fill")
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary)
+            }
 
             HStack {
                 TextField("…or paste the pairing code", text: $pastedCode)
