@@ -1,8 +1,8 @@
 # External SSH Tunnel Session Authorization
 
-**Status:** Proposed  
-**Audience:** HAM maintainers and Android implementers  
-**Analyzed revision:** `56950106ae7fd335d29195eae3b46af87849aaca` (`v0.2.1`)  
+**Status:** Proposed
+**Audience:** HAM maintainers and Android implementers
+**Analyzed revision:** `56950106ae7fd335d29195eae3b46af87849aaca` (`v0.2.1`)
 **Server contract:** unchanged upstream `NousResearch/hermes-agent`
 
 ## Summary
