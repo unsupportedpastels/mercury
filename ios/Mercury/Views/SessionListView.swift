@@ -330,14 +330,25 @@ struct SessionListView: View {
                 await appModel.loadSessions()
                 showShareInbox = !appModel.pendingShareEntries.isEmpty
             }
-            .task(id: relayChatIsOpen) {
-                // Relay carries one device socket per installation. While a
-                // chat owns it, the projects metadata connection must be fully
-                // closed — not merely not-started — or its lingering socket
-                // and the chat's socket supersede each other, dropping the
-                // chat mid-turn (the user sees activity but no streamed reply).
-                if appModel.activeRelayTarget != nil, relayChatIsOpen {
-                    await projectController.stop()
+            .onChange(of: relayChatIsOpen) { _, isOpen in
+                // The relay host keeps one live stream per device: a fresh
+                // connection supersedes the previous lease. While a chat owns
+                // the stream the projects metadata connection must be fully
+                // closed — not merely not-started — or the two supersede each
+                // other, dropping the chat mid-turn (the user sees activity
+                // but no streamed reply). When the chat closes, reload
+                // projects; without this the Home list stays empty after the
+                // first session visit.
+                guard let target = appModel.activeRelayTarget else { return }
+                Task {
+                    if isOpen {
+                        await projectController.stop()
+                    } else {
+                        await projectController.start(
+                            source: .relay(target),
+                            profile: appModel.activeProfile
+                        )
+                    }
                 }
             }
             .task(id: projectScope) {
