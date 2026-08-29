@@ -194,6 +194,30 @@ class HermesConnectionViewModelTest {
     }
 
     @Test
+    fun rejectedSessionDeleteSurfacesTheRejectionWithoutReplayingIt() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val client = RejectingDeleteTunnelClient()
+        val bootstrap = RecordingTunnelBootstrap(origin, listOf("session-token", "unused-token"))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        val failure = runCatching { viewModel.deleteSession(DurableSessionId("tunnel-1")) }
+        advanceUntilIdle()
+
+        assertTrue(failure.exceptionOrNull() is HermesAuthenticationRejectedException)
+        assertEquals(1, client.deleteCalls)
+        assertEquals(1, bootstrap.calls)
+        assertEquals(
+            listOf("Tunnel session"),
+            viewModel.snapshots.value.durableSessions.map { it.title },
+        )
+    }
+
+    @Test
     fun concurrentlyRejectedReadsShareOneSuccessfulBootstrap() = runTest(dispatcher) {
         val origin = ServerOrigin.parse("http://127.0.0.1:19119")
         val client = ConcurrentHostReadTunnelClient(expectedConcurrentReads = 3)
@@ -3604,6 +3628,35 @@ private class GatedSessionMutationClient(
         updateCalls += 1
         updateGate?.await()
         return SessionUpdateResult(ok = true, title = title, archived = archived, pinned = pinned)
+    }
+}
+
+/** Rejects the delete mutation so replay and cache/snapshot effects can be observed. */
+private class RejectingDeleteTunnelClient : HermesConnectionClient {
+    var deleteCalls = 0
+        private set
+
+    override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo =
+        throw AssertionError("Tunnel connection must use the public-only probe")
+
+    override suspend fun probeExternalTunnel(serverOrigin: ServerOrigin) =
+        HermesConnectionInfo("0.20.4", false, false, emptyList())
+
+    override suspend fun loadSessionsForProfile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        archivedOnly: Boolean,
+    ): List<SessionSummary> = listOf(SessionSummary(DurableSessionId("tunnel-1"), "Tunnel session"))
+
+    override suspend fun deleteSession(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        durableSessionId: DurableSessionId,
+        profile: String?,
+    ) {
+        deleteCalls += 1
+        throw HermesAuthenticationRejectedException("Hermes credential was rejected with HTTP 401")
     }
 }
 
