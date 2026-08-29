@@ -106,10 +106,12 @@ enum TestRelayHost {
         deviceID: String
     ) async throws -> (capability: Data, channelBinding: Data) {
         let channel = try responderChannel()
-        let first = try XCTUnwrap(await socket.receive())
+        let firstRaw = try await socket.receive()
+        let first = try XCTUnwrap(firstRaw)
         _ = try channel.readHandshake(first)
         try await socket.send(channel.writeHandshake())
-        let third = try XCTUnwrap(await socket.receive())
+        let thirdRaw = try await socket.receive()
+        let third = try XCTUnwrap(thirdRaw)
         let capability = try channel.readHandshake(third)
         let ack = Data(
             "{\"device_id\":\"\(deviceID)\",\"type\":\"pairing.pending\"}".utf8
@@ -338,17 +340,20 @@ final class RelayPairingTests: XCTestCase {
 
         // A fresh store instance reads back the identical record.
         let reloaded = RelayTargetStore(persistence: persistence, now: { self.now })
-        XCTAssertEqual(try await reloaded.load(), [target])
+        let loaded1 = try await reloaded.load()
+        XCTAssertEqual(loaded1, [target])
 
         try await store.markApproved(id: target.id)
         let approved = try await store.load()
         XCTAssertEqual(approved.first?.status, .approved)
 
         try await store.remove(id: target.id)
-        XCTAssertEqual(try await store.load(), [])
+        let loaded2 = try await store.load()
+        XCTAssertEqual(loaded2, [])
         // Removal persisted, not just cached.
         let afterRemoval = RelayTargetStore(persistence: persistence, now: { self.now })
-        XCTAssertEqual(try await afterRemoval.load(), [])
+        let loaded3 = try await afterRemoval.load()
+        XCTAssertEqual(loaded3, [])
     }
 
     func testTargetStoreBoundsAndFailClosed() async throws {
@@ -415,7 +420,8 @@ final class RelayPairingTests: XCTestCase {
                 + RelayBase64.urlSafeEncode(TestRelayHost.installationID)]
         )
         // Persisted as scanned.
-        XCTAssertEqual(try await store.load(), [target])
+        let loaded4 = try await store.load()
+        XCTAssertEqual(loaded4, [target])
     }
 
     func testPairingRejectionWithoutAckIsOfferRejected() async throws {
@@ -434,10 +440,12 @@ final class RelayPairingTests: XCTestCase {
         // Host completes the handshake but refuses the offer: close, no ack.
         let hostTask = Task {
             let channel = try TestRelayHost.responderChannel()
-            let first = try XCTUnwrap(await host.receive())
+            let firstRaw = try await host.receive()
+            let first = try XCTUnwrap(firstRaw)
             _ = try channel.readHandshake(first)
             try await host.send(channel.writeHandshake())
-            _ = try channel.readHandshake(try XCTUnwrap(await host.receive()))
+            let thirdRaw = try await host.receive()
+            _ = try channel.readHandshake(try XCTUnwrap(thirdRaw))
             await host.close()
         }
         do {
@@ -447,7 +455,8 @@ final class RelayPairingTests: XCTestCase {
             XCTAssertEqual(error as? RelayPairingError, .offerRejected)
         }
         try await hostTask.value
-        XCTAssertEqual(try await store.load(), [])
+        let loaded5 = try await store.load()
+        XCTAssertEqual(loaded5, [])
     }
 
     func testExpiredQRNeverTouchesTheNetwork() async throws {

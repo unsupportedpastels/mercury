@@ -252,8 +252,20 @@ struct ChatView: View {
         return contextBreakdown?.percent
     }
 
+    // Temporary live diagnostics for the missing tool-turn answer.
+    @State private var debugEventCount = 0
+    @State private var debugDeltaCount = 0
+    @State private var debugSummary = ""
+
     var body: some View {
         VStack(spacing: 0) {
+            if !debugSummary.isEmpty {
+                Text(debugSummary)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(Color.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 8)
+            }
             if let connectionNote {
                 Label(connectionNote, systemImage: "wifi.exclamationmark")
                     .font(.footnote)
@@ -1741,8 +1753,13 @@ struct ChatView: View {
 
     @MainActor
     private func handleEvent(_ event: ChatEvent) {
+        debugEventCount += 1
+        if case .messageDelta = event { debugDeltaCount += 1 }
+        let eventLabel = String(describing: event).prefix(24)
         // Pure transcript mutation lives in the reducer.
         transcript.apply(event)
+        debugSummary = "ev:\(debugEventCount) delta:\(debugDeltaCount) rows:\(transcript.rows.count) "
+            + "own:\(transcript.ownSessionIDs.count) main:\(Thread.isMainThread ? 1 : 0) last:\(eventLabel)"
 
         // Best-effort live surfaces: notification delivery + Live Activity.
         // The notification coordinator dedupes and suppresses when this session

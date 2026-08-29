@@ -29,12 +29,15 @@ final class RelayTransportTests: XCTestCase {
         socket: FakeRelaySocket
     ) async throws -> (channel: RelaySecureChannel, envelope: Data, reassembler: RelayFrameReassembler) {
         let channel = try TestRelayHost.responderChannel()
-        let first = try XCTUnwrap(await socket.receive())
+        let firstRaw = try await socket.receive()
+        let first = try XCTUnwrap(firstRaw)
         _ = try channel.readHandshake(first)
         try await socket.send(channel.writeHandshake())
-        let third = try XCTUnwrap(await socket.receive())
+        let thirdRaw = try await socket.receive()
+        let third = try XCTUnwrap(thirdRaw)
         XCTAssertEqual(try channel.readHandshake(third), Data())
-        let envelopeCiphertext = try XCTUnwrap(await socket.receive())
+        let envelopeRaw = try await socket.receive()
+        let envelopeCiphertext = try XCTUnwrap(envelopeRaw)
         let envelope = try channel.decrypt(envelopeCiphertext)
         let channelID = try channel.channelBinding.prefix(RelayFraming.channelIDSize)
         return (channel, envelope, RelayFrameReassembler(channelID: Data(channelID)))
@@ -81,7 +84,8 @@ final class RelayTransportTests: XCTestCase {
         try await chatSocket.sendText(outbound)
         var received: Data?
         while received == nil {
-            let ciphertext = try XCTUnwrap(await host.receive())
+            let ciphertextRaw = try await host.receive()
+            let ciphertext = try XCTUnwrap(ciphertextRaw)
             received = try admitted.reassembler.push(try admitted.channel.decrypt(ciphertext))
         }
         XCTAssertEqual(String(data: try XCTUnwrap(received), encoding: .utf8), outbound)
@@ -96,7 +100,8 @@ final class RelayTransportTests: XCTestCase {
         ) {
             try await host.send(hostChannel.encrypt(record))
         }
-        XCTAssertEqual(try await chatSocket.receiveText(), reply)
+        let replyReceived = try await chatSocket.receiveText()
+        XCTAssertEqual(replyReceived, reply)
 
         // Multi-fragment logical message round trip.
         let large = String(repeating: "y", count: RelayFraming.maxPayloadBytes + 5)
@@ -107,11 +112,13 @@ final class RelayTransportTests: XCTestCase {
         ) {
             try await host.send(hostChannel.encrypt(record))
         }
-        XCTAssertEqual(try await chatSocket.receiveText(), large)
+        let largeReceived = try await chatSocket.receiveText()
+        XCTAssertEqual(largeReceived, large)
 
         // Peer close surfaces the ChatSocketing nil contract.
         await host.close()
-        XCTAssertNil(try await chatSocket.receiveText())
+        let afterClose = try await chatSocket.receiveText()
+        XCTAssertNil(afterClose)
         await chatSocket.close()
     }
 
