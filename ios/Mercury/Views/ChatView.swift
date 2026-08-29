@@ -646,14 +646,16 @@ struct ChatView: View {
             await connectAndResume()
             return
         }
-        await loadTranscript()
+        await loadTranscript(allowStandaloneRelayRead: true)
         await connectAndResume()
     }
 
     @discardableResult
     private func loadTranscript(
         durableSessionID requestedID: String? = nil,
-        preservingActiveTurn: Bool = false
+        preservingActiveTurn: Bool = false,
+        using liveConnection: ChatConnection? = nil,
+        allowStandaloneRelayRead: Bool = false
     ) async -> Bool {
         let isRelay = appModel.activeRelayTarget != nil
         guard isRelay || appModel.serverOrigin != nil else {
@@ -683,8 +685,16 @@ struct ChatView: View {
         do {
             let fetched: [TranscriptMessage]
             if isRelay {
+                // The router permits one device socket: a standalone read
+                // while any chat connection exists (or is mid-handshake in a
+                // reconnect) would supersede it and force a reconnect loop.
+                // Standalone is safe only for the initial pre-connect load;
+                // later reads must ride an existing connection, and
+                // reconnects refresh from the resume snapshot anyway.
+                let live = liveConnection ?? connection
+                if live == nil && !allowStandaloneRelayRead { return false }
                 fetched = try await relayTranscriptMessages(
-                    transcriptID: transcriptID, limit: 100, offset: 0
+                    transcriptID: transcriptID, limit: 100, offset: 0, using: live
                 )
             } else {
                 guard let origin = appModel.serverOrigin else { return false }
@@ -731,7 +741,8 @@ struct ChatView: View {
     private func relayTranscriptMessages(
         transcriptID: String,
         limit: Int,
-        offset: Int
+        offset: Int,
+        using live: ChatConnection?
     ) async throws -> [TranscriptMessage] {
         guard let target = appModel.activeRelayTarget else {
             throw ChatError.transport("No relay target is active")
@@ -744,7 +755,7 @@ struct ChatView: View {
             "order": "latest",
         ]
         let result: [String: Any]
-        if let live = connection {
+        if let live {
             result = try await live.relayRequest("relay.session.transcript", params: params)
         } else {
             let connected = try await RelayConnector.connect(
@@ -791,10 +802,14 @@ struct ChatView: View {
         do {
             let fetchedOlder: [TranscriptMessage]
             if isRelay {
+                // Backfill only rides the live chat connection; a standalone
+                // socket would supersede it (one device socket per install).
+                guard let live = connection else { return }
                 fetchedOlder = try await relayTranscriptMessages(
                     transcriptID: transcriptID,
                     limit: TranscriptHistoryPolicy.pageSize,
-                    offset: TranscriptHistoryPolicy.nextOffset(loadedCount: loadedTranscriptCount)
+                    offset: TranscriptHistoryPolicy.nextOffset(loadedCount: loadedTranscriptCount),
+                    using: live
                 )
             } else {
                 guard let origin = appModel.serverOrigin else { return }
@@ -951,8 +966,11 @@ struct ChatView: View {
                     // a second REST transcript load here because the first
                     // load may have raced the tool phase and omitted the final
                     // assistant response. Keep the resume snapshot visible if
-                    // that follow-up request is temporarily unavailable.
-                    _ = await loadTranscript(durableSessionID: sessionID)
+                    // that follow-up request is temporarily unavailable. The
+                    // candidate is not published yet, so pass it explicitly:
+                    // in relay mode a standalone read here would supersede
+                    // this very connection and loop the reconnect.
+                    _ = await loadTranscript(durableSessionID: sessionID, using: candidate)
                     transcript.finishStreamingAssistant()
                 }
             }
