@@ -27,7 +27,17 @@ final class ProjectMetadataController {
     private var profile = "default"
     private var activeListSupported = true
 
+    /// Which transport carries the metadata connection.
+    enum Source {
+        case direct(origin: String, accessToken: String?)
+        case relay(RelayPairedTarget)
+    }
+
     func start(origin: String, accessToken: String?, profile: String) async {
+        await start(source: .direct(origin: origin, accessToken: accessToken), profile: profile)
+    }
+
+    func start(source: Source, profile: String) async {
         generation &+= 1
         let loadGeneration = generation
         await closeOwnedConnection()
@@ -45,13 +55,22 @@ final class ProjectMetadataController {
         isLoading = true
 
         do {
-            let gateway = try ChatGateway(
-                origin: origin,
-                accessToken: accessToken,
-                ticketClient: WsTicketClient(session: .shared),
-                socketFactory: URLSessionChatWebSocketFactory()
-            )
-            let socket = try await gateway.connect()
+            let socket: any ChatSocketing
+            switch source {
+            case let .direct(origin, accessToken):
+                let gateway = try ChatGateway(
+                    origin: origin,
+                    accessToken: accessToken,
+                    ticketClient: WsTicketClient(session: .shared),
+                    socketFactory: URLSessionChatWebSocketFactory()
+                )
+                socket = try await gateway.connect()
+            case let .relay(target):
+                let connected = try await RelayConnector.connect(
+                    target: target, profile: profile
+                )
+                socket = RelayChatSocket(connected: connected)
+            }
             guard loadGeneration == generation else {
                 await socket.close()
                 return

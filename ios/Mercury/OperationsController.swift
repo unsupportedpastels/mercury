@@ -13,23 +13,47 @@ final class OperationsController: ObservableObject {
     private var restClient: CronRESTClient?
 
     func connect(appModel: AppModel) async {
-        guard connection == nil,
-              let origin = appModel.serverOrigin,
-              let originURL = URL(string: origin) else {
+        guard connection == nil else {
             loadError = "Sign in to load scheduled jobs."
             return
         }
-        let token = storedAccessToken(origin: origin)
+        let relayTarget = appModel.activeRelayTarget
+        guard relayTarget != nil || appModel.serverOrigin != nil else {
+            loadError = "Sign in to load scheduled jobs."
+            return
+        }
         isLoading = true
         loadError = nil
         do {
-            let gateway = try ChatGateway(
-                origin: origin,
-                accessToken: token,
-                ticketClient: WsTicketClient(session: .shared),
-                socketFactory: URLSessionChatWebSocketFactory()
-            )
-            let socket = try await gateway.connect()
+            let socket: any ChatSocketing
+            if let relayTarget {
+                let connected = try await RelayConnector.connect(
+                    target: relayTarget, profile: appModel.activeProfile
+                )
+                socket = RelayChatSocket(connected: connected)
+                // Run-now uses REST and stands down over the relay.
+                restClient = nil
+            } else {
+                guard let origin = appModel.serverOrigin,
+                      let originURL = URL(string: origin) else {
+                    isLoading = false
+                    loadError = "Sign in to load scheduled jobs."
+                    return
+                }
+                let token = storedAccessToken(origin: origin)
+                let gateway = try ChatGateway(
+                    origin: origin,
+                    accessToken: token,
+                    ticketClient: WsTicketClient(session: .shared),
+                    socketFactory: URLSessionChatWebSocketFactory()
+                )
+                socket = try await gateway.connect()
+                restClient = CronRESTClient(
+                    origin: originURL,
+                    accessToken: token,
+                    profile: appModel.activeProfile
+                )
+            }
             let connection = try ChatConnection(socket: socket)
             self.connection = connection
             let events = connection.start()
@@ -41,11 +65,6 @@ final class OperationsController: ObservableObject {
             client = CronClient(request: { method, params in
                 try await connection.operationsRequest(method, params: params)
             })
-            restClient = CronRESTClient(
-                origin: originURL,
-                accessToken: token,
-                profile: appModel.activeProfile
-            )
             try await refresh(profile: appModel.activeProfile)
         } catch {
             isLoading = false

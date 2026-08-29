@@ -16,7 +16,11 @@ enum RelayFraming {
     static let headerSize = 50
     static let maxNoisePlaintextBytes = 65_519
     static let maxPayloadBytes = maxNoisePlaintextBytes - headerSize // 65,469
-    static let maxLogicalMessageBytes = 1 << 20
+    /// Raised from the initial 1 MiB so attachments comparable to direct
+    /// mode fit through the relay; kept under the router's 25 MB / 10 s
+    /// per-socket byte budget so one maximal message cannot trip it. Must
+    /// match the plugin's `framing.MAX_LOGICAL_MESSAGE_BYTES`.
+    static let maxLogicalMessageBytes = 16 << 20
     static let maxFragmentCount = (maxLogicalMessageBytes + maxPayloadBytes - 1) / maxPayloadBytes
 
     struct DecodeError: Error, Equatable {

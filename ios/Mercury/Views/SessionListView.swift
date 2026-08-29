@@ -63,7 +63,10 @@ struct SessionListView: View {
     }
 
     private var projectScope: String {
-        "\(appModel.serverOrigin ?? "")\u{0}\(appModel.activeProfile)"
+        let host = appModel.serverOrigin
+            ?? appModel.activeRelayTarget.map { "relay:\($0.id.uuidString)" }
+            ?? ""
+        return "\(host)\u{0}\(appModel.activeProfile)"
     }
 
     private var homeProjects: [ProjectSummary] {
@@ -325,6 +328,13 @@ struct SessionListView: View {
                     origin: appModel.serverOrigin ?? "",
                     profile: appModel.activeProfile
                 )
+                if let target = appModel.activeRelayTarget {
+                    await projectController.start(
+                        source: .relay(target),
+                        profile: appModel.activeProfile
+                    )
+                    return
+                }
                 guard let credentials = currentCredentials() else {
                     await projectController.stop()
                     return
