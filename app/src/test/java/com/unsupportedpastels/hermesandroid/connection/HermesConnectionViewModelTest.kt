@@ -8,6 +8,7 @@ import com.unsupportedpastels.hermesandroid.gateway.CacheSource
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
 import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
+import com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnector
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatEvent
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatMethodNotFoundException
@@ -98,6 +99,96 @@ class HermesConnectionViewModelTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun externalTunnelBootstrapsMemoryCredentialBeforeProtectedSessions() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val client = TunnelConnectionClient()
+        val bootstrap = RecordingTunnelBootstrap(origin, listOf("session-token"))
+        val store = RecordingNativeTokenStore()
+
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            tokenStore = store,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        assertEquals(viewModel.snapshots.value.connectionError, ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+        assertEquals(AuthenticationState.Authenticated, viewModel.snapshots.value.authenticationState)
+        assertEquals(listOf("Tunnel session"), viewModel.snapshots.value.durableSessions.map { it.title })
+        assertEquals(1, bootstrap.calls)
+        assertTrue(client.credentials.single() is HermesCredential.LoopbackSession)
+        assertEquals(0, store.loadCalls)
+        assertEquals(0, store.saveCalls)
+        assertEquals(0, store.clearCalls)
+    }
+
+    @Test
+    fun externalTunnelPublishesSpecificUnavailableAndBootstrapErrors() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val unavailable = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = TunnelConnectionClient(probeFailure = HermesConnectionException("refused")),
+            loopbackSessionBootstrapClient = RecordingTunnelBootstrap(origin, emptyList()),
+        )
+        advanceUntilIdle()
+        assertEquals(TunnelConnectionFailure.TunnelUnavailable, unavailable.snapshots.value.tunnelConnectionFailure)
+        assertTrue(unavailable.snapshots.value.connectionError!!.startsWith("SSH tunnel unavailable"))
+
+        val rejected = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = TunnelConnectionClient(),
+            loopbackSessionBootstrapClient = object : LoopbackSessionBootstrapClient {
+                override suspend fun bootstrap(origin: ServerOrigin) = LoopbackSessionBootstrapResult.Failure(
+                    LoopbackSessionBootstrapFailure.TokenAbsent,
+                )
+            },
+        )
+        advanceUntilIdle()
+        assertEquals(TunnelConnectionFailure.BootstrapRejected, rejected.snapshots.value.tunnelConnectionFailure)
+        assertEquals("Hermes tunnel authorization bootstrap was rejected", rejected.snapshots.value.connectionError)
+    }
+
+    @Test
+    fun externalTunnelRetriesAnIdempotentReadAfterOneSharedRebootstrap() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val client = TunnelConnectionClient(rejectSessionCalls = setOf(2))
+        val bootstrap = RecordingTunnelBootstrap(origin, listOf("old-token", "new-token"))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        viewModel.refreshDurableSessions(archivedOnly = true).join()
+        advanceUntilIdle()
+
+        assertEquals(2, bootstrap.calls)
+        assertEquals(3, client.credentials.size)
+        assertTrue(client.credentials[1] !== client.credentials[2])
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+    }
+
+    @Test
+    fun externalTunnelNeverReplaysMutationAfterAuthorizationRejection() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val client = TunnelConnectionClient(rejectMutation = true)
+        val bootstrap = RecordingTunnelBootstrap(origin, listOf("session-token", "unused-token"))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        assertFalse(viewModel.setVoiceAutoTts(true))
+
+        assertEquals(1, client.mutationCalls)
+        assertEquals(1, bootstrap.calls)
     }
 
     @Test
@@ -3239,6 +3330,81 @@ private fun authRequiredInfo() = HermesConnectionInfo(
     nativeOAuthSupported = true,
     providers = listOf(HermesAuthProvider("nous", "Nous Research")),
 )
+
+private fun tunnelSettings(origin: ServerOrigin) = ServerSettingsState.Ready(
+    ServerCatalog.single(
+        ServerCatalogEntry(origin, connectionMode = ServerConnectionMode.ExternalSshTunnel),
+    ),
+)
+
+private class RecordingTunnelBootstrap(
+    private val origin: ServerOrigin,
+    tokens: List<String>,
+) : LoopbackSessionBootstrapClient {
+    private val remaining = ArrayDeque(tokens)
+    var calls = 0
+
+    override suspend fun bootstrap(origin: ServerOrigin): LoopbackSessionBootstrapResult {
+        calls += 1
+        assertEquals(this.origin, origin)
+        val token = remaining.removeFirstOrNull()
+            ?: return LoopbackSessionBootstrapResult.Failure(LoopbackSessionBootstrapFailure.TransportFailure)
+        return LoopbackSessionBootstrapResult.Success(HermesCredential.LoopbackSession.create(origin, token))
+    }
+}
+
+private class TunnelConnectionClient(
+    private val probeFailure: Exception? = null,
+    private val rejectSessionCalls: Set<Int> = emptySet(),
+    private val rejectMutation: Boolean = false,
+) : HermesConnectionClient {
+    val credentials = mutableListOf<HermesCredential>()
+    var mutationCalls = 0
+
+    override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo =
+        throw AssertionError("Tunnel connection must use the public-only probe")
+
+    override suspend fun probeExternalTunnel(serverOrigin: ServerOrigin): HermesConnectionInfo {
+        probeFailure?.let { throw it }
+        return HermesConnectionInfo("0.20.4", false, false, emptyList())
+    }
+
+    override suspend fun loadSessionsForProfile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        archivedOnly: Boolean,
+    ): List<SessionSummary> {
+        credentials += credential
+        if (credentials.size in rejectSessionCalls) {
+            throw HermesAuthenticationRejectedException("Hermes sessions returned HTTP 401")
+        }
+        return listOf(SessionSummary(DurableSessionId("tunnel-1"), "Tunnel session"))
+    }
+
+    override suspend fun updateServerConfig(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        config: JsonObject,
+    ): Boolean {
+        mutationCalls += 1
+        if (rejectMutation) throw HermesUnauthorizedException()
+        return true
+    }
+}
+
+private class RecordingNativeTokenStore : NativeTokenStore {
+    var loadCalls = 0
+    var saveCalls = 0
+    var clearCalls = 0
+    override suspend fun load(serverOrigin: ServerOrigin): NativeTokenSet? {
+        loadCalls += 1
+        return null
+    }
+    override suspend fun save(serverOrigin: ServerOrigin, tokens: NativeTokenSet) { saveCalls += 1 }
+    override suspend fun clear(serverOrigin: ServerOrigin) { clearCalls += 1 }
+}
 
 private class FakeHermesConnectionClient : HermesConnectionClient {
     val response = CompletableDeferred<HermesConnectionInfo>()

@@ -24,6 +24,7 @@ sealed interface HermesCredential {
         private val token: String,
     ) : HermesCredential {
         internal fun apply(builder: HttpRequestBuilder) = builder.bearerAuth(token)
+        internal fun hasSameAuthorization(other: NativeBearer): Boolean = token == other.token
 
         override fun toString(): String = "HermesCredential.NativeBearer(***)"
 
@@ -48,6 +49,9 @@ sealed interface HermesCredential {
             return URLEncoder.encode(token, StandardCharsets.UTF_8.name())
         }
 
+        internal fun hasSameAuthorization(other: LoopbackSession): Boolean =
+            origin == other.origin && token == other.token
+
         private fun requireMatchingOrigin(requestOrigin: ServerOrigin) {
             require(requestOrigin == origin) { "Loopback session credential belongs to another origin" }
         }
@@ -67,6 +71,17 @@ sealed interface HermesCredential {
 internal fun String?.toHermesCredential(): HermesCredential =
     this?.takeIf(String::isNotBlank)?.let(HermesCredential.NativeBearer::create)
         ?: HermesCredential.None
+
+internal fun HermesCredential.toHermesCredential(): HermesCredential = this
+
+internal fun HermesCredential.hasSameAuthorization(other: HermesCredential): Boolean = when {
+    this === HermesCredential.None && other === HermesCredential.None -> true
+    this is HermesCredential.NativeBearer && other is HermesCredential.NativeBearer ->
+        hasSameAuthorization(other)
+    this is HermesCredential.LoopbackSession && other is HermesCredential.LoopbackSession ->
+        hasSameAuthorization(other)
+    else -> false
+}
 
 internal fun HttpRequestBuilder.applyHermesCredential(
     credential: HermesCredential,

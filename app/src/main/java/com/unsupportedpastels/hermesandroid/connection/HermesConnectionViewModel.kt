@@ -40,6 +40,7 @@ import com.unsupportedpastels.hermesandroid.gateway.ChatBillingNotice
 import com.unsupportedpastels.hermesandroid.gateway.ChatSessionSnapshot
 import com.unsupportedpastels.hermesandroid.gateway.CacheSource
 import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
+import com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnector
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatEvent
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatException
@@ -138,6 +139,8 @@ private const val MAX_SESSION_TITLE_CHARS = 256
 private const val SLASH_COMPLETION_DEBOUNCE_MS = 60L
 private const val OPERATIONAL_STATUS_POLL_INTERVAL_MILLIS = 60_000L
 private const val RECENT_SESSIONS_PAGE_SIZE = 20
+private const val TUNNEL_UNAVAILABLE_MESSAGE =
+    "SSH tunnel unavailable. Start or reconnect the local port forward in your SSH app, then retry."
 
 internal suspend fun <Probe, SavedToken : Any> probeAndLoadSavedTokenConcurrently(
     probe: suspend () -> Probe,
@@ -222,6 +225,12 @@ private data class ActiveTokenRecord(
     val tokens: NativeTokenSet,
 )
 
+private data class ActiveLoopbackCredentialRecord(
+    val origin: ServerOrigin,
+    val generation: Long,
+    val credential: HermesCredential.LoopbackSession,
+)
+
 private data class OperationalStatusFetch(
     val origin: ServerOrigin,
     val generation: Long,
@@ -240,7 +249,7 @@ private data class DurableSessionsFetchKey(
 private data class ProjectMetadataSessionRecord(
     val origin: ServerOrigin,
     val generation: Long,
-    val accessToken: String,
+    val credential: HermesCredential,
     val session: HermesChatSession,
 )
 
@@ -323,6 +332,7 @@ class HermesConnectionViewModel(
     private val notifications: TurnNotificationController = NoOpTurnNotificationController,
     private val sessionFilterRepository: SessionFilterRepository? = null,
     private val speechStreamConnector: SpeechStreamConnector? = null,
+    private val loopbackSessionBootstrapClient: LoopbackSessionBootstrapClient? = null,
 ) : ViewModel() {
     private val mutableSnapshots = MutableStateFlow(HermesGatewaySnapshot())
     val snapshots: StateFlow<HermesGatewaySnapshot> = mutableSnapshots.asStateFlow()
@@ -343,12 +353,15 @@ class HermesConnectionViewModel(
     private var cacheLoadJob: Job? = null
     private var profileGeneration = 0L
     private var activeOrigin: ServerOrigin? = null
+    private var activeConnectionMode: ServerConnectionMode? = null
     private var activeTokens: ActiveTokenRecord? = null
+    private var activeLoopbackCredential: ActiveLoopbackCredentialRecord? = null
 
     // Serializes token refresh: concurrent callers that all observe an expired access
     // token must not each spend the same single-use rotated refresh token, and a stale
     // refresh result must never overwrite a newer persisted token set.
     private val tokenRefreshMutex = Mutex()
+    private val loopbackCredentialMutex = Mutex()
     private var generation = 0L
     private var connectionJob: Job? = null
     private var projectLoadJob: Job? = null
@@ -476,10 +489,13 @@ class HermesConnectionViewModel(
             var hasAppliedReadySettings = false
             settingsStates.collect { settingsState ->
                 val nextOrigin = (settingsState as? ServerSettingsState.Ready)?.activeOrigin
+                val nextMode = (settingsState as? ServerSettingsState.Ready)
+                    ?.catalog?.activeEntry?.connectionMode
                 // Label edits and catalog metadata updates must not tear down a live transport when
-                // the active origin is unchanged. Only an actual active-origin transition resets
-                // client state and starts a new connection generation.
-                if (hasAppliedReadySettings && settingsState is ServerSettingsState.Ready && nextOrigin == activeOrigin) {
+                // the active origin and its trust mode are unchanged.
+                if (hasAppliedReadySettings && settingsState is ServerSettingsState.Ready &&
+                    nextOrigin == activeOrigin && nextMode == activeConnectionMode
+                ) {
                     return@collect
                 }
                 hasAppliedReadySettings = settingsState is ServerSettingsState.Ready
@@ -531,8 +547,10 @@ class HermesConnectionViewModel(
                 serverDurableIds.clear()
                 mutableAttachments.value = emptyMap()
                 activeTokens = null
+                activeLoopbackCredential = null
                 setSessionFilterScope(null, null)
                 activeOrigin = nextOrigin
+                activeConnectionMode = nextMode
                 lastReadySettings = settingsState as? ServerSettingsState.Ready
                 profileGeneration += 1
                 when (settingsState) {
@@ -556,7 +574,7 @@ class HermesConnectionViewModel(
                             )
                         }
                         connectionJob = viewModelScope.launch {
-                            connect(settingsState.activeOrigin, currentGeneration)
+                            connect(settingsState.activeOrigin, currentGeneration, nextMode)
                         }
                     }
                 }
@@ -587,7 +605,7 @@ class HermesConnectionViewModel(
         // in-progress attempt, or a deliberate sign-in prompt.
         if (mutableSnapshots.value.connectionState != ConnectionState.Disconnected) return
         if (mutableSnapshots.value.authenticationState == AuthenticationState.SignInRequired) return
-        if (foregroundReconnectJob?.isActive == true) return
+        if (connectionJob?.isActive == true || foregroundReconnectJob?.isActive == true) return
         foregroundReconnectJob = viewModelScope.launch { reconnectActiveOrigin() }
     }
 
@@ -598,7 +616,11 @@ class HermesConnectionViewModel(
         val currentGeneration = ++generation
         connectionJob?.cancel()
         val job = viewModelScope.launch {
-            connect(settings.activeOrigin, currentGeneration)
+            connect(
+                settings.activeOrigin,
+                currentGeneration,
+                settings.catalog.activeEntry?.connectionMode,
+            )
         }
         connectionJob = job
         job.join()
@@ -700,9 +722,18 @@ class HermesConnectionViewModel(
         }
     }
 
-    private suspend fun connect(serverOrigin: ServerOrigin?, currentGeneration: Long) {
+    private suspend fun connect(
+        serverOrigin: ServerOrigin?,
+        currentGeneration: Long,
+        connectionMode: ServerConnectionMode? = ServerConnectionMode.Direct,
+    ) {
         if (serverOrigin == null) {
             mutableSnapshots.value = HermesGatewaySnapshot()
+            return
+        }
+
+        if (connectionMode == ServerConnectionMode.ExternalSshTunnel) {
+            connectExternalTunnel(serverOrigin, currentGeneration)
             return
         }
 
@@ -749,6 +780,7 @@ class HermesConnectionViewModel(
             currentCoroutineContext().ensureActive()
             if (generation != currentGeneration || activeOrigin != serverOrigin) return
             if (usableTokens != null) {
+                val credential = usableTokens.accessToken.toHermesCredential()
                 if (store != null && usableTokens != stored) {
                     store.save(serverOrigin, usableTokens)
                     currentCoroutineContext().ensureActive()
@@ -759,13 +791,13 @@ class HermesConnectionViewModel(
                 if (projectConnector != null) {
                     val concurrentResult = authenticateAndPrefetchConcurrently(
                         authenticate = {
-                            client.authenticate(serverOrigin, usableTokens.accessToken.toHermesCredential())
+                            client.authenticate(serverOrigin, credential)
                         },
                         prefetchMetadata = {
                             connectProjectMetadataCandidate(
                                 serverOrigin = serverOrigin,
                                 originGeneration = currentGeneration,
-                                accessToken = usableTokens.accessToken,
+                                credential = credential,
                             )
                         },
                         discardMetadata = { candidate ->
@@ -775,7 +807,7 @@ class HermesConnectionViewModel(
                     authenticated = concurrentResult.first
                     prefetchedSession = concurrentResult.second.getOrNull()
                 } else {
-                    authenticated = client.authenticate(serverOrigin, usableTokens.accessToken.toHermesCredential())
+                    authenticated = client.authenticate(serverOrigin, credential)
                     prefetchedSession = null
                 }
                 try {
@@ -808,14 +840,14 @@ class HermesConnectionViewModel(
                     adoptProjectMetadataSessionCandidate(
                         serverOrigin = serverOrigin,
                         originGeneration = currentGeneration,
-                        accessToken = usableTokens.accessToken,
+                        credential = credential,
                         candidate = candidate,
                     )
                 }
                 startProjectTreeLoad(
                     serverOrigin = serverOrigin,
                     originGeneration = currentGeneration,
-                    accessToken = usableTokens.accessToken,
+                    credential = credential,
                     durableSessions = authenticated.sessions,
                 )
                 refreshOperationalStatus(force = true)
@@ -851,10 +883,107 @@ class HermesConnectionViewModel(
         }
     }
 
+    private suspend fun connectExternalTunnel(serverOrigin: ServerOrigin, currentGeneration: Long) {
+        val prior = mutableSnapshots.value
+        mutableSnapshots.value = prior.copy(
+            connectionState = ConnectionState.Connecting,
+            connectionError = null,
+            tunnelConnectionFailure = null,
+        )
+        try {
+            val info = client.probeExternalTunnel(serverOrigin)
+            ensureCurrentTunnel(serverOrigin, currentGeneration)
+            if (info.authRequired) {
+                publishTunnelFailure(
+                    serverOrigin, currentGeneration, TunnelConnectionFailure.BootstrapRejected,
+                    "Hermes tunnel target requires OAuth authorization",
+                )
+                return
+            }
+            val bootstrap = loopbackSessionBootstrapClient?.bootstrap(serverOrigin)
+                ?: LoopbackSessionBootstrapResult.Failure(LoopbackSessionBootstrapFailure.TransportFailure)
+            val credential = (bootstrap as? LoopbackSessionBootstrapResult.Success)?.credential
+                ?: run {
+                    val reason = (bootstrap as LoopbackSessionBootstrapResult.Failure).reason
+                    val unavailable = reason == LoopbackSessionBootstrapFailure.TransportFailure
+                    publishTunnelFailure(
+                        serverOrigin,
+                        currentGeneration,
+                        if (unavailable) TunnelConnectionFailure.TunnelUnavailable
+                        else TunnelConnectionFailure.BootstrapRejected,
+                        if (unavailable) TUNNEL_UNAVAILABLE_MESSAGE
+                        else "Hermes tunnel authorization bootstrap was rejected",
+                    )
+                    return
+                }
+            val sessions = client.loadSessionsForProfile(
+                serverOrigin,
+                credential,
+                "default",
+                archivedOnly = false,
+            )
+            ensureCurrentTunnel(serverOrigin, currentGeneration)
+            activeLoopbackCredential = ActiveLoopbackCredentialRecord(serverOrigin, currentGeneration, credential)
+            mutableSnapshots.value = mutableSnapshots.value.copy(
+                connectionState = ConnectionState.Connected,
+                authenticationState = AuthenticationState.Authenticated,
+                serverVersion = info.version,
+                nativeOAuthSupported = info.nativeOAuthSupported,
+                authProviders = info.providers,
+                durableSessions = sessions,
+                sessionMetadataSource = CacheSource.Live,
+                connectionError = null,
+                tunnelConnectionFailure = null,
+            )
+            persistCachedMetadata(serverOrigin, "default", sessions, currentGeneration)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: HermesAuthenticationRejectedException) {
+            publishTunnelFailure(
+                serverOrigin, currentGeneration, TunnelConnectionFailure.CredentialRejected,
+                "Hermes tunnel authorization was rejected",
+            )
+        } catch (_: HermesUnauthorizedException) {
+            publishTunnelFailure(
+                serverOrigin, currentGeneration, TunnelConnectionFailure.CredentialRejected,
+                "Hermes tunnel authorization was rejected",
+            )
+        } catch (error: Exception) {
+            publishTunnelFailure(
+                serverOrigin, currentGeneration, TunnelConnectionFailure.TunnelUnavailable,
+                "$TUNNEL_UNAVAILABLE_MESSAGE (${error.javaClass.simpleName}: ${error.message})",
+            )
+        }
+    }
+
+    private suspend fun ensureCurrentTunnel(origin: ServerOrigin, expectedGeneration: Long) {
+        currentCoroutineContext().ensureActive()
+        if (generation != expectedGeneration || activeOrigin != origin ||
+            activeConnectionMode != ServerConnectionMode.ExternalSshTunnel
+        ) throw CancellationException("Server origin was replaced")
+    }
+
+    private fun publishTunnelFailure(
+        origin: ServerOrigin,
+        expectedGeneration: Long,
+        failure: TunnelConnectionFailure,
+        message: String,
+    ) {
+        if (generation != expectedGeneration || activeOrigin != origin ||
+            activeConnectionMode != ServerConnectionMode.ExternalSshTunnel
+        ) return
+        activeLoopbackCredential = null
+        mutableSnapshots.value = mutableSnapshots.value.copy(
+            connectionState = ConnectionState.Disconnected,
+            connectionError = message,
+            tunnelConnectionFailure = failure,
+        )
+    }
+
     private fun startProjectTreeLoad(
         serverOrigin: ServerOrigin,
         originGeneration: Long,
-        accessToken: String,
+        credential: HermesCredential,
         durableSessions: List<SessionSummary>,
         profile: String = "default",
         preserveContent: Boolean = false,
@@ -886,7 +1015,7 @@ class HermesConnectionViewModel(
                 val tree = withProjectMetadataSession(
                     serverOrigin = serverOrigin,
                     originGeneration = originGeneration,
-                    accessToken = accessToken,
+                    credential = credential,
                 ) { session ->
                     session.loadProjectTree(profile = profile)
                 }
@@ -932,8 +1061,9 @@ class HermesConnectionViewModel(
         }
     }
 
-    private suspend fun <T> withHermesRestOperation(
-        block: suspend (ServerOrigin, String?) -> T,
+    private suspend fun <T> withHermesRestRead(
+        retryOnCredentialRejection: Boolean,
+        block: suspend (ServerOrigin, HermesCredential) -> T,
     ): T {
         val serverOrigin = activeOrigin
             ?: throw HermesConnectionException("Hermes Serve is not connected")
@@ -941,20 +1071,36 @@ class HermesConnectionViewModel(
         if (!isCurrentRestOperation(serverOrigin, originGeneration)) {
             throw HermesConnectionException("Hermes host files are unavailable")
         }
-        val accessToken = accessTokenForRequest(serverOrigin, originGeneration)
+        val credential = credentialForRequest(serverOrigin, originGeneration)
         if (
             mutableSnapshots.value.authenticationState == AuthenticationState.Authenticated &&
-            accessToken == null
+            credential == HermesCredential.None
         ) {
             throw HermesConnectionException("Hermes host files require authentication")
         }
-        val result = block(serverOrigin, accessToken)
+        val result = if (retryOnCredentialRejection) {
+            withOneLoopbackReauthentication(
+                serverOrigin,
+                originGeneration,
+                credential,
+            ) { currentCredential -> block(serverOrigin, currentCredential) }
+        } else {
+            block(serverOrigin, credential)
+        }
         currentCoroutineContext().ensureActive()
         if (!isCurrentRestOperation(serverOrigin, originGeneration)) {
             throw CancellationException("Server origin was replaced")
         }
         return result
     }
+
+    private suspend fun <T> withHermesRestRead(
+        block: suspend (ServerOrigin, HermesCredential) -> T,
+    ): T = withHermesRestRead(retryOnCredentialRejection = true, block)
+
+    private suspend fun <T> withHermesRestMutation(
+        block: suspend (ServerOrigin, HermesCredential) -> T,
+    ): T = withHermesRestRead(retryOnCredentialRejection = false, block)
 
     /**
      * Refresh which `/api/audio/…` contracts the connected server advertises and
@@ -963,7 +1109,7 @@ class HermesConnectionViewModel(
      */
     suspend fun refreshVoiceCapabilities() {
         val probe = runCatching {
-            withHermesRestOperation { origin, token ->
+            withHermesRestRead { origin, token ->
                 val profile = mutableSnapshots.value.selectedProfile
                 val caps = client.probeVoiceCapabilities(origin, token.toHermesCredential(), profile)
                 val config = client.loadVoiceServerConfig(origin, token.toHermesCredential(), profile)
@@ -987,7 +1133,7 @@ class HermesConnectionViewModel(
         val previous = mutableVoiceServerConfig.value
         mutableVoiceServerConfig.value = previous.copy(autoTts = enabled)
         val accepted = runCatching {
-            withHermesRestOperation { origin, token ->
+            withHermesRestMutation { origin, token ->
                 client.updateServerConfig(
                     origin,
                     token.toHermesCredential(),
@@ -1009,7 +1155,7 @@ class HermesConnectionViewModel(
         val previous = mutableVoiceServerConfig.value
         mutableVoiceServerConfig.value = previous.copy(elevenLabsVoiceId = trimmed)
         val accepted = runCatching {
-            withHermesRestOperation { origin, token ->
+            withHermesRestMutation { origin, token ->
                 client.updateServerConfig(
                     origin,
                     token.toHermesCredential(),
@@ -1031,7 +1177,7 @@ class HermesConnectionViewModel(
 
     /** ElevenLabs voices for the settings picker; empty on any failure. */
     suspend fun loadElevenLabsVoices(): List<ElevenLabsVoice> = runCatching {
-        withHermesRestOperation { origin, token ->
+        withHermesRestRead { origin, token ->
             client.listElevenLabsVoices(
                 origin,
                 token.toHermesCredential(),
@@ -1042,7 +1188,7 @@ class HermesConnectionViewModel(
 
     /** Transcribe a dictation recording via the server's audited STT chain. */
     suspend fun transcribeDictation(dataUrl: String, mimeType: String?): TranscriptionResult =
-        withHermesRestOperation { origin, token ->
+        withHermesRestMutation { origin, token ->
             client.transcribeAudio(
                 origin,
                 token.toHermesCredential(),
@@ -1060,14 +1206,14 @@ class HermesConnectionViewModel(
     suspend fun openSpeechStream(): SpeechStreamSocket? {
         val connector = speechStreamConnector ?: return null
         if (!mutableVoiceCapabilities.value.canStreamSpeech) return null
-        return withHermesRestOperation { origin, token ->
+        return withHermesRestMutation { origin, token ->
             connector.connect(origin, token.toHermesCredential(), mutableSnapshots.value.selectedProfile)
         }
     }
 
     /** Synthesize [text] to speech via the server's TTS chain (read-aloud REST path). */
     suspend fun synthesizeSpeech(text: String): SpeechAudio =
-        withHermesRestOperation { origin, token ->
+        withHermesRestMutation { origin, token ->
             client.speakText(
                 origin,
                 token.toHermesCredential(),
@@ -1096,11 +1242,11 @@ class HermesConnectionViewModel(
     private suspend fun connectProjectMetadataCandidate(
         serverOrigin: ServerOrigin,
         originGeneration: Long,
-        accessToken: String,
+        credential: HermesCredential,
     ): HermesChatSession {
         val connector = projectConnector
             ?: throw HermesChatMethodNotFoundException("projects.tree")
-        val candidate = connector.connect(serverOrigin, accessToken.toHermesCredential())
+        val candidate = connector.connect(serverOrigin, credential)
         try {
             currentCoroutineContext().ensureActive()
             if (!isCurrentOrigin(serverOrigin, originGeneration)) {
@@ -1123,7 +1269,7 @@ class HermesConnectionViewModel(
     private suspend fun adoptProjectMetadataSessionCandidate(
         serverOrigin: ServerOrigin,
         originGeneration: Long,
-        accessToken: String,
+        credential: HermesCredential,
         candidate: HermesChatSession,
     ): HermesChatSession? {
         var sessionToUse: HermesChatSession? = null
@@ -1137,7 +1283,7 @@ class HermesConnectionViewModel(
                     current != null &&
                     current.origin == serverOrigin &&
                     current.generation == originGeneration &&
-                    current.accessToken == accessToken
+                    current.credential.hasSameAuthorization(credential)
                 ) {
                     sessionToUse = current.session
                     sessionsToClose += candidate
@@ -1146,7 +1292,7 @@ class HermesConnectionViewModel(
                     activeProjectMetadataSession = ProjectMetadataSessionRecord(
                         origin = serverOrigin,
                         generation = originGeneration,
-                        accessToken = accessToken,
+                        credential = credential,
                         session = candidate,
                     )
                     sessionToUse = candidate
@@ -1165,14 +1311,14 @@ class HermesConnectionViewModel(
     private suspend fun acquireProjectMetadataSession(
         serverOrigin: ServerOrigin,
         originGeneration: Long,
-        accessToken: String,
+        credential: HermesCredential,
     ): HermesChatSession {
         synchronized(projectMetadataLock) {
             activeProjectMetadataSession
                 ?.takeIf {
                     it.origin == serverOrigin &&
                         it.generation == originGeneration &&
-                        it.accessToken == accessToken
+                        it.credential.hasSameAuthorization(credential)
                 }
                 ?.let { return it.session }
         }
@@ -1180,12 +1326,12 @@ class HermesConnectionViewModel(
         val candidate = connectProjectMetadataCandidate(
             serverOrigin = serverOrigin,
             originGeneration = originGeneration,
-            accessToken = accessToken,
+            credential = credential,
         )
         return adoptProjectMetadataSessionCandidate(
             serverOrigin = serverOrigin,
             originGeneration = originGeneration,
-            accessToken = accessToken,
+            credential = credential,
             candidate = candidate,
         ) ?: throw CancellationException("Server origin was replaced")
     }
@@ -1193,7 +1339,7 @@ class HermesConnectionViewModel(
     private suspend fun <T> withProjectMetadataSession(
         serverOrigin: ServerOrigin,
         originGeneration: Long,
-        accessToken: String,
+        credential: HermesCredential,
         block: suspend (HermesChatSession) -> T,
     ): T {
         // The OS can silently kill the metadata WebSocket while the app is
@@ -1207,7 +1353,7 @@ class HermesConnectionViewModel(
             val session = acquireProjectMetadataSession(
                 serverOrigin = serverOrigin,
                 originGeneration = originGeneration,
-                accessToken = accessToken,
+                credential = credential,
             )
             try {
                 val result = block(session)
@@ -1236,12 +1382,14 @@ class HermesConnectionViewModel(
         if (!isCurrentProjectLoad(serverOrigin, originGeneration)) {
             throw HermesChatProtocolException("Hermes project metadata is unavailable")
         }
-        val accessToken = accessTokenForRequest(serverOrigin, originGeneration)
-            ?: throw HermesChatProtocolException("Hermes project metadata requires authentication")
+        val credential = credentialForRequest(serverOrigin, originGeneration)
+        if (credential == HermesCredential.None) {
+            throw HermesChatProtocolException("Hermes project metadata requires authentication")
+        }
         return withProjectMetadataSession(
             serverOrigin = serverOrigin,
             originGeneration = originGeneration,
-            accessToken = accessToken,
+            credential = credential,
             block = block,
         )
     }
@@ -1529,17 +1677,15 @@ class HermesConnectionViewModel(
         val job = viewModelScope.launch {
             _homeRefreshing.value = true
             try {
-                val accessToken = accessTokenForRequest(serverOrigin, originGeneration)
-                    ?: return@launch
-                currentCoroutineContext().ensureActive()
-                if (!isCurrentProjectLoad(serverOrigin, originGeneration)) return@launch
                 val profile = mutableSnapshots.value.selectedProfile.trim().take(64).ifEmpty { "default" }
-                val durableSessions = client.loadSessionsForProfile(
-                    serverOrigin,
-                    accessToken.toHermesCredential(),
-                    profile,
-                    archivedOnly = activeSessionArchivedFilter,
-                ).also {
+                val durableSessions = withCurrentHermesRestRead(serverOrigin, originGeneration) { credential ->
+                    client.loadSessionsForProfile(
+                        serverOrigin,
+                        credential,
+                        profile,
+                        archivedOnly = activeSessionArchivedFilter,
+                    )
+                }.also {
                     lastDurableSessionsFetchKey = DurableSessionsFetchKey(
                         origin = serverOrigin.value,
                         generation = originGeneration,
@@ -1562,7 +1708,7 @@ class HermesConnectionViewModel(
                 startProjectTreeLoad(
                     serverOrigin = serverOrigin,
                     originGeneration = originGeneration,
-                    accessToken = accessToken,
+                    credential = credentialForRequest(serverOrigin, originGeneration),
                     durableSessions = durableSessions,
                     preserveContent = true,
                 )
@@ -1646,15 +1792,21 @@ class HermesConnectionViewModel(
                 managementError = null,
             )
             try {
-                val token = accessTokenForRequest(origin, expectedGeneration)
-                    ?: throw HermesConnectionException("Hermes profile settings require authentication")
-                val profiles = client.loadProfiles(origin, token.toHermesCredential())
+                var token = credentialForRequest(origin, expectedGeneration)
+                if (token == HermesCredential.None) {
+                    throw HermesConnectionException("Hermes profile settings require authentication")
+                }
+                val profiles = withCurrentHermesRestRead(origin, expectedGeneration) { credential ->
+                    client.loadProfiles(origin, credential).also { token = credential }
+                }
                 if (!isCurrentManagementRequest(origin, expectedGeneration, requestGeneration)) {
                     return@launch
                 }
                 val selected = boundedProfile.takeIf(profiles::contains) ?: profiles.firstOrNull() ?: "default"
                 if (selected != boundedProfile) setSessionFilterScope(origin, selected)
-                val options = client.loadDefaultModelOptions(origin, token.toHermesCredential(), selected)
+                val options = withCurrentHermesRestRead(origin, expectedGeneration) { credential ->
+                    client.loadDefaultModelOptions(origin, credential, selected).also { token = credential }
+                }
                 currentCoroutineContext().ensureActive()
                 if (options.profile != null && options.profile != selected) {
                     throw HermesConnectionException("Hermes model options returned the wrong profile")
@@ -1811,10 +1963,18 @@ class HermesConnectionViewModel(
         val key = DurableSessionsFetchKey(origin.value, expectedGeneration, profile, archivedOnly)
         if (lastDurableSessionsFetchKey == key) return viewModelScope.launch { }
         return viewModelScope.launch {
-            val accessToken = accessTokenForRequest(origin, expectedGeneration)
-                ?: return@launch
+            val initialCredential = credentialForRequest(origin, expectedGeneration)
+            if (initialCredential == HermesCredential.None &&
+                mutableSnapshots.value.authenticationState != AuthenticationState.NotRequired
+            ) return@launch
             val sessions = try {
-                client.loadSessionsForProfile(origin, accessToken.toHermesCredential(), profile, archivedOnly)
+                withOneLoopbackReauthentication(
+                    origin,
+                    expectedGeneration,
+                    initialCredential,
+                ) { credential ->
+                    client.loadSessionsForProfile(origin, credential, profile, archivedOnly)
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -1882,9 +2042,8 @@ class HermesConnectionViewModel(
                 ),
             )
             try {
-                val token = accessTokenForRequest(origin, expectedGeneration)
-                if (
-                    token == null &&
+                val token = credentialForRequest(origin, expectedGeneration)
+                if (token == HermesCredential.None &&
                     mutableSnapshots.value.authenticationState != AuthenticationState.NotRequired
                 ) {
                     if (activeOrigin == origin && generation == expectedGeneration) {
@@ -1898,14 +2057,16 @@ class HermesConnectionViewModel(
                     }
                     return@launch
                 }
-                val page = client.loadSessionsPageForProfile(
-                    serverOrigin = origin,
-                    credential = token.toHermesCredential(),
-                    profile = profile,
-                    limit = RECENT_SESSIONS_PAGE_SIZE,
-                    offset = offset,
-                    archivedOnly = false,
-                )
+                val page = withCurrentHermesRestRead(origin, expectedGeneration) { credential ->
+                    client.loadSessionsPageForProfile(
+                        serverOrigin = origin,
+                        credential = credential,
+                        profile = profile,
+                        limit = RECENT_SESSIONS_PAGE_SIZE,
+                        offset = offset,
+                        archivedOnly = false,
+                    )
+                }
                 currentCoroutineContext().ensureActive()
                 val current = mutableSnapshots.value.recentSessions
                 val combined = (if (loadMore) current.sessions else emptyList())
@@ -1969,7 +2130,7 @@ class HermesConnectionViewModel(
         val origin = checkNotNull(activeOrigin) { "No Hermes server configured" }
         val expectedGeneration = generation
         val profile = mutableSnapshots.value.selectedProfile
-        val token = checkNotNull(accessTokenForRequest(origin, expectedGeneration)) { "Sign in required" }
+        val token = requiredCredentialForRequest(origin, expectedGeneration)
         val result = client.setDefaultModel(
             origin,
             token.toHermesCredential(),
@@ -1992,7 +2153,7 @@ class HermesConnectionViewModel(
             val origin = checkNotNull(activeOrigin) { "No Hermes server configured" }
             val expectedGeneration = generation
             val profile = mutableSnapshots.value.selectedProfile
-            val token = checkNotNull(accessTokenForRequest(origin, expectedGeneration)) { "Sign in required" }
+            val token = requiredCredentialForRequest(origin, expectedGeneration)
             client.setProfileReasoningEffort(origin, token.toHermesCredential(), profile, canonicalEffort)
             currentCoroutineContext().ensureActive()
             check(isCurrentOrigin(origin, expectedGeneration) && mutableSnapshots.value.selectedProfile == profile) {
@@ -2025,7 +2186,7 @@ class HermesConnectionViewModel(
             val origin = checkNotNull(activeOrigin) { "No Hermes server configured" }
             val expectedGeneration = generation
             val profile = mutableSnapshots.value.selectedProfile
-            val token = checkNotNull(accessTokenForRequest(origin, expectedGeneration)) { "Sign in required" }
+            val token = requiredCredentialForRequest(origin, expectedGeneration)
             client.setProfileModelReasoningOverride(origin, token.toHermesCredential(), profile, selection, canonicalEffort)
             currentCoroutineContext().ensureActive()
             check(isCurrentOrigin(origin, expectedGeneration) && mutableSnapshots.value.selectedProfile == profile) {
@@ -2084,13 +2245,14 @@ class HermesConnectionViewModel(
                 searchError = null,
             )
             try {
-                val token = accessTokenForRequest(origin, expectedGeneration) ?: return@launch
-                val results = client.searchSessions(
-                    origin,
-                    token.toHermesCredential(),
-                    bounded,
-                    mutableSnapshots.value.selectedProfile,
-                )
+                val results = withCurrentHermesRestRead(origin, expectedGeneration) { credential ->
+                    client.searchSessions(
+                        origin,
+                        credential,
+                        bounded,
+                        mutableSnapshots.value.selectedProfile,
+                    )
+                }
                 if (generation == expectedGeneration && activeOrigin == origin) {
                     mutableSnapshots.value = mutableSnapshots.value.copy(
                         transcriptSearchResults = results,
@@ -2128,7 +2290,7 @@ class HermesConnectionViewModel(
         }
         val origin = checkNotNull(activeOrigin) { "No Hermes server configured" }
         val expectedGeneration = generation
-        val token = checkNotNull(accessTokenForRequest(origin, expectedGeneration)) { "Sign in required" }
+        val token = requiredCredentialForRequest(origin, expectedGeneration)
         client.deleteSession(origin, token.toHermesCredential(), sessionId, mutableSnapshots.value.selectedProfile)
         cacheRepository?.deleteSession(
             CacheScope(origin, mutableSnapshots.value.selectedProfile),
@@ -2158,7 +2320,7 @@ class HermesConnectionViewModel(
         )
         check(decision.canDelete) { bulkDeletePolicyError(decision) }
         val profile = snapshot.selectedProfile
-        val token = checkNotNull(accessTokenForRequest(origin, expectedGeneration)) { "Sign in required" }
+        val token = requiredCredentialForRequest(origin, expectedGeneration)
         val result = try {
             client.bulkDeleteSessions(origin, token.toHermesCredential(), decision.selectedSessionIds, profile)
         } catch (unsupported: HermesSessionBulkDeleteUnsupportedException) {
@@ -2186,10 +2348,12 @@ class HermesConnectionViewModel(
     private suspend fun reconcileAfterBulkDelete(
         origin: ServerOrigin,
         expectedGeneration: Long,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ) {
-        val durableSessions = client.loadSessionsForProfile(origin, accessToken.toHermesCredential(), profile)
+        val durableSessions = withCurrentHermesRestRead(origin, expectedGeneration) { currentCredential ->
+            client.loadSessionsForProfile(origin, currentCredential, profile)
+        }
         currentCoroutineContext().ensureActive()
         check(generation == expectedGeneration && activeOrigin == origin &&
             mutableSnapshots.value.selectedProfile == profile
@@ -2204,7 +2368,7 @@ class HermesConnectionViewModel(
         startProjectTreeLoad(
             serverOrigin = origin,
             originGeneration = expectedGeneration,
-            accessToken = accessToken,
+            credential = credentialForRequest(origin, expectedGeneration),
             durableSessions = durableSessions,
             profile = profile,
             preserveContent = true,
@@ -2231,7 +2395,7 @@ class HermesConnectionViewModel(
     ) {
         val origin = checkNotNull(activeOrigin) { "No Hermes server configured" }
         val expectedGeneration = generation
-        val token = checkNotNull(accessTokenForRequest(origin, expectedGeneration)) { "Sign in required" }
+        val token = requiredCredentialForRequest(origin, expectedGeneration)
         client.updateSession(
             origin,
             token.toHermesCredential(),
@@ -2348,7 +2512,7 @@ class HermesConnectionViewModel(
                 startProjectTreeLoad(
                     serverOrigin = serverOrigin,
                     originGeneration = currentGeneration,
-                    accessToken = tokens.accessToken,
+                    credential = tokens.accessToken.toHermesCredential(),
                     durableSessions = authenticated.sessions,
                 )
             } catch (cancelled: CancellationException) {
@@ -2371,29 +2535,29 @@ class HermesConnectionViewModel(
 
     suspend fun loadHostDirectories(
         path: String? = null,
-    ): HostDirectoryListing = withHermesRestOperation { serverOrigin, accessToken ->
+    ): HostDirectoryListing = withHermesRestRead { serverOrigin, accessToken ->
         client.loadHostDirectories(serverOrigin, accessToken.toHermesCredential(), path)
     }
 
     suspend fun loadHostFiles(path: String? = null): HostFileListing =
-        withHermesRestOperation { serverOrigin, accessToken ->
+        withHermesRestRead { serverOrigin, accessToken ->
             client.loadHostFiles(serverOrigin, accessToken.toHermesCredential(), path)
         }
 
     suspend fun loadManagedFile(path: String): HostFileContent =
-        withHermesRestOperation { serverOrigin, accessToken ->
+        withHermesRestRead { serverOrigin, accessToken ->
             client.downloadManagedFile(serverOrigin, accessToken.toHermesCredential(), path)
         }
 
     suspend fun createHostDirectory(
         parentPath: String,
         name: String,
-    ): HostDirectoryListing = withHermesRestOperation { serverOrigin, accessToken ->
+    ): HostDirectoryListing = withHermesRestMutation { serverOrigin, accessToken ->
         client.createHostDirectory(serverOrigin, accessToken.toHermesCredential(), parentPath, name)
     }
 
     suspend fun downloadManagedImage(path: String): ByteArray =
-        withHermesRestOperation { serverOrigin, accessToken ->
+        withHermesRestRead { serverOrigin, accessToken ->
             client.downloadManagedImage(serverOrigin, accessToken.toHermesCredential(), path)
         }
 
@@ -2491,15 +2655,17 @@ class HermesConnectionViewModel(
                 return@launch
             }
             try {
-                val accessToken = accessTokenForRequest(origin, originGeneration)
-                    ?: throw HermesConnectionException("Sign in is required to load session defaults")
-                val options = client.loadDefaultModelOptions(origin, accessToken.toHermesCredential(), profile)
+                var credential = requiredCredentialForRequest(origin, originGeneration)
+                val options = withCurrentHermesRestRead(origin, originGeneration) { currentCredential ->
+                    client.loadDefaultModelOptions(origin, currentCredential, profile)
+                        .also { credential = currentCredential }
+                }
                 val selection = options.current
                 val reasoningEffort = selection?.let {
                     try {
                         client.loadProfileReasoningEffort(
                             serverOrigin = origin,
-                            credential = accessToken.toHermesCredential(),
+                            credential = credential,
                             profile = profile,
                             provider = it.provider,
                             model = it.model,
@@ -2598,23 +2764,19 @@ class HermesConnectionViewModel(
             val originGeneration = generation
             updateChat(durableSessionId) { it.copy(isLoading = true, error = null) }
             try {
-                val accessToken = accessTokenForRequest(origin, originGeneration)
-                if (!isCurrentOrigin(origin, originGeneration)) return@launch
-                val messages = client.loadTranscript(
-                    origin,
-                    accessToken.toHermesCredential(),
-                    serverDurableId(durableSessionId),
-                )
+                val messages = withCurrentHermesRestRead(origin, originGeneration) { credential ->
+                    client.loadTranscript(
+                        origin,
+                        credential,
+                        serverDurableId(durableSessionId),
+                    )
+                }
                 if (!isCurrentOrigin(origin, originGeneration)) return@launch
                 updateChat(durableSessionId) {
                     it.copy(messages = messages, isLoading = false, error = null)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (_: HermesUnauthorizedException) {
-                if (!isCurrentOrigin(origin, originGeneration)) return@launch
-                updateChat(durableSessionId) { it.copy(isLoading = false, error = null) }
-                retryConnection()
             } catch (error: Exception) {
                 if (!isCurrentOrigin(origin, originGeneration)) return@launch
                 updateChat(durableSessionId) {
@@ -2665,23 +2827,19 @@ class HermesConnectionViewModel(
             }
             updateChat(durableSessionId) { it.copy(isLoading = !hasCachedMessages, error = null) }
             try {
-                var accessToken: String? = null
+                var credential: HermesCredential? = null
                 var messages: List<ChatMessage>? = null
                 var retriedAfterUnauthorized = false
                 while (messages == null) {
                     try {
-                        accessToken = accessTokenForRequest(origin, originGeneration)
-                        if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return@launch
-                        messages = client.loadTranscript(
-                            origin,
-                            accessToken.toHermesCredential(),
-                            serverDurableId(durableSessionId),
-                        )
-                        if (
-                            !isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration) ||
-                            profileGeneration != expectedProfileGeneration ||
-                            mutableSnapshots.value.selectedProfile != profile
-                        ) return@launch
+                        messages = withCurrentHermesRestRead(origin, originGeneration) { currentCredential ->
+                            credential = currentCredential
+                            client.loadTranscript(
+                                origin,
+                                currentCredential,
+                                serverDurableId(durableSessionId),
+                            )
+                        }
                     } catch (unauthorized: HermesUnauthorizedException) {
                         if (retriedAfterUnauthorized) throw unauthorized
                         retriedAfterUnauthorized = true
@@ -2696,6 +2854,11 @@ class HermesConnectionViewModel(
                         originGeneration = generation
                     }
                 }
+                if (
+                    !isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration) ||
+                    profileGeneration != expectedProfileGeneration ||
+                    mutableSnapshots.value.selectedProfile != profile
+                ) return@launch
                 val loadedMessages = messages
                 updateChat(durableSessionId) {
                     it.copy(
@@ -2709,7 +2872,8 @@ class HermesConnectionViewModel(
                     persistCachedTranscript(origin, profile, summary, loadedMessages, originGeneration)
                 }
                 if (
-                    accessToken != null &&
+                    credential != null &&
+                    credential != HermesCredential.None &&
                     chatConnector != null &&
                     mutableSnapshots.value.authenticationState == AuthenticationState.Authenticated
                 ) {
@@ -2717,7 +2881,7 @@ class HermesConnectionViewModel(
                         origin = origin,
                         originGeneration = originGeneration,
                         operationGeneration = operationGeneration,
-                        accessToken = accessToken,
+                        credential = checkNotNull(credential),
                         durableSessionId = durableSessionId,
                         closeWhenIdle = true,
                     ).let { session ->
@@ -2794,13 +2958,15 @@ class HermesConnectionViewModel(
             var promptStaged = false
             var stagingFailed = false
             try {
-                val accessToken = accessTokenForRequest(origin, originGeneration)
-                    ?: throw HermesConnectionException("Sign in is required to send messages")
+                val credential = credentialForRequest(origin, originGeneration)
+                if (credential == HermesCredential.None) {
+                    throw HermesConnectionException("Sign in is required to send messages")
+                }
                 val session = ensureLiveSession(
                     origin = origin,
                     originGeneration = originGeneration,
                     operationGeneration = operationGeneration,
-                    accessToken = accessToken,
+                    credential = credential,
                     durableSessionId = durableSessionId,
                 )
                 val runtimeId = checkNotNull(liveControllers[durableSessionId]?.runtimeSessionId)
@@ -3163,13 +3329,16 @@ class HermesConnectionViewModel(
         return viewModelScope.launch {
             try {
                 operation.session.undoSession(operation.runtimeSessionId)
-                val token = accessTokenForRequest(operation.origin, operation.originGeneration)
-                    ?: throw HermesConnectionException("Sign in is required")
-                val messages = client.loadTranscript(
+                val messages = withCurrentHermesRestRead(
                     operation.origin,
-                    token.toHermesCredential(),
-                    serverDurableId(durableSessionId),
-                )
+                    operation.originGeneration,
+                ) { credential ->
+                    client.loadTranscript(
+                        operation.origin,
+                        credential,
+                        serverDurableId(durableSessionId),
+                    )
+                }
                 currentCoroutineContext().ensureActive()
                 publishUndoneSession(operation, messages)
             } catch (cancelled: CancellationException) {
@@ -3405,9 +3574,8 @@ class HermesConnectionViewModel(
         )
         return viewModelScope.launch {
             try {
-                val token = accessTokenForRequest(origin, originGeneration)
-                    ?: throw HermesConnectionException("Cron job controls require authentication")
-                client.triggerCronJob(origin, token.toHermesCredential(), profile, jobId)
+                val credential = requiredCredentialForRequest(origin, originGeneration)
+                client.triggerCronJob(origin, credential, profile, jobId)
                 currentCoroutineContext().ensureActive()
                 if (!isCurrentRestOperation(origin, originGeneration)) return@launch
                 mutableSnapshots.value = mutableSnapshots.value.copy(
@@ -3494,14 +3662,14 @@ class HermesConnectionViewModel(
                 )
                 viewModelScope.launch {
                     try {
-                        val token = accessTokenForRequest(origin, originGeneration)
-                            ?: throw HermesConnectionException("Cron history requires authentication")
-                        val runs = client.loadCronJobRuns(
-                            serverOrigin = origin,
-                            credential = token.toHermesCredential(),
-                            profile = profile,
-                            jobId = jobId,
-                        )
+                        val runs = withCurrentHermesRestRead(origin, originGeneration) { credential ->
+                            client.loadCronJobRuns(
+                                serverOrigin = origin,
+                                credential = credential,
+                                profile = profile,
+                                jobId = jobId,
+                            )
+                        }
                         currentCoroutineContext().ensureActive()
                         if (!isCurrentRestOperation(origin, originGeneration)) return@launch
                         mutableSnapshots.value = mutableSnapshots.value.copy(
@@ -3627,13 +3795,12 @@ class HermesConnectionViewModel(
             }
             val originGeneration = generation
             try {
-                val accessToken = accessTokenForRequest(origin, originGeneration)
-                    ?: throw HermesConnectionException("Sign in is required to change reasoning")
+                val credential = requiredCredentialForRequest(origin, originGeneration)
                 val session = ensureLiveSession(
                     origin = origin,
                     originGeneration = originGeneration,
                     operationGeneration = operationGeneration,
-                    accessToken = accessToken,
+                    credential = credential,
                     durableSessionId = durableSessionId,
                 )
                 val runtimeSessionId = liveControllers[durableSessionId]?.runtimeSessionId
@@ -3680,13 +3847,12 @@ class HermesConnectionViewModel(
             }
             val originGeneration = generation
             try {
-                val accessToken = accessTokenForRequest(origin, originGeneration)
-                    ?: throw HermesConnectionException("Sign in is required to change Fast mode")
+                val credential = requiredCredentialForRequest(origin, originGeneration)
                 val session = ensureLiveSession(
                     origin = origin,
                     originGeneration = originGeneration,
                     operationGeneration = operationGeneration,
-                    accessToken = accessToken,
+                    credential = credential,
                     durableSessionId = durableSessionId,
                 )
                 val runtimeSessionId = liveControllers[durableSessionId]?.runtimeSessionId
@@ -3733,13 +3899,12 @@ class HermesConnectionViewModel(
             }
             val originGeneration = generation
             try {
-                val accessToken = accessTokenForRequest(origin, originGeneration)
-                    ?: throw HermesConnectionException("Sign in is required to select a model")
+                val credential = requiredCredentialForRequest(origin, originGeneration)
                 val session = ensureLiveSession(
                     origin = origin,
                     originGeneration = originGeneration,
                     operationGeneration = operationGeneration,
-                    accessToken = accessToken,
+                    credential = credential,
                     durableSessionId = durableSessionId,
                 )
                 val runtimeSessionId = liveControllers[durableSessionId]?.runtimeSessionId
@@ -4006,6 +4171,22 @@ class HermesConnectionViewModel(
         accessToken: String,
         durableSessionId: DurableSessionId,
         closeWhenIdle: Boolean = false,
+    ): HermesChatSession = ensureLiveSession(
+        origin = origin,
+        originGeneration = originGeneration,
+        operationGeneration = operationGeneration,
+        credential = accessToken.toHermesCredential(),
+        durableSessionId = durableSessionId,
+        closeWhenIdle = closeWhenIdle,
+    )
+
+    private suspend fun ensureLiveSession(
+        origin: ServerOrigin,
+        originGeneration: Long,
+        operationGeneration: Long,
+        credential: HermesCredential,
+        durableSessionId: DurableSessionId,
+        closeWhenIdle: Boolean = false,
     ): HermesChatSession {
         val existingController = liveControllers[durableSessionId]
         if (existingController != null) {
@@ -4034,7 +4215,7 @@ class HermesConnectionViewModel(
         if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
             throw CancellationException("Chat operation was replaced")
         }
-        val session = connector.connect(origin, accessToken.toHermesCredential())
+        val session = connector.connect(origin, credential)
         try {
             val creatingDraft = durableSessionId in pendingDraftSessions
             val resumed = if (creatingDraft) {
@@ -4201,13 +4382,14 @@ class HermesConnectionViewModel(
         operationGeneration: Long,
     ) {
         viewModelScope.launch {
-            val accessToken = try {
-                accessTokenForRequest(origin, originGeneration)
-            } catch (_: Exception) {
-                null
-            } ?: return@launch
             val canonicalSessions = try {
-                client.authenticate(origin, accessToken.toHermesCredential()).sessions
+                withCurrentHermesRestRead(origin, originGeneration) { credential ->
+                    client.loadSessionsForProfile(
+                        origin,
+                        credential,
+                        mutableSnapshots.value.selectedProfile,
+                    )
+                }
             } catch (_: Exception) {
                 emptyList()
             }
@@ -4218,7 +4400,9 @@ class HermesConnectionViewModel(
                 reconcileCanonicalSessionMetadata(durableSessionId, canonical)
             }
             val messages = try {
-                client.loadTranscript(origin, accessToken.toHermesCredential(), canonicalId)
+                withCurrentHermesRestRead(origin, originGeneration) { credential ->
+                    client.loadTranscript(origin, credential, canonicalId)
+                }
             } catch (_: Exception) {
                 return@launch
             }
@@ -4508,10 +4692,9 @@ class HermesConnectionViewModel(
             if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
             var candidate: HermesChatSession? = null
             try {
-                val token = accessTokenForRequest(origin, originGeneration)
-                    ?: throw HermesConnectionException("Sign in is required to reconnect")
+                val credential = requiredCredentialForRequest(origin, originGeneration)
                 if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
-                candidate = connector.connect(origin, token.toHermesCredential())
+                candidate = connector.connect(origin, credential)
                 if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                     closeChatSessionNonCancellably(candidate)
                     return
@@ -4558,7 +4741,7 @@ class HermesConnectionViewModel(
                 } else {
                     val messages = client.loadTranscript(
                         origin,
-                        token.toHermesCredential(),
+                        credential,
                         serverDurableId(durableSessionId),
                     )
                     if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
@@ -5746,6 +5929,98 @@ class HermesConnectionViewModel(
         )
     }
 
+    private suspend fun <T> withCurrentHermesRestRead(
+        origin: ServerOrigin,
+        expectedGeneration: Long,
+        block: suspend (HermesCredential) -> T,
+    ): T {
+        val credential = credentialForRequest(origin, expectedGeneration)
+        if (
+            credential == HermesCredential.None &&
+            mutableSnapshots.value.authenticationState != AuthenticationState.NotRequired
+        ) {
+            throw HermesConnectionException("Hermes request requires authentication")
+        }
+        val result = withOneLoopbackReauthentication(
+            origin,
+            expectedGeneration,
+            credential,
+            block,
+        )
+        currentCoroutineContext().ensureActive()
+        if (generation != expectedGeneration || activeOrigin != origin) {
+            throw CancellationException("Server origin was replaced")
+        }
+        return result
+    }
+
+    private suspend fun <T> withOneLoopbackReauthentication(
+        origin: ServerOrigin,
+        expectedGeneration: Long,
+        initialCredential: HermesCredential,
+        read: suspend (HermesCredential) -> T,
+    ): T {
+        return try {
+            read(initialCredential)
+        } catch (rejected: HermesAuthenticationRejectedException) {
+            if (initialCredential !is HermesCredential.LoopbackSession) throw rejected
+            val refreshed = refreshLoopbackCredential(origin, expectedGeneration, initialCredential)
+            try {
+                read(refreshed)
+            } catch (second: HermesAuthenticationRejectedException) {
+                publishTunnelFailure(
+                    origin, expectedGeneration, TunnelConnectionFailure.CredentialRejected,
+                    "Hermes tunnel authorization was rejected after one retry",
+                )
+                throw second
+            }
+        }
+    }
+
+    private suspend fun refreshLoopbackCredential(
+        origin: ServerOrigin,
+        expectedGeneration: Long,
+        rejected: HermesCredential.LoopbackSession,
+    ): HermesCredential.LoopbackSession = loopbackCredentialMutex.withLock {
+        ensureCurrentTunnel(origin, expectedGeneration)
+        val current = activeLoopbackCredential
+            ?.takeIf { it.origin == origin && it.generation == expectedGeneration }
+        if (current != null && current.credential !== rejected) return@withLock current.credential
+        if (current?.credential === rejected) activeLoopbackCredential = null
+        val result = loopbackSessionBootstrapClient?.bootstrap(origin)
+            ?: LoopbackSessionBootstrapResult.Failure(LoopbackSessionBootstrapFailure.TransportFailure)
+        ensureCurrentTunnel(origin, expectedGeneration)
+        val credential = (result as? LoopbackSessionBootstrapResult.Success)?.credential
+            ?: throw HermesAuthenticationRejectedException("Loopback session bootstrap was rejected")
+        activeLoopbackCredential = ActiveLoopbackCredentialRecord(origin, expectedGeneration, credential)
+        credential
+    }
+
+    private suspend fun requiredCredentialForRequest(
+        origin: ServerOrigin,
+        expectedGeneration: Long,
+    ): HermesCredential = credentialForRequest(origin, expectedGeneration).also { credential ->
+        if (credential == HermesCredential.None &&
+            mutableSnapshots.value.authenticationState != AuthenticationState.NotRequired
+        ) throw HermesConnectionException("Sign in required")
+    }
+
+    private suspend fun credentialForRequest(
+        origin: ServerOrigin,
+        expectedGeneration: Long,
+    ): HermesCredential {
+        if (mutableSnapshots.value.authenticationState == AuthenticationState.NotRequired) {
+            return HermesCredential.None
+        }
+        if (generation != expectedGeneration || activeOrigin != origin) {
+            throw CancellationException("Server origin was replaced")
+        }
+        activeLoopbackCredential
+            ?.takeIf { it.origin == origin && it.generation == expectedGeneration }
+            ?.let { return it.credential }
+        return accessTokenForRequest(origin, expectedGeneration).toHermesCredential()
+    }
+
     private suspend fun accessTokenForRequest(
         origin: ServerOrigin,
         expectedGeneration: Long,
@@ -5997,6 +6272,7 @@ class HermesConnectionViewModel(
                 appForegroundStates = HermesAppForeground.states,
                 notifications = AndroidTurnNotificationController(context),
                 sessionFilterRepository = DataStoreSessionFilterRepository(context),
+                loopbackSessionBootstrapClient = HttpLoopbackSessionBootstrapClient(httpClient),
                 speechStreamConnector = StreamingSpeechTransport(
                     ticketClient = KtorWsTicketClient(httpClient),
                     socketFactory = KtorSpeechWebSocketFactory(httpClient),

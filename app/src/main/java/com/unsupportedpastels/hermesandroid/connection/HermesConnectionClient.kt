@@ -357,8 +357,19 @@ internal suspend fun HttpResponse.readBodyTextBounded(
     }
 }
 
+private fun HttpResponse.throwIfHermesCredentialRejected(credential: HermesCredential) {
+    if (credential != HermesCredential.None && status.value in setOf(401, 403)) {
+        throw HermesAuthenticationRejectedException(
+            "Hermes credential was rejected with HTTP ${status.value}",
+        )
+    }
+}
+
 interface HermesConnectionClient {
     suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo
+
+    /** Public-only tunnel probe; never attempts the protected sessions route. */
+    suspend fun probeExternalTunnel(serverOrigin: ServerOrigin): HermesConnectionInfo = probe(serverOrigin)
 
     /** Public, profile-scoped operational status; this never uses `/api/system/stats`. */
     suspend fun loadOperationalStatus(
@@ -664,6 +675,7 @@ class HttpHermesConnectionClient(
             applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded()
         if (!response.status.isSuccess()) {
             VoiceCapabilityPolicy.fromVoicesProbe(response.status.value, elevenLabsAvailable = false)
@@ -687,6 +699,7 @@ class HttpHermesConnectionClient(
             applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded()
         if (!response.status.isSuccess()) {
             VoiceServerConfig.DEFAULT
@@ -718,6 +731,7 @@ class HttpHermesConnectionClient(
             )
             audioRequestTimeout(VoiceAudioTimeouts.TRANSCRIBE_REQUEST_MILLIS)
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded()
         if (!response.status.isSuccess()) {
             throw HermesConnectionException(
@@ -745,6 +759,7 @@ class HttpHermesConnectionClient(
             setBody(buildJsonObject { put("text", text) }.toString())
             audioRequestTimeout(VoiceAudioTimeouts.SPEAK_REQUEST_MILLIS)
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded(MAX_SPEECH_RESPONSE_BODY_BYTES)
         if (!response.status.isSuccess()) {
             throw HermesConnectionException(
@@ -771,6 +786,7 @@ class HttpHermesConnectionClient(
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject { put("config", config) }.toString())
         }
+        response.throwIfHermesCredentialRejected(credential)
         if (!response.status.isSuccess()) return false
         val body = response.readBodyTextBounded()
         return (json.parseToJsonElement(body) as? JsonObject)
@@ -787,6 +803,7 @@ class HttpHermesConnectionClient(
             parameter("profile", profile.take(64))
         }
         if (!response.status.isSuccess()) return emptyList()
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded(MAX_TRANSCRIPT_BODY_BYTES)
         val root = json.parseToJsonElement(body) as? JsonObject ?: return emptyList()
         if (root["available"]?.jsonPrimitive?.booleanOrNull != true) return emptyList()
@@ -829,6 +846,7 @@ class HttpHermesConnectionClient(
                 ),
             )
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded()
         if (!response.status.isSuccess()) {
             throw HermesConnectionException("Hermes session update returned HTTP ${response.status.value}")
@@ -882,6 +900,7 @@ class HttpHermesConnectionClient(
                 ),
             )
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded()
         if (response.status.value == 404 || response.status.value == 405) {
             throw HermesSessionBulkDeleteUnsupportedException(response.status.value)
@@ -916,6 +935,7 @@ class HttpHermesConnectionClient(
             parameter("limit", 20)
             profile?.let { parameter("profile", it) }
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded()
         if (!response.status.isSuccess()) {
             throw HermesConnectionException("Hermes session search returned HTTP ${response.status.value}")
@@ -943,6 +963,7 @@ class HttpHermesConnectionClient(
         val response = client.get("${serverOrigin.value}/api/profiles") {
             applyHermesCredential(credential, serverOrigin)
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded()
         if (!response.status.isSuccess()) {
             throw HermesConnectionException("Hermes profiles returned HTTP ${response.status.value}")
@@ -969,6 +990,7 @@ class HttpHermesConnectionClient(
             parameter("profile", boundedProfile)
             parameter("explicit_only", 1)
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded(MAX_MODEL_OPTIONS_RESPONSE_BODY_BYTES)
         if (!response.status.isSuccess()) {
             throw HermesConnectionException("Hermes model options returned HTTP ${response.status.value}")
@@ -1015,6 +1037,7 @@ class HttpHermesConnectionClient(
             applyHermesCredential(credential, serverOrigin)
             parameter("profile", boundedProfile)
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded()
         if (!response.status.isSuccess()) {
             throw HermesConnectionException("Hermes model info returned HTTP ${response.status.value}")
@@ -1051,6 +1074,7 @@ class HttpHermesConnectionClient(
             applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded()
         if (!response.status.isSuccess()) {
             throw HermesConnectionException("Hermes config returned HTTP ${response.status.value}")
@@ -1091,6 +1115,7 @@ class HttpHermesConnectionClient(
             applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded()
         if (!response.status.isSuccess()) {
             throw HermesConnectionException("Hermes config returned HTTP ${response.status.value}")
@@ -1113,6 +1138,7 @@ class HttpHermesConnectionClient(
             applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded()
         if (!response.status.isSuccess()) {
             throw HermesConnectionException("Hermes config returned HTTP ${response.status.value}")
@@ -1234,6 +1260,7 @@ class HttpHermesConnectionClient(
                 put("confirm_expensive_model", confirmExpensiveModel)
             }.toString())
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded()
         if (!response.status.isSuccess()) {
             throw HermesConnectionException("Hermes default model update returned HTTP ${response.status.value}")
@@ -1260,6 +1287,7 @@ class HttpHermesConnectionClient(
             applyHermesCredential(credential, serverOrigin)
             parameter("profile", boundedProfile)
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded(MAX_CRON_RESPONSE_BODY_BYTES)
         ensureCronRestSuccess(response, CronRestEndpoint.Trigger, boundedJobId)
         val root = json.parseToJsonElement(body) as? JsonObject
@@ -1290,6 +1318,7 @@ class HttpHermesConnectionClient(
             parameter("profile", boundedProfile)
             parameter("limit", boundedLimit)
         }
+        response.throwIfHermesCredentialRejected(credential)
         val body = response.readBodyTextBounded(MAX_CRON_RESPONSE_BODY_BYTES)
         ensureCronRestSuccess(response, CronRestEndpoint.Runs, boundedJobId)
         val root = json.parseToJsonElement(body) as? JsonObject
@@ -1397,6 +1426,27 @@ class HttpHermesConnectionClient(
             nativeOAuthSupported = "native_pkce" in status.authFlows,
             providers = providers,
             sessions = sessions,
+        )
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: HermesConnectionException) {
+        throw error
+    } catch (error: Exception) {
+        throw HermesConnectionException("Could not connect to Hermes Serve", error)
+    }
+
+    override suspend fun probeExternalTunnel(serverOrigin: ServerOrigin): HermesConnectionInfo = try {
+        val response = client.get("${serverOrigin.value}/api/status")
+        if (!response.status.isSuccess()) {
+            response.readBodyTextBounded()
+            throw HermesConnectionException("Hermes status returned HTTP ${response.status.value}")
+        }
+        val status = json.decodeFromString<HermesStatusResponse>(response.readBodyTextBounded())
+        HermesConnectionInfo(
+            version = status.version,
+            authRequired = status.authRequired,
+            nativeOAuthSupported = "native_pkce" in status.authFlows,
+            providers = emptyList(),
         )
     } catch (cancelled: CancellationException) {
         throw cancelled
