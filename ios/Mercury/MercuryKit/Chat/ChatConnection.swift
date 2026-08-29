@@ -597,6 +597,15 @@ final class ChatConnection: @unchecked Sendable {
         return try await request(method, params)
     }
 
+    /// Sends one correlated JSON-RPC request without the direct-mode
+    /// operations allowlist, for the Mercury Relay v1 method set
+    /// (`gateway.ping`, `session.*`, `prompt.submit`, …) and the `relay.*`
+    /// in-process reads the host intercepts at the lease layer. The relay
+    /// method policy is the authority over what is permitted on the wire.
+    func relayRequest(_ method: String, params: [String: Any] = [:]) async throws -> [String: Any] {
+        try await request(method, params)
+    }
+
     func close() async {
         stateLock.lock()
         if closed {

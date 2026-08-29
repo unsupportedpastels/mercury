@@ -109,6 +109,21 @@ struct RelaySessionsView: View {
                 .multilineTextAlignment(.center)
             Button("Retry") { Task { await model.connect() } }
                 .buttonStyle(.bordered)
+
+            // Temporary pairing diagnostic: what this device presents to the
+            // host on reconnect. Compare against the host's device record.
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Diagnostic").font(.caption2).foregroundStyle(Color.secondary)
+                Text("id: \(model.target.deviceID)")
+                Text("pub: \(model.devicePublicKeyBase64)")
+                Text("err: \(model.lastConnectDetail)")
+            }
+            .font(.system(.caption2, design: .monospaced))
+            .foregroundStyle(Color.secondary)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(Color.surfaceLow, in: RoundedRectangle(cornerRadius: 8))
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

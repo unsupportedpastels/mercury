@@ -53,6 +53,13 @@ final class RelaySessionModel {
     private(set) var clarify: PendingClarify?
     var chatError: String?
 
+    /// Temporary pairing diagnostics (non-secret): what this device presents.
+    var devicePublicKeyBase64: String {
+        (try? RelaySecureChannel.publicKey(forPrivateKey: target.deviceStaticPrivateKey))
+            .map { $0.base64EncodedString() } ?? "unavailable"
+    }
+    private(set) var lastConnectDetail = "—"
+
     private var connection: ChatConnection?
     private var chatSocket: RelayChatSocket?
     private var eventTask: Task<Void, Never>?
@@ -69,10 +76,12 @@ final class RelaySessionModel {
 
     func connect() async {
         phase = .connecting
+        lastConnectDetail = "connecting"
         do {
             let connected = try await RelayConnector.connect(
                 target: target, profile: profile, socketFactory: socketFactory
             )
+            lastConnectDetail = "handshake+envelope sent"
             let socket = RelayChatSocket(connected: connected)
             let candidate = try ChatConnection(socket: socket)
             chatSocket = socket
@@ -88,17 +97,21 @@ final class RelaySessionModel {
             // only observes the host closing the channel. Prove admission
             // with one allowed round trip before reporting connected.
             do {
-                _ = try await candidate.operationsRequest("gateway.ping", params: [:])
+                _ = try await candidate.relayRequest("gateway.ping")
             } catch {
+                lastConnectDetail = "ping failed: \(error)"
                 await disconnect()
                 phase = .notAuthorized
                 return
             }
+            lastConnectDetail = "ping ok"
             phase = .connected
             await loadSessions()
         } catch let error as RelayConnectionError {
+            lastConnectDetail = "connect error: \(error)"
             phase = error == .notAuthorized ? .notAuthorized : .offline
         } catch {
+            lastConnectDetail = "other: \(error)"
             phase = .failed("The relay connection could not be established.")
         }
     }
@@ -125,7 +138,7 @@ final class RelaySessionModel {
     func loadSessions() async {
         guard let connection else { return }
         do {
-            let result = try await connection.operationsRequest(
+            let result = try await connection.relayRequest(
                 "relay.sessions.list",
                 params: ["profile": profile, "limit": 50, "offset": 0]
             )
