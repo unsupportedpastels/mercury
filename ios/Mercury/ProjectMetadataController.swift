@@ -37,7 +37,7 @@ final class ProjectMetadataController {
         await start(source: .direct(origin: origin, accessToken: accessToken), profile: profile)
     }
 
-    func start(source: Source, profile: String) async {
+    func start(source: Source, profile: String, isRetry: Bool = false) async {
         generation &+= 1
         let loadGeneration = generation
         await closeOwnedConnection()
@@ -107,6 +107,17 @@ final class ProjectMetadataController {
             return
         } catch {
             guard loadGeneration == generation else { return }
+            if case .relay = source, !isRetry {
+                // Cold-start race: the session list's initial relay read and
+                // this connection supersede each other on the host's
+                // one-live-stream-per-device rule, so whichever loses throws.
+                // One quiet retry after the list read finishes wins; only a
+                // second failure is a real error worth a banner.
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard loadGeneration == generation else { return }
+                await start(source: source, profile: profile, isRetry: true)
+                return
+            }
             isLoading = false
             errorMessage = "Could not load projects from this server."
         }
