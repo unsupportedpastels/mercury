@@ -16,6 +16,8 @@ import com.unsupportedpastels.hermesandroid.gateway.HermesChatSession
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatTransportException
 import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryEntry
 import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryListing
+import com.unsupportedpastels.hermesandroid.files.HostFileContent
+import com.unsupportedpastels.hermesandroid.files.HostFileListing
 import com.unsupportedpastels.hermesandroid.gateway.OperationalStatus
 import com.unsupportedpastels.hermesandroid.gateway.OperationalStatusState
 import com.unsupportedpastels.hermesandroid.gateway.OperationalHealth
@@ -189,6 +191,142 @@ class HermesConnectionViewModelTest {
 
         assertEquals(1, client.mutationCalls)
         assertEquals(1, bootstrap.calls)
+    }
+
+    @Test
+    fun concurrentlyRejectedReadsShareOneSuccessfulBootstrap() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val client = ConcurrentHostReadTunnelClient(expectedConcurrentReads = 3)
+        val bootstrap = RecordingTunnelBootstrap(origin, listOf("old-token", "new-token"))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        val reads = listOf(
+            async { runCatching { viewModel.loadHostFiles("/workspace") } },
+            async { runCatching { viewModel.loadManagedFile("/workspace/notes.txt") } },
+            async { runCatching { viewModel.downloadManagedImage("/workspace/shot.png") } },
+        )
+        advanceUntilIdle()
+
+        assertTrue(reads.all { it.await().isSuccess })
+        // One bootstrap for the initial connection plus exactly one shared recovery.
+        assertEquals(2, bootstrap.calls)
+        assertEquals(3, client.retryCredentials.size)
+        assertEquals(1, client.retryCredentials.distinct().size)
+        assertEquals(6, client.readAttempts)
+    }
+
+    @Test
+    fun concurrentlyRejectedReadsShareOneFailedBootstrap() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val client = ConcurrentHostReadTunnelClient(expectedConcurrentReads = 3)
+        val bootstrap = RecordingTunnelBootstrap(origin, listOf("old-token"))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        val reads = listOf(
+            async { runCatching { viewModel.loadHostFiles("/workspace") } },
+            async { runCatching { viewModel.loadManagedFile("/workspace/notes.txt") } },
+            async { runCatching { viewModel.downloadManagedImage("/workspace/shot.png") } },
+        )
+        advanceUntilIdle()
+
+        assertTrue(reads.all { it.await().isFailure })
+        // A failed bootstrap must be shared too, or every waiter starts its own.
+        assertEquals(2, bootstrap.calls)
+        assertEquals(0, client.retryCredentials.size)
+    }
+
+    @Test
+    fun secondRejectionStopsAfterOneRetryAndPublishesCredentialRejected() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val client = ConcurrentHostReadTunnelClient(
+            expectedConcurrentReads = 1,
+            rejectEveryRead = true,
+        )
+        val bootstrap = RecordingTunnelBootstrap(origin, listOf("old-token", "new-token", "unused"))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        val failure = runCatching { viewModel.loadHostFiles("/workspace") }
+        advanceUntilIdle()
+
+        assertTrue(failure.isFailure)
+        assertEquals(2, client.readAttempts)
+        assertEquals(2, bootstrap.calls)
+        assertEquals(
+            TunnelConnectionFailure.CredentialRejected,
+            viewModel.snapshots.value.tunnelConnectionFailure,
+        )
+    }
+
+    @Test
+    fun rebootstrapIsDiscardedAfterTheTunnelPortChanges() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val replacement = ServerOrigin.parse("http://127.0.0.1:29119")
+        val settings = MutableStateFlow(tunnelSettings(origin))
+        val rejectionGate = CompletableDeferred<Unit>()
+        val client = ConcurrentHostReadTunnelClient(
+            expectedConcurrentReads = 1,
+            rejectEveryRead = true,
+            rejectionGate = rejectionGate,
+        )
+        val bootstrap = SwitchableTunnelBootstrap()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = settings,
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        val read = async { runCatching { viewModel.loadHostFiles("/workspace") } }
+        advanceUntilIdle()
+        settings.value = tunnelSettings(replacement)
+        advanceUntilIdle()
+        rejectionGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertTrue(read.await().isFailure)
+        assertEquals(listOf(origin, replacement), bootstrap.origins)
+        assertEquals(0, client.retryCredentials.size)
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+    }
+
+    @Test
+    fun managementReadsRecoverThroughTheSharedRetryHelper() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val client = ManagementReadTunnelClient()
+        val bootstrap = RecordingTunnelBootstrap(origin, listOf("old-token", "new-token"))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        viewModel.loadManagementSettings(refreshStatus = false).join()
+        advanceUntilIdle()
+
+        val snapshot = viewModel.snapshots.value
+        assertEquals(null, snapshot.managementError)
+        assertEquals("hermes-4", snapshot.currentModelInfo?.model)
+        assertEquals("high", snapshot.profileReasoningDefault)
+        assertEquals("high", snapshot.profileReasoningEffort)
+        assertEquals(mapOf(ModelSelection("nous", "hermes-4") to "low"), snapshot.profileModelReasoningOverrides)
+        assertEquals(listOf("Tunnel session"), snapshot.durableSessions.map { it.title })
+        assertEquals(2, bootstrap.calls)
     }
 
     @Test
@@ -3350,6 +3488,189 @@ private class RecordingTunnelBootstrap(
         val token = remaining.removeFirstOrNull()
             ?: return LoopbackSessionBootstrapResult.Failure(LoopbackSessionBootstrapFailure.TransportFailure)
         return LoopbackSessionBootstrapResult.Success(HermesCredential.LoopbackSession.create(origin, token))
+    }
+}
+
+/** Bootstraps any loopback origin, recording the order it was asked for. */
+private class SwitchableTunnelBootstrap : LoopbackSessionBootstrapClient {
+    val origins = mutableListOf<ServerOrigin>()
+    private var issued = 0
+
+    override suspend fun bootstrap(origin: ServerOrigin): LoopbackSessionBootstrapResult {
+        origins += origin
+        issued += 1
+        return LoopbackSessionBootstrapResult.Success(
+            HermesCredential.LoopbackSession.create(origin, "session-token-$issued"),
+        )
+    }
+}
+
+/**
+ * Rejects protected host-file reads that still carry the credential adopted at
+ * connect time, releasing every waiting read at the same instant so recovery is
+ * genuinely concurrent rather than serialized by the test scheduler.
+ */
+private class ConcurrentHostReadTunnelClient(
+    private val expectedConcurrentReads: Int,
+    private val rejectEveryRead: Boolean = false,
+    private val rejectionGate: CompletableDeferred<Unit>? = null,
+) : HermesConnectionClient {
+    private val allArrived = CompletableDeferred<Unit>()
+    private var arrivals = 0
+    private var connectCredential: HermesCredential? = null
+    val retryCredentials = mutableListOf<HermesCredential>()
+    var readAttempts = 0
+        private set
+
+    override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo =
+        throw AssertionError("Tunnel connection must use the public-only probe")
+
+    override suspend fun probeExternalTunnel(serverOrigin: ServerOrigin) =
+        HermesConnectionInfo("0.20.4", false, false, emptyList())
+
+    override suspend fun loadSessionsForProfile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        archivedOnly: Boolean,
+    ): List<SessionSummary> {
+        if (connectCredential == null) connectCredential = credential
+        return listOf(SessionSummary(DurableSessionId("tunnel-1"), "Tunnel session"))
+    }
+
+    private suspend fun protectedRead(credential: HermesCredential) {
+        readAttempts += 1
+        if (rejectEveryRead || credential === connectCredential) {
+            arrivals += 1
+            if (arrivals >= expectedConcurrentReads) allArrived.complete(Unit)
+            allArrived.await()
+            rejectionGate?.await()
+            throw HermesAuthenticationRejectedException("Hermes host read returned HTTP 401")
+        }
+        retryCredentials += credential
+    }
+
+    override suspend fun loadHostFiles(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        path: String?,
+    ): HostFileListing {
+        protectedRead(credential)
+        return HostFileListing(path = path ?: "/workspace", entries = emptyList())
+    }
+
+    override suspend fun downloadManagedFile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        path: String,
+    ): HostFileContent {
+        protectedRead(credential)
+        return HostFileContent("notes.txt", path, "text/plain", ByteArray(0))
+    }
+
+    override suspend fun downloadManagedImage(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        path: String,
+    ): ByteArray {
+        protectedRead(credential)
+        return ByteArray(1)
+    }
+}
+
+/**
+ * Rejects the connect-time credential once for every management read, so a read
+ * that bypasses the shared retry helper leaves its field unpopulated.
+ */
+private class ManagementReadTunnelClient : HermesConnectionClient {
+    private var connectCredential: HermesCredential? = null
+    private val rejectedOnce = mutableSetOf<String>()
+
+    override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo =
+        throw AssertionError("Tunnel connection must use the public-only probe")
+
+    override suspend fun probeExternalTunnel(serverOrigin: ServerOrigin) =
+        HermesConnectionInfo("0.20.4", false, false, emptyList())
+
+    private fun rejectFirstUseOf(route: String, credential: HermesCredential) {
+        if (credential !== connectCredential) return
+        if (rejectedOnce.add(route)) {
+            throw HermesAuthenticationRejectedException("Hermes $route returned HTTP 401")
+        }
+    }
+
+    override suspend fun loadSessionsForProfile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        archivedOnly: Boolean,
+    ): List<SessionSummary> {
+        if (connectCredential == null) {
+            connectCredential = credential
+        } else {
+            rejectFirstUseOf("sessions", credential)
+        }
+        return listOf(SessionSummary(DurableSessionId("tunnel-1"), "Tunnel session"))
+    }
+
+    override suspend fun loadProfiles(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+    ): List<String> = listOf("default")
+
+    override suspend fun loadDefaultModelOptions(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+    ): ModelOptions = ModelOptions(
+        current = ModelSelection("nous", "hermes-4"),
+        providers = listOf(ModelProviderOption("nous", "Nous", listOf("hermes-4"))),
+        profile = profile,
+    )
+
+    override suspend fun loadCurrentModelInfo(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+    ): CurrentModelInfo {
+        rejectFirstUseOf("model info", credential)
+        return CurrentModelInfo(
+            profile = profile,
+            model = "hermes-4",
+            provider = "nous",
+            effectiveContextLength = null,
+            capabilities = ModelCapabilities(),
+        )
+    }
+
+    override suspend fun loadProfileReasoningEffort(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        provider: String,
+        model: String,
+    ): String? {
+        rejectFirstUseOf("reasoning effort", credential)
+        return "high"
+    }
+
+    override suspend fun loadProfileReasoningDefault(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+    ): String? {
+        rejectFirstUseOf("reasoning default", credential)
+        return "high"
+    }
+
+    override suspend fun loadProfileReasoningOverrides(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        options: ModelOptions,
+    ): Map<ModelSelection, String> {
+        rejectFirstUseOf("reasoning overrides", credential)
+        return mapOf(ModelSelection("nous", "hermes-4") to "low")
     }
 }
 

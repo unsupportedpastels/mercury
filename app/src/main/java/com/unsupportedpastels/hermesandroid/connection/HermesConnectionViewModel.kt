@@ -107,6 +107,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.WebSockets
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
@@ -229,6 +230,18 @@ private data class ActiveLoopbackCredentialRecord(
     val origin: ServerOrigin,
     val generation: Long,
     val credential: HermesCredential.LoopbackSession,
+)
+
+/**
+ * The single in-flight (or last completed) rebootstrap for one rejected loopback
+ * credential. Sharing the [bootstrap] deferred is what makes concurrent `401`s
+ * coalesce into one attempt whether it succeeds or fails.
+ */
+private class LoopbackRecoveryEpoch(
+    val origin: ServerOrigin,
+    val generation: Long,
+    val rejected: HermesCredential.LoopbackSession,
+    val bootstrap: Deferred<HermesCredential.LoopbackSession>,
 )
 
 private data class OperationalStatusFetch(
@@ -356,6 +369,7 @@ class HermesConnectionViewModel(
     private var activeConnectionMode: ServerConnectionMode? = null
     private var activeTokens: ActiveTokenRecord? = null
     private var activeLoopbackCredential: ActiveLoopbackCredentialRecord? = null
+    private var loopbackRecoveryEpoch: LoopbackRecoveryEpoch? = null
 
     // Serializes token refresh: concurrent callers that all observe an expired access
     // token must not each spend the same single-use rotated refresh token, and a stale
@@ -548,6 +562,7 @@ class HermesConnectionViewModel(
                 mutableAttachments.value = emptyMap()
                 activeTokens = null
                 activeLoopbackCredential = null
+                loopbackRecoveryEpoch = null
                 setSessionFilterScope(null, null)
                 activeOrigin = nextOrigin
                 activeConnectionMode = nextMode
@@ -923,6 +938,7 @@ class HermesConnectionViewModel(
                 archivedOnly = false,
             )
             ensureCurrentTunnel(serverOrigin, currentGeneration)
+            loopbackRecoveryEpoch = null
             activeLoopbackCredential = ActiveLoopbackCredentialRecord(serverOrigin, currentGeneration, credential)
             mutableSnapshots.value = mutableSnapshots.value.copy(
                 connectionState = ConnectionState.Connected,
@@ -973,6 +989,7 @@ class HermesConnectionViewModel(
             activeConnectionMode != ServerConnectionMode.ExternalSshTunnel
         ) return
         activeLoopbackCredential = null
+        loopbackRecoveryEpoch = null
         mutableSnapshots.value = mutableSnapshots.value.copy(
             connectionState = ConnectionState.Disconnected,
             connectionError = message,
@@ -1792,12 +1809,11 @@ class HermesConnectionViewModel(
                 managementError = null,
             )
             try {
-                var token = credentialForRequest(origin, expectedGeneration)
-                if (token == HermesCredential.None) {
+                if (credentialForRequest(origin, expectedGeneration) == HermesCredential.None) {
                     throw HermesConnectionException("Hermes profile settings require authentication")
                 }
                 val profiles = withCurrentHermesRestRead(origin, expectedGeneration) { credential ->
-                    client.loadProfiles(origin, credential).also { token = credential }
+                    client.loadProfiles(origin, credential)
                 }
                 if (!isCurrentManagementRequest(origin, expectedGeneration, requestGeneration)) {
                     return@launch
@@ -1805,14 +1821,16 @@ class HermesConnectionViewModel(
                 val selected = boundedProfile.takeIf(profiles::contains) ?: profiles.firstOrNull() ?: "default"
                 if (selected != boundedProfile) setSessionFilterScope(origin, selected)
                 val options = withCurrentHermesRestRead(origin, expectedGeneration) { credential ->
-                    client.loadDefaultModelOptions(origin, credential, selected).also { token = credential }
+                    client.loadDefaultModelOptions(origin, credential, selected)
                 }
                 currentCoroutineContext().ensureActive()
                 if (options.profile != null && options.profile != selected) {
                     throw HermesConnectionException("Hermes model options returned the wrong profile")
                 }
                 val currentInfo = try {
-                    client.loadCurrentModelInfo(origin, token.toHermesCredential(), selected)
+                    withCurrentHermesRestRead(origin, expectedGeneration) { credential ->
+                        client.loadCurrentModelInfo(origin, credential, selected)
+                    }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
@@ -1822,13 +1840,15 @@ class HermesConnectionViewModel(
                 if (isCurrentManagementRequest(origin, expectedGeneration, requestGeneration)) {
                     val profileReasoningEffort = options.current?.let { current ->
                         try {
-                            client.loadProfileReasoningEffort(
-                                serverOrigin = origin,
-                                credential = token.toHermesCredential(),
-                                profile = selected,
-                                provider = current.provider,
-                                model = current.model,
-                            )
+                            withCurrentHermesRestRead(origin, expectedGeneration) { credential ->
+                                client.loadProfileReasoningEffort(
+                                    serverOrigin = origin,
+                                    credential = credential,
+                                    profile = selected,
+                                    provider = current.provider,
+                                    model = current.model,
+                                )
+                            }
                         } catch (cancelled: CancellationException) {
                             throw cancelled
                         } catch (_: Exception) {
@@ -1836,23 +1856,27 @@ class HermesConnectionViewModel(
                         }
                     }
                     val profileReasoningDefault = try {
-                        client.loadProfileReasoningDefault(
-                            serverOrigin = origin,
-                            credential = token.toHermesCredential(),
-                            profile = selected,
-                        )
+                        withCurrentHermesRestRead(origin, expectedGeneration) { credential ->
+                            client.loadProfileReasoningDefault(
+                                serverOrigin = origin,
+                                credential = credential,
+                                profile = selected,
+                            )
+                        }
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (_: Exception) {
                         null
                     }
                     val profileModelReasoningOverrides = try {
-                        client.loadProfileReasoningOverrides(
-                            serverOrigin = origin,
-                            credential = token.toHermesCredential(),
-                            profile = selected,
-                            options = options,
-                        )
+                        withCurrentHermesRestRead(origin, expectedGeneration) { credential ->
+                            client.loadProfileReasoningOverrides(
+                                serverOrigin = origin,
+                                credential = credential,
+                                profile = selected,
+                                options = options,
+                            )
+                        }
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (_: Exception) {
@@ -1864,12 +1888,14 @@ class HermesConnectionViewModel(
                     // A transient failure keeps the previous rows visible instead
                     // of failing the whole management load.
                     val profileSessions = try {
-                        client.loadSessionsForProfile(
-                            serverOrigin = origin,
-                            credential = token.toHermesCredential(),
-                            profile = selected,
-                            archivedOnly = activeSessionArchivedFilter,
-                        ).also {
+                        withCurrentHermesRestRead(origin, expectedGeneration) { credential ->
+                            client.loadSessionsForProfile(
+                                serverOrigin = origin,
+                                credential = credential,
+                                profile = selected,
+                                archivedOnly = activeSessionArchivedFilter,
+                            )
+                        }.also {
                             lastDurableSessionsFetchKey = DurableSessionsFetchKey(
                                 origin = origin.value,
                                 generation = expectedGeneration,
@@ -2655,21 +2681,22 @@ class HermesConnectionViewModel(
                 return@launch
             }
             try {
-                var credential = requiredCredentialForRequest(origin, originGeneration)
+                requiredCredentialForRequest(origin, originGeneration)
                 val options = withCurrentHermesRestRead(origin, originGeneration) { currentCredential ->
                     client.loadDefaultModelOptions(origin, currentCredential, profile)
-                        .also { credential = currentCredential }
                 }
                 val selection = options.current
                 val reasoningEffort = selection?.let {
                     try {
-                        client.loadProfileReasoningEffort(
-                            serverOrigin = origin,
-                            credential = credential,
-                            profile = profile,
-                            provider = it.provider,
-                            model = it.model,
-                        )
+                        withCurrentHermesRestRead(origin, originGeneration) { currentCredential ->
+                            client.loadProfileReasoningEffort(
+                                serverOrigin = origin,
+                                credential = currentCredential,
+                                profile = profile,
+                                provider = it.provider,
+                                model = it.model,
+                            )
+                        }
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (expired: NativeRefreshExpiredException) {
@@ -4739,11 +4766,13 @@ class HermesConnectionViewModel(
                         operationGeneration,
                     )
                 } else {
-                    val messages = client.loadTranscript(
-                        origin,
-                        credential,
-                        serverDurableId(durableSessionId),
-                    )
+                    val messages = withCurrentHermesRestRead(origin, originGeneration) { currentCredential ->
+                        client.loadTranscript(
+                            origin,
+                            currentCredential,
+                            serverDurableId(durableSessionId),
+                        )
+                    }
                     if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                         closeChatSessionNonCancellably(candidate)
                         return
@@ -5977,23 +6006,56 @@ class HermesConnectionViewModel(
         }
     }
 
+    /**
+     * One shared bootstrap per recovery epoch. Every read rejected while carrying
+     * the same loopback credential awaits the same outcome, so ten concurrent
+     * `401`s coalesce into a single bootstrap and all waiters receive the same
+     * replacement credential. A *failed* bootstrap is shared for the same reason:
+     * otherwise each waiter would start its own attempt in turn and produce a
+     * sequential storm. Once the replacement credential later becomes stale on its
+     * own, that later rejection carries a different credential and opens a new
+     * epoch.
+     */
     private suspend fun refreshLoopbackCredential(
         origin: ServerOrigin,
         expectedGeneration: Long,
         rejected: HermesCredential.LoopbackSession,
-    ): HermesCredential.LoopbackSession = loopbackCredentialMutex.withLock {
-        ensureCurrentTunnel(origin, expectedGeneration)
-        val current = activeLoopbackCredential
-            ?.takeIf { it.origin == origin && it.generation == expectedGeneration }
-        if (current != null && current.credential !== rejected) return@withLock current.credential
-        if (current?.credential === rejected) activeLoopbackCredential = null
-        val result = loopbackSessionBootstrapClient?.bootstrap(origin)
-            ?: LoopbackSessionBootstrapResult.Failure(LoopbackSessionBootstrapFailure.TransportFailure)
-        ensureCurrentTunnel(origin, expectedGeneration)
-        val credential = (result as? LoopbackSessionBootstrapResult.Success)?.credential
-            ?: throw HermesAuthenticationRejectedException("Loopback session bootstrap was rejected")
-        activeLoopbackCredential = ActiveLoopbackCredentialRecord(origin, expectedGeneration, credential)
-        credential
+    ): HermesCredential.LoopbackSession {
+        val epoch = loopbackCredentialMutex.withLock {
+            ensureCurrentTunnel(origin, expectedGeneration)
+            val current = activeLoopbackCredential
+                ?.takeIf { it.origin == origin && it.generation == expectedGeneration }
+            if (current != null && current.credential !== rejected) return current.credential
+            loopbackRecoveryEpoch
+                ?.takeIf {
+                    it.origin == origin &&
+                        it.generation == expectedGeneration &&
+                        it.rejected === rejected
+                }
+                ?: startLoopbackRecoveryEpoch(origin, expectedGeneration, rejected)
+        }
+        return epoch.bootstrap.await()
+    }
+
+    private fun startLoopbackRecoveryEpoch(
+        origin: ServerOrigin,
+        expectedGeneration: Long,
+        rejected: HermesCredential.LoopbackSession,
+    ): LoopbackRecoveryEpoch {
+        if (activeLoopbackCredential?.credential === rejected) activeLoopbackCredential = null
+        // Runs in the ViewModel scope rather than the first waiter's scope so that
+        // cancelling one rejected read cannot strand the others.
+        val bootstrap = viewModelScope.async {
+            val result = loopbackSessionBootstrapClient?.bootstrap(origin)
+                ?: LoopbackSessionBootstrapResult.Failure(LoopbackSessionBootstrapFailure.TransportFailure)
+            ensureCurrentTunnel(origin, expectedGeneration)
+            val credential = (result as? LoopbackSessionBootstrapResult.Success)?.credential
+                ?: throw HermesAuthenticationRejectedException("Loopback session bootstrap was rejected")
+            activeLoopbackCredential = ActiveLoopbackCredentialRecord(origin, expectedGeneration, credential)
+            credential
+        }
+        return LoopbackRecoveryEpoch(origin, expectedGeneration, rejected, bootstrap)
+            .also { loopbackRecoveryEpoch = it }
     }
 
     private suspend fun requiredCredentialForRequest(
