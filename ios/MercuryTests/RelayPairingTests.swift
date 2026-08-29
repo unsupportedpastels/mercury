@@ -31,6 +31,9 @@ final class FakeRelaySocket: RelayBinarySocketing, @unchecked Sendable {
         closed = true
         outbound.finish()
     }
+
+    func lastCloseCode() -> Int? { nil }
+    func lastErrorDetail() -> String? { nil }
 }
 
 enum InMemoryRelayTransport {

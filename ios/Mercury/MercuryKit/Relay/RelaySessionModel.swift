@@ -53,11 +53,7 @@ final class RelaySessionModel {
     private(set) var clarify: PendingClarify?
     var chatError: String?
 
-    /// Temporary pairing diagnostics (non-secret): what this device presents.
-    var devicePublicKeyBase64: String {
-        (try? RelaySecureChannel.publicKey(forPrivateKey: target.deviceStaticPrivateKey))
-            .map { $0.base64EncodedString() } ?? "unavailable"
-    }
+    /// Last connection outcome, for debugging (never shown as UI copy).
     private(set) var lastConnectDetail = "—"
 
     private var connection: ChatConnection?
@@ -74,7 +70,14 @@ final class RelaySessionModel {
 
     // MARK: - Connection lifecycle
 
+    private var connecting = false
+
     func connect() async {
+        // Guard against re-entrant connects: a second device socket to the
+        // same installation makes the router supersede the first (close 4001).
+        guard !connecting, connection == nil else { return }
+        connecting = true
+        defer { connecting = false }
         phase = .connecting
         lastConnectDetail = "connecting"
         do {
@@ -127,7 +130,12 @@ final class RelaySessionModel {
     }
 
     private func handleStreamEnd() {
+        let code = chatSocket?.lastCloseCode()
+        let detail = chatSocket?.lastErrorDetail()
+        connection = nil
+        chatSocket = nil
         if phase == .connected {
+            lastConnectDetail = "ended close=\(code.map(String.init) ?? "nil") err=\(detail ?? "none")"
             phase = .offline
             running = false
         }

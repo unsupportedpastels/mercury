@@ -8,6 +8,12 @@ protocol RelayBinarySocketing: Sendable {
     func send(_ data: Data) async throws
     func receive() async throws -> Data?
     func close() async
+    /// WebSocket close code observed after the peer/router closed the socket,
+    /// for diagnostics (e.g. 4001 superseded, 4009 host gone). nil if unknown.
+    func lastCloseCode() -> Int?
+    /// Underlying transport error (domain#code) if receive/send failed, for
+    /// diagnostics. nil if the socket closed cleanly.
+    func lastErrorDetail() -> String?
 }
 
 protocol RelayBinarySocketFactorying: Sendable {
@@ -28,7 +34,9 @@ final class URLSessionRelaySocketFactory: RelayBinarySocketFactorying, @unchecke
               socketURL.host != nil
         else { throw RelayConnectionError.offline }
         let task = session.webSocketTask(with: socketURL)
-        task.maximumMessageSize = RelaySecureChannelPolicy.maxCiphertextRecordBytes
+        // The URLSession default (1 MiB) comfortably covers the 65,535-byte
+        // Noise record cap; do not shrink it below that.
+        task.maximumMessageSize = 1 << 20
         task.resume()
         return URLSessionRelaySocket(task: task)
     }
@@ -36,9 +44,18 @@ final class URLSessionRelaySocketFactory: RelayBinarySocketFactorying, @unchecke
 
 private final class URLSessionRelaySocket: RelayBinarySocketing, @unchecked Sendable {
     private let task: URLSessionWebSocketTask
+    private let errorLock = NSLock()
+    private var errorDetail: String?
 
     init(task: URLSessionWebSocketTask) {
         self.task = task
+    }
+
+    private func record(_ error: Error) {
+        let ns = error as NSError
+        errorLock.lock()
+        errorDetail = "\(ns.domain)#\(ns.code)"
+        errorLock.unlock()
     }
 
     func send(_ data: Data) async throws {
@@ -47,6 +64,7 @@ private final class URLSessionRelaySocket: RelayBinarySocketing, @unchecked Send
         } catch let error as CancellationError {
             throw error
         } catch {
+            record(error)
             // Ciphertext must never appear in errors.
             throw RelayConnectionError.offline
         }
@@ -67,6 +85,7 @@ private final class URLSessionRelaySocket: RelayBinarySocketing, @unchecked Send
         } catch let error as RelayConnectionError {
             throw error
         } catch {
+            record(error)
             // Peer close and receive errors share nil, like ChatSocketing.
             return nil
         }
@@ -74,6 +93,17 @@ private final class URLSessionRelaySocket: RelayBinarySocketing, @unchecked Send
 
     func close() async {
         task.cancel(with: .normalClosure, reason: nil)
+    }
+
+    func lastCloseCode() -> Int? {
+        let code = task.closeCode.rawValue
+        return code == 0 ? nil : code
+    }
+
+    func lastErrorDetail() -> String? {
+        errorLock.lock()
+        defer { errorLock.unlock() }
+        return errorDetail
     }
 }
 
@@ -184,6 +214,10 @@ actor RelayChatSocket: ChatSocketing {
     private let reassembler: RelayFrameReassembler
     private let randomMessageID: @Sendable () -> Data
     private var closed = false
+
+    /// Router/host close code seen on the underlying socket, for diagnostics.
+    nonisolated func lastCloseCode() -> Int? { socket.lastCloseCode() }
+    nonisolated func lastErrorDetail() -> String? { socket.lastErrorDetail() }
 
     init(
         connected: RelayConnectedChannel,
