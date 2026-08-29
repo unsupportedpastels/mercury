@@ -14,7 +14,6 @@ struct ConnectView: View {
     @State private var showSavedServers = false
     @State private var relay = RelayAppModel()
     @State private var showRelayPairing = false
-    @State private var activeRelayTarget: RelayPairedTarget?
     /// Error banner text injected when arriving via `.failed(_)` phase.
     private let bannerMessage: String?
 
@@ -66,9 +65,6 @@ struct ConnectView: View {
             relay.cancelPairing()
         }) {
             RelayPairingView(relay: relay)
-        }
-        .fullScreenCover(item: $activeRelayTarget) { target in
-            RelaySessionsView(target: target)
         }
         .sheet(isPresented: $showSavedServers) {
             NavigationStack {
@@ -267,7 +263,7 @@ struct ConnectView: View {
                 ForEach(relay.targets) { target in
                     Button {
                         if target.status == .approved {
-                            activeRelayTarget = target
+                            Task { await appModel.connectRelay(target) }
                         } else {
                             showRelayPairing = true
                         }

@@ -811,21 +811,38 @@ struct ChatView: View {
         // Task re-entry safety: for the new-chat flow, once the runtime exists
         // (createSession already ran) never run this again.
         if isNewSession && runtimeSessionID != nil { return true }
-        guard let origin = appModel.serverOrigin else { return false }
-        let token = storedAccessToken(origin: origin)
+        guard appModel.activeRelayTarget != nil || appModel.serverOrigin != nil else {
+            return false
+        }
 
         var candidateConnection: ChatConnection?
         do {
-            let ticketClient = WsTicketClient(session: .shared)
-            let gateway = try ChatGateway(
-                origin: origin,
-                accessToken: token,
-                ticketClient: ticketClient,
-                socketFactory: URLSessionChatWebSocketFactory()
-            )
-            // Tickets are single-use: every attempt mints a fresh one.
-            let socket = try await gateway.connect()
-            let candidate = try ChatConnection(socket: socket)
+            let candidate: ChatConnection
+            if let relayTarget = appModel.activeRelayTarget {
+                // Relay mode: same Hermes JSON-RPC contract through the
+                // E2EE channel. The router permits one device socket per
+                // installation, so while this chat is open it owns the app's
+                // only relay connection (list refreshes pause while a chat
+                // is visible).
+                let connected = try await RelayConnector.connect(
+                    target: relayTarget,
+                    profile: appModel.activeProfile
+                )
+                candidate = try ChatConnection(socket: RelayChatSocket(connected: connected))
+            } else {
+                guard let origin = appModel.serverOrigin else { return false }
+                let token = storedAccessToken(origin: origin)
+                let ticketClient = WsTicketClient(session: .shared)
+                let gateway = try ChatGateway(
+                    origin: origin,
+                    accessToken: token,
+                    ticketClient: ticketClient,
+                    socketFactory: URLSessionChatWebSocketFactory()
+                )
+                // Tickets are single-use: every attempt mints a fresh one.
+                let socket = try await gateway.connect()
+                candidate = try ChatConnection(socket: socket)
+            }
             candidateConnection = candidate
             let stream = candidate.start()
 

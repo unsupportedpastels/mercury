@@ -305,6 +305,64 @@ final class ConnectionController {
         FileHandle.standardError.write(Data("AUTHDEBUG \(message)\n".utf8))
     }
 
+    // MARK: - Mercury Relay
+
+    /// Connects through a paired relay target: proves admission with one
+    /// in-process read, seeds the session list, and enters `.connected` with
+    /// no server origin (origin-scoped REST features stand down on nil).
+    func connectRelay(target: RelayPairedTarget) async {
+        appModel.setActiveRelayTarget(nil)
+        appModel.setServerOrigin(nil)
+        appModel.setPhase(.connecting)
+        do {
+            let page = try await Self.relaySessionsPage(
+                target: target, profile: appModel.activeProfile, limit: 20, offset: 0
+            )
+            appModel.setActiveRelayTarget(target)
+            appModel.sessions = page.rows
+            appModel.setCanLoadMoreSessions(page.hasMore)
+            appModel.setSessionsError(nil)
+            appModel.setHermesVersion(nil)
+            appModel.setPhase(.connected)
+        } catch let error as RelayConnectionError where error == .notAuthorized {
+            appModel.setPhase(.failed(
+                "The host hasn't approved this device — or it was revoked. Approve it on the host, then try again."
+            ))
+        } catch {
+            appModel.setPhase(.failed(
+                "The relay or host is unreachable. The host keeps running sessions; reconnect when you're back online."
+            ))
+        }
+    }
+
+    /// One short-lived relay connection serving one `relay.sessions.list`
+    /// read. Sequential short-lived connections keep the single device-socket
+    /// slot free for an open chat.
+    static func relaySessionsPage(
+        target: RelayPairedTarget,
+        profile: String,
+        limit: Int,
+        offset: Int
+    ) async throws -> SessionPage {
+        let connected = try await RelayConnector.connect(target: target, profile: profile)
+        let socket = RelayChatSocket(connected: connected)
+        let connection = try ChatConnection(socket: socket)
+        _ = connection.start()
+        defer { Task { await connection.close() } }
+        let result = try await connection.relayRequest(
+            "relay.sessions.list",
+            params: ["profile": profile, "limit": limit, "offset": offset]
+        )
+        guard let rawRows = result["sessions"] as? [[String: Any]] else {
+            return SessionPage(rows: [], total: 0, hasMore: false)
+        }
+        let data = try JSONSerialization.data(withJSONObject: rawRows)
+        let rows = (try? JSONDecoder().decode([SessionRow].self, from: data)) ?? []
+        let total = result["total"] as? Int
+        let hasMore = total.map { offset + rows.count < $0 } ?? (rows.count == limit)
+        return SessionPage(rows: rows, total: total, hasMore: hasMore)
+    }
+
     // MARK: - Sessions
 
     /// Fetches one page of the active profile's sessions.
@@ -312,9 +370,30 @@ final class ConnectionController {
     /// Returns `nil` on failure; the previous rows are kept and
     /// `sessionsError` carries a friendly message (never token material).
     func loadSessionsPage(limit: Int = 20, offset: Int = 0) async -> SessionPage? {
-        guard case .connected = appModel.connectionPhase, let origin = appModel.serverOrigin else {
-            return nil
+        guard case .connected = appModel.connectionPhase else { return nil }
+
+        if let target = appModel.activeRelayTarget {
+            // The router permits one device socket per installation. An open
+            // chat owns it, so refreshes stand down until the chat closes and
+            // the visible list refreshes again.
+            guard appModel.visibleSessionID == nil else { return nil }
+            do {
+                return try await Self.relaySessionsPage(
+                    target: target,
+                    profile: appModel.activeProfile,
+                    limit: limit,
+                    offset: offset
+                )
+            } catch {
+                guard appModel.activeRelayTarget?.id == target.id else { return nil }
+                appModel.setSessionsError(
+                    "The relay host could not be reached. It may be offline — pull to retry."
+                )
+                return nil
+            }
         }
+
+        guard let origin = appModel.serverOrigin else { return nil }
 
         let sessionsClient = SessionsClient(
             client: makeHTTPClient(origin: origin),
