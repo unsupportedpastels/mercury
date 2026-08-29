@@ -329,6 +329,11 @@ struct SessionListView: View {
                     profile: appModel.activeProfile
                 )
                 if let target = appModel.activeRelayTarget {
+                    // One device socket per installation: never open the
+                    // projects metadata connection while a chat session is
+                    // open or connecting — it would supersede the chat's
+                    // socket and orphan its runtime.
+                    guard appModel.visibleSessionID == nil else { return }
                     await projectController.start(
                         source: .relay(target),
                         profile: appModel.activeProfile

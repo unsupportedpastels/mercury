@@ -1797,13 +1797,21 @@ struct ChatView: View {
                 titleText = adopted
             }
 
-        case .sessionInfo(_, _, let model, let provider, let reasoningEffort, let fastMode, let title, _):
+        case .sessionInfo(let infoRuntimeID, let storedID, let model, let provider, let reasoningEffort, let fastMode, let title, _):
             if let model, let provider {
                 currentModelSelection = ModelSelection(provider: provider, model: model)
             }
             if let reasoningEffort { currentReasoningEffort = reasoningEffort }
             if let fastMode { currentFastMode = fastMode }
             if let title, !title.isEmpty { titleText = title }
+            // A reclaimed/remapped runtime (e.g. a relay reconnect racing a
+            // superseded socket) streams the turn under a fresh runtime id.
+            // When the gateway ties that runtime to our durable session,
+            // accept its events so the transcript renders instead of
+            // silently filtering the whole turn.
+            if let storedID, storedID == (durableID ?? sessionID), !infoRuntimeID.isEmpty {
+                transcript.ownSessionIDs.insert(infoRuntimeID)
+            }
 
         case .statusUpdate:
             connectionNote = nil

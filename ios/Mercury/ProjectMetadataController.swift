@@ -87,8 +87,16 @@ final class ProjectMetadataController {
             guard loadGeneration == generation, connection === owned else { return }
             tree = loaded
             isLoading = false
-            let shouldPoll = await refreshActiveSessions(connection: owned, generation: loadGeneration)
-            if shouldPoll { beginActivityPolling(connection: owned, generation: loadGeneration) }
+            if case .relay = source {
+                // Over the relay this connection is superseded the moment a
+                // chat opens (one device socket per installation), so the
+                // 3-second activity poll would only fail forever. Load the
+                // tree once and skip runtime-presence indicators.
+                activeListSupported = false
+            } else {
+                let shouldPoll = await refreshActiveSessions(connection: owned, generation: loadGeneration)
+                if shouldPoll { beginActivityPolling(connection: owned, generation: loadGeneration) }
+            }
         } catch is ChatMethodNotFoundError {
             guard loadGeneration == generation else { return }
             isUnsupported = true
