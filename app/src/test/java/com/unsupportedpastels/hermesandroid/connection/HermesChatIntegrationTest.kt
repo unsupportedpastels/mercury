@@ -1039,6 +1039,34 @@ class HermesChatIntegrationTest {
         assertTrue(client.authenticateCalls >= 2)
     }
 
+    /**
+     * The transcript 401 type is now a refinement of the shared credential
+     * rejection, so this pins that a native OAuth connection still heals through
+     * reconnect/refresh and never scrapes a loopback bootstrap token.
+     */
+    @Test
+    fun unauthorizedTranscriptLoadUnderOAuthNeverBootstrapsALoopbackSession() = runTest(dispatcher) {
+        val client = UnauthorizedOnceTranscriptClient()
+        val bootstrap = CountingLoopbackBootstrap()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(ServerSettingsState.Ready(origin)),
+            client = client,
+            tokenStore = MemoryTokenStore(tokens),
+            nowEpochSeconds = { 1_900_000_000 },
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+
+        advanceUntilIdle()
+        viewModel.openSession(durableId)
+        advanceUntilIdle()
+
+        val chat = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        assertEquals(0, bootstrap.calls)
+        assertEquals(2, client.transcriptLoads)
+        assertEquals(listOf("Recovered question"), chat.messages.map { it.text })
+        assertEquals(null, chat.error)
+    }
+
     @Test
     fun reconnectReplacesLocalPartialWithInflightSnapshot() = runTest(dispatcher) {
         val first = ReconnectingChatSession(
@@ -2532,6 +2560,17 @@ private class ChatConnectionClient : HermesConnectionClient {
             com.unsupportedpastels.hermesandroid.gateway.ChatMessage(ChatMessageRole.User, "Earlier question"),
             com.unsupportedpastels.hermesandroid.gateway.ChatMessage(ChatMessageRole.Assistant, "Earlier answer"),
         )
+    }
+}
+
+/** Fails the test if a non-loopback connection ever tries to adopt a session token. */
+private class CountingLoopbackBootstrap : LoopbackSessionBootstrapClient {
+    var calls = 0
+        private set
+
+    override suspend fun bootstrap(origin: ServerOrigin): LoopbackSessionBootstrapResult {
+        calls += 1
+        return LoopbackSessionBootstrapResult.Failure(LoopbackSessionBootstrapFailure.TokenAbsent)
     }
 }
 

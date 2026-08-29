@@ -2316,14 +2316,31 @@ class HermesConnectionViewModel(
         }
         val origin = checkNotNull(activeOrigin) { "No Hermes server configured" }
         val expectedGeneration = generation
+        val expectedProfileGeneration = profileGeneration
+        val profile = mutableSnapshots.value.selectedProfile
         val token = requiredCredentialForRequest(origin, expectedGeneration)
-        client.deleteSession(origin, token.toHermesCredential(), sessionId, mutableSnapshots.value.selectedProfile)
-        cacheRepository?.deleteSession(
-            CacheScope(origin, mutableSnapshots.value.selectedProfile),
-            sessionId,
-        )
+        client.deleteSession(origin, token.toHermesCredential(), sessionId, profile)
+        // A non-cooperative old-origin response must not delete a cached row or
+        // drop a durable row from a scope the user has since selected.
+        ensureCurrentSessionScope(origin, expectedGeneration, expectedProfileGeneration, profile)
+        cacheRepository?.deleteSession(CacheScope(origin, profile), sessionId)
         detachFailedRuntime(sessionId)
         mutableSnapshots.value = mutableSnapshots.value.removeSession(sessionId)
+    }
+
+    private suspend fun ensureCurrentSessionScope(
+        origin: ServerOrigin,
+        expectedGeneration: Long,
+        expectedProfileGeneration: Long,
+        profile: String,
+    ) {
+        currentCoroutineContext().ensureActive()
+        check(
+            generation == expectedGeneration &&
+                activeOrigin == origin &&
+                profileGeneration == expectedProfileGeneration &&
+                mutableSnapshots.value.selectedProfile == profile,
+        ) { "Server scope changed while updating this session" }
     }
 
     suspend fun bulkDeleteSessions(sessionIds: Collection<DurableSessionId>): BulkDeleteResult {
@@ -2421,16 +2438,19 @@ class HermesConnectionViewModel(
     ) {
         val origin = checkNotNull(activeOrigin) { "No Hermes server configured" }
         val expectedGeneration = generation
+        val expectedProfileGeneration = profileGeneration
+        val profile = mutableSnapshots.value.selectedProfile
         val token = requiredCredentialForRequest(origin, expectedGeneration)
         client.updateSession(
             origin,
             token.toHermesCredential(),
             sessionId,
-            mutableSnapshots.value.selectedProfile,
+            profile,
             title,
             archived,
             pinned,
         )
+        ensureCurrentSessionScope(origin, expectedGeneration, expectedProfileGeneration, profile)
         mutableSnapshots.value = mutableSnapshots.value.mapSession(sessionId) { current ->
             current.copy(
                 title = title ?: current.title,

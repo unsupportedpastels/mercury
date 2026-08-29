@@ -330,6 +330,64 @@ class HermesConnectionViewModelTest {
     }
 
     @Test
+    fun staleSessionDeleteCompletionDoesNotRemoveARowFromTheNewScope() = runTest(dispatcher) {
+        val first = ServerOrigin.parse("https://a.hermes.example")
+        val second = ServerOrigin.parse("https://b.hermes.example")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(first))
+        val gate = CompletableDeferred<Unit>()
+        val client = GatedSessionMutationClient(deleteGate = gate)
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = settings,
+            client = client,
+        )
+        advanceUntilIdle()
+
+        val delete = async { runCatching { viewModel.deleteSession(DurableSessionId("stored-1")) } }
+        advanceUntilIdle()
+        settings.value = ServerSettingsState.Ready(second)
+        advanceUntilIdle()
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        assertTrue(delete.await().isFailure)
+        assertEquals(1, client.deleteCalls)
+        assertEquals(
+            listOf("b.hermes.example row"),
+            viewModel.snapshots.value.durableSessions.map { it.title },
+        )
+    }
+
+    @Test
+    fun staleSessionUpdateCompletionDoesNotRenameARowInTheNewScope() = runTest(dispatcher) {
+        val first = ServerOrigin.parse("https://a.hermes.example")
+        val second = ServerOrigin.parse("https://b.hermes.example")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(first))
+        val gate = CompletableDeferred<Unit>()
+        val client = GatedSessionMutationClient(updateGate = gate)
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = settings,
+            client = client,
+        )
+        advanceUntilIdle()
+
+        val rename = async {
+            runCatching { viewModel.renameSession(DurableSessionId("stored-1"), "Stale rename") }
+        }
+        advanceUntilIdle()
+        settings.value = ServerSettingsState.Ready(second)
+        advanceUntilIdle()
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        assertTrue(rename.await().isFailure)
+        assertEquals(1, client.updateCalls)
+        assertEquals(
+            listOf("b.hermes.example row"),
+            viewModel.snapshots.value.durableSessions.map { it.title },
+        )
+    }
+
+    @Test
     fun configuredOriginIsProbedAndBecomesReachableSignInRequired() = runTest(dispatcher) {
         val origin = ServerOrigin.parse("https://hermes.example")
         val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
@@ -3488,6 +3546,64 @@ private class RecordingTunnelBootstrap(
         val token = remaining.removeFirstOrNull()
             ?: return LoopbackSessionBootstrapResult.Failure(LoopbackSessionBootstrapFailure.TransportFailure)
         return LoopbackSessionBootstrapResult.Success(HermesCredential.LoopbackSession.create(origin, token))
+    }
+}
+
+/**
+ * Auth-free server whose durable row is labelled by origin, with session
+ * mutations held open so a scope change can land while one is in flight.
+ */
+private class GatedSessionMutationClient(
+    private val deleteGate: CompletableDeferred<Unit>? = null,
+    private val updateGate: CompletableDeferred<Unit>? = null,
+) : HermesConnectionClient {
+    var deleteCalls = 0
+        private set
+    var updateCalls = 0
+        private set
+
+    private fun rowFor(serverOrigin: ServerOrigin) = SessionSummary(
+        DurableSessionId("stored-1"),
+        "${serverOrigin.value.substringAfter("://")} row",
+    )
+
+    override suspend fun probe(serverOrigin: ServerOrigin) = HermesConnectionInfo(
+        version = "0.20.4",
+        authRequired = false,
+        nativeOAuthSupported = false,
+        providers = emptyList(),
+        sessions = listOf(rowFor(serverOrigin)),
+    )
+
+    override suspend fun loadSessionsForProfile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        archivedOnly: Boolean,
+    ): List<SessionSummary> = listOf(rowFor(serverOrigin))
+
+    override suspend fun deleteSession(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        durableSessionId: DurableSessionId,
+        profile: String?,
+    ) {
+        deleteCalls += 1
+        deleteGate?.await()
+    }
+
+    override suspend fun updateSession(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        durableSessionId: DurableSessionId,
+        profile: String?,
+        title: String?,
+        archived: Boolean?,
+        pinned: Boolean?,
+    ): SessionUpdateResult {
+        updateCalls += 1
+        updateGate?.await()
+        return SessionUpdateResult(ok = true, title = title, archived = archived, pinned = pinned)
     }
 }
 
