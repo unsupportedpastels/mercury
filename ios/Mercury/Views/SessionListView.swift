@@ -62,6 +62,13 @@ struct SessionListView: View {
         return results
     }
 
+    /// True while a chat session is open on top of the list. `.task(id:)`
+    /// re-runs when this flips, so it drives the relay projects-socket
+    /// standdown.
+    private var relayChatIsOpen: Bool {
+        appModel.visibleSessionID != nil
+    }
+
     private var projectScope: String {
         let host = appModel.serverOrigin
             ?? appModel.activeRelayTarget.map { "relay:\($0.id.uuidString)" }
@@ -322,6 +329,16 @@ struct SessionListView: View {
             .task {
                 await appModel.loadSessions()
                 showShareInbox = !appModel.pendingShareEntries.isEmpty
+            }
+            .task(id: relayChatIsOpen) {
+                // Relay carries one device socket per installation. While a
+                // chat owns it, the projects metadata connection must be fully
+                // closed — not merely not-started — or its lingering socket
+                // and the chat's socket supersede each other, dropping the
+                // chat mid-turn (the user sees activity but no streamed reply).
+                if appModel.activeRelayTarget != nil, relayChatIsOpen {
+                    await projectController.stop()
+                }
             }
             .task(id: projectScope) {
                 pinnedProjectIDs = projectPins.pinnedIDs(

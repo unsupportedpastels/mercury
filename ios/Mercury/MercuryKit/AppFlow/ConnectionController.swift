@@ -330,7 +330,7 @@ final class ConnectionController {
             ))
         } catch {
             appModel.setPhase(.failed(
-                "The relay or host is unreachable. The host keeps running sessions; reconnect when you're back online."
+                "The relay or host is unreachable. [debug: \(error)]"
             ))
         }
     }

@@ -1752,14 +1752,21 @@ struct ChatView: View {
     // MARK: Event handling
 
     @MainActor
+    @State private var debugEventLog: [String] = []
+
     private func handleEvent(_ event: ChatEvent) {
         debugEventCount += 1
         if case .messageDelta = event { debugDeltaCount += 1 }
-        let eventLabel = String(describing: event).prefix(24)
+        let eventLabel = String(String(describing: event).prefix(while: { $0 != "(" }))
+        debugEventLog.append(eventLabel)
+        if debugEventLog.count > 60 { debugEventLog.removeFirst() }
         // Pure transcript mutation lives in the reducer.
         transcript.apply(event)
-        debugSummary = "ev:\(debugEventCount) delta:\(debugDeltaCount) rows:\(transcript.rows.count) "
-            + "own:\(transcript.ownSessionIDs.count) main:\(Thread.isMainThread ? 1 : 0) last:\(eventLabel)"
+        let rowState = transcript.rows
+            .map { "\($0.role.prefix(1)):\($0.text.count)\($0.completed ? "F" : "S")" }
+            .joined(separator: " ")
+        debugSummary = "ev:\(debugEventCount) delta:\(debugDeltaCount) rows:[\(rowState)]\n"
+            + "seq:\(debugEventLog.suffix(30).joined(separator: ","))"
 
         // Best-effort live surfaces: notification delivery + Live Activity.
         // The notification coordinator dedupes and suppresses when this session
