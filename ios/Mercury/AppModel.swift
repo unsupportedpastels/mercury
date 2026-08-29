@@ -475,6 +475,7 @@ final class AppModel {
         guard ProcessInfo.processInfo.arguments.contains("-uitest-reset-local-state") else { return }
         KeychainServerCatalogPersistence().clearCatalogData()
         UserDefaultsLegacyServerOrigin().clearLegacyOrigin()
+        try? await RelayTargetStore().removeAll()
         try? await offlineCacheStore.clear()
         serverCatalog = .empty
         sessions = []

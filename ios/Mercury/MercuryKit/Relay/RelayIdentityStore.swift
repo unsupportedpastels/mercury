@@ -201,6 +201,13 @@ actor RelayTargetStore {
         try persist(targets)
     }
 
+    /// Deletes every target and its key material. Test-support surface: the
+    /// UI-test reset hook is the only production caller.
+    func removeAll() throws {
+        // Bypass load() so a corrupt persisted envelope can still be cleared.
+        try persist([])
+    }
+
     private func epochSeconds() -> Int64 {
         max(0, Int64(now().timeIntervalSince1970))
     }

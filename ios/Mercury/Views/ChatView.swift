@@ -252,20 +252,8 @@ struct ChatView: View {
         return contextBreakdown?.percent
     }
 
-    // Temporary live diagnostics for the missing tool-turn answer.
-    @State private var debugEventCount = 0
-    @State private var debugDeltaCount = 0
-    @State private var debugSummary = ""
-
     var body: some View {
         VStack(spacing: 0) {
-            if !debugSummary.isEmpty {
-                Text(debugSummary)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(Color.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 8)
-            }
             if let connectionNote {
                 Label(connectionNote, systemImage: "wifi.exclamationmark")
                     .font(.footnote)
@@ -366,7 +354,7 @@ struct ChatView: View {
         }
         .navigationTitle(titleText.isEmpty ? "Session" : titleText)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(Color.amoledBlack, for: .navigationBar)
+        .toolbarBackground(.amoledBlack, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .task {
             // Visibility can change while SwiftUI retains this view and restarts
@@ -651,6 +639,7 @@ struct ChatView: View {
 
     // MARK: Open / resume
 
+    @MainActor
     private func open() async {
         if isNewSession {
             // Brand-new chat: no history exists, so skip the REST transcript
@@ -663,6 +652,7 @@ struct ChatView: View {
     }
 
     @discardableResult
+    @MainActor
     private func loadTranscript(
         durableSessionID requestedID: String? = nil,
         preservingActiveTurn: Bool = false,
@@ -786,6 +776,7 @@ struct ChatView: View {
     /// SwiftUI keeps this view alive while iOS backgrounds the app, so its
     /// initial task does not run again on reopen. Refresh the visible transcript
     /// explicitly and reset a dead socket's foreground reconnect budget.
+    @MainActor
     private func catchUpAfterForeground() async {
         guard didOpen, !closedByUs else { return }
         appModel.setVisibleSession(notificationSessionID)
@@ -889,6 +880,7 @@ struct ChatView: View {
     /// Returns true when the session reached `.live` (resume/create succeeded);
     /// false means the caller should try again or give up.
     @discardableResult
+    @MainActor
     private func establishConnection(attempt: Int) async -> Bool {
         // Task re-entry safety: for the new-chat flow, once the runtime exists
         // (createSession already ran) never run this again.
@@ -1001,12 +993,20 @@ struct ChatView: View {
             eventTask = Task { [weak candidate] in
                 guard let candidate else { return }
                 for await event in stream {
+                    // Guard AND apply inside one MainActor hop: handleEvent
+                    // mutates @State (the transcript reducer among it), and a
+                    // nonisolated Task runs off the main actor in Swift 5
+                    // mode. Off-main @State writes tear against render — the
+                    // transcript list kept showing a stale mid-turn snapshot
+                    // ("Working · 1 step") while the streamed answer was
+                    // already reduced into rows, on both transports.
                     let stillOwnsConnection = await MainActor.run {
-                        connectionOwnership.isCurrent(ownershipToken)
-                            && connection === candidate
+                        guard connectionOwnership.isCurrent(ownershipToken)
+                            && connection === candidate else { return false }
+                        handleEvent(event)
+                        return true
                     }
                     guard stillOwnsConnection else { break }
-                    handleEvent(event)
                 }
                 await MainActor.run {
                     guard connectionOwnership.isCurrent(ownershipToken),
@@ -1042,6 +1042,7 @@ struct ChatView: View {
         }
     }
 
+    @MainActor
     private func connectAndResume() async {
         connectionState = .connecting
         closedByUs = false
@@ -1054,6 +1055,7 @@ struct ChatView: View {
     /// Android recoverChat parity: bounded attempts, fixed backoff ladder
     /// (500ms/1s/2s), cancel-safe between sleeps, offline banner at the end
     /// with a manual-retry tap target.
+    @MainActor
     private func scheduleReconnect() {
         guard reconnectTask == nil, !closedByUs else { return }
         reconnectTask = Task {
@@ -1075,6 +1077,7 @@ struct ChatView: View {
         }
     }
 
+    @MainActor
     private func retryConnectionNow() {
         reconnectTask?.cancel()
         reconnectTask = nil
@@ -1752,21 +1755,9 @@ struct ChatView: View {
     // MARK: Event handling
 
     @MainActor
-    @State private var debugEventLog: [String] = []
-
     private func handleEvent(_ event: ChatEvent) {
-        debugEventCount += 1
-        if case .messageDelta = event { debugDeltaCount += 1 }
-        let eventLabel = String(String(describing: event).prefix(while: { $0 != "(" }))
-        debugEventLog.append(eventLabel)
-        if debugEventLog.count > 60 { debugEventLog.removeFirst() }
         // Pure transcript mutation lives in the reducer.
         transcript.apply(event)
-        let rowState = transcript.rows
-            .map { "\($0.role.prefix(1)):\($0.text.count)\($0.completed ? "F" : "S")" }
-            .joined(separator: " ")
-        debugSummary = "ev:\(debugEventCount) delta:\(debugDeltaCount) rows:[\(rowState)]\n"
-            + "seq:\(debugEventLog.suffix(30).joined(separator: ","))"
 
         // Best-effort live surfaces: notification delivery + Live Activity.
         // The notification coordinator dedupes and suppresses when this session

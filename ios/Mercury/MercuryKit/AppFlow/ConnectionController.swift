@@ -330,7 +330,7 @@ final class ConnectionController {
             ))
         } catch {
             appModel.setPhase(.failed(
-                "The relay or host is unreachable. [debug: \(error)]"
+                "The relay or host is unreachable. Check that your Hermes host is online, then retry."
             ))
         }
     }
