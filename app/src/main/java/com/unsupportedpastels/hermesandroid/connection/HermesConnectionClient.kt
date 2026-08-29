@@ -263,19 +263,26 @@ class HermesSessionBulkDeleteUnsupportedException(
     val statusCode: Int,
 ) : HermesConnectionException("Bulk session deletion is not supported by this Hermes server")
 
-class HermesAuthenticationRejectedException(
+/**
+ * A credential-bearing protected REST request was rejected with HTTP 401, so the
+ * attached credential is no longer accepted. Released Hermes returns `401` for a
+ * missing or stale dashboard session token; `403` means the request authorized
+ * successfully but the operation is forbidden by resource/policy rules, so it must
+ * never reach this type.
+ */
+open class HermesAuthenticationRejectedException(
     message: String,
 ) : HermesConnectionException(message)
 
 /**
- * A protected REST request returned HTTP 401 with credentials attached. Distinct
- * from [HermesAuthenticationRejectedException] (session-establishment rejection):
- * this signals a mid-session token that the server no longer accepts, which a live
- * refresh token can often heal by reconnecting rather than forcing a fresh sign-in.
+ * A mid-session protected REST request returned HTTP 401. This refines
+ * [HermesAuthenticationRejectedException] for paths where a live OAuth refresh
+ * token can heal the rejection by reconnecting rather than forcing a fresh
+ * sign-in. Loopback recovery treats it as any other credential rejection.
  */
 class HermesUnauthorizedException(
     message: String = "Hermes request returned HTTP 401",
-) : HermesConnectionException(message)
+) : HermesAuthenticationRejectedException(message)
 
 enum class CronRestEndpoint {
     Trigger,
@@ -357,11 +364,17 @@ internal suspend fun HttpResponse.readBodyTextBounded(
     }
 }
 
+/**
+ * Classifies a credential-bearing protected response. Only HTTP 401 means the
+ * credential itself was rejected. HTTP 403 is an authorized-but-forbidden policy
+ * denial (unreadable file, path outside a managed root, sensitive path, unwritable
+ * directory, Host/Origin restriction) and must never invalidate a credential,
+ * trigger a rebootstrap, or be retried automatically. Public routes are called
+ * without a credential and are therefore never classified here.
+ */
 private fun HttpResponse.throwIfHermesCredentialRejected(credential: HermesCredential) {
-    if (credential != HermesCredential.None && status.value in setOf(401, 403)) {
-        throw HermesAuthenticationRejectedException(
-            "Hermes credential was rejected with HTTP ${status.value}",
-        )
+    if (credential != HermesCredential.None && status.value == 401) {
+        throw HermesAuthenticationRejectedException("Hermes credential was rejected with HTTP 401")
     }
 }
 
@@ -686,6 +699,10 @@ class HttpHermesConnectionClient(
         }
     } catch (cancelled: CancellationException) {
         throw cancelled
+    } catch (rejected: HermesAuthenticationRejectedException) {
+        // Fail-closed fallbacks must not hide a rejected credential: the caller
+        // needs the rejection type to refresh the loopback session and retry.
+        throw rejected
     } catch (_: Exception) {
         VoiceCapabilities.NONE
     }
@@ -708,6 +725,8 @@ class HttpHermesConnectionClient(
         }
     } catch (cancelled: CancellationException) {
         throw cancelled
+    } catch (rejected: HermesAuthenticationRejectedException) {
+        throw rejected
     } catch (_: Exception) {
         VoiceServerConfig.DEFAULT
     }
@@ -802,8 +821,8 @@ class HttpHermesConnectionClient(
             applyHermesCredential(credential, serverOrigin)
             parameter("profile", profile.take(64))
         }
-        if (!response.status.isSuccess()) return emptyList()
         response.throwIfHermesCredentialRejected(credential)
+        if (!response.status.isSuccess()) return emptyList()
         val body = response.readBodyTextBounded(MAX_TRANSCRIPT_BODY_BYTES)
         val root = json.parseToJsonElement(body) as? JsonObject ?: return emptyList()
         if (root["available"]?.jsonPrimitive?.booleanOrNull != true) return emptyList()
@@ -867,6 +886,7 @@ class HttpHermesConnectionClient(
             profile?.takeIf { it != "default" }?.let { parameter("profile", it) }
         }
         response.readBodyTextBounded()
+        response.throwIfHermesCredentialRejected(credential)
         if (!response.status.isSuccess()) {
             throw HermesConnectionException("Hermes session deletion returned HTTP ${response.status.value}")
         }
@@ -1196,6 +1216,7 @@ class HttpHermesConnectionClient(
             }.toString())
         }
         response.readBodyTextBounded()
+        response.throwIfHermesCredentialRejected(credential)
         if (!response.status.isSuccess()) {
             throw HermesConnectionException("Hermes reasoning default update returned HTTP ${response.status.value}")
         }
@@ -1235,6 +1256,7 @@ class HttpHermesConnectionClient(
             }.toString())
         }
         response.readBodyTextBounded()
+        response.throwIfHermesCredentialRejected(credential)
         if (!response.status.isSuccess()) {
             throw HermesConnectionException(
                 "Hermes reasoning override update returned HTTP ${response.status.value}",
@@ -1513,7 +1535,7 @@ class HttpHermesConnectionClient(
         if (!response.status.isSuccess()) {
             response.readBodyTextBounded()
             val message = "Hermes authentication returned HTTP ${response.status.value}"
-            if (response.status.value == 401 || response.status.value == 403) {
+            if (response.status.value == 401) {
                 throw HermesAuthenticationRejectedException(message)
             }
             throw HermesConnectionException(message)
@@ -1568,6 +1590,9 @@ class HttpHermesConnectionClient(
         }
         if (!response.status.isSuccess()) {
             response.readBodyTextBounded()
+            // HermesUnauthorizedException is a HermesAuthenticationRejectedException,
+            // so loopback recovery treats this as any other credential rejection
+            // while the OAuth reconnect path keeps its narrower handling.
             if (response.status.value == 401) {
                 throw HermesUnauthorizedException(
                     "Hermes transcript returned HTTP 401",
@@ -1626,6 +1651,7 @@ class HttpHermesConnectionClient(
         }
         if (!response.status.isSuccess()) {
             response.readBodyTextBounded()
+            response.throwIfHermesCredentialRejected(credential)
             throw HermesConnectionException(
                 "Hermes host file listing returned HTTP ${response.status.value}",
             )
@@ -1652,6 +1678,7 @@ class HttpHermesConnectionClient(
         }
         if (!response.status.isSuccess()) {
             response.readBodyTextBounded()
+            response.throwIfHermesCredentialRejected(credential)
             throw HermesConnectionException("Hermes host file read returned HTTP ${response.status.value}")
         }
         parseHostFileContent(response.readBodyTextBounded(MAX_HOST_FILE_READ_BODY_BYTES))
@@ -1699,6 +1726,7 @@ class HttpHermesConnectionClient(
         }
         if (!response.status.isSuccess()) {
             response.bodyAsChannel().cancel(null)
+            response.throwIfHermesCredentialRejected(credential)
             throw HermesConnectionException("Hermes host file download returned HTTP ${response.status.value}")
         }
         val mimeType = validHostFileMimeType(
@@ -1744,6 +1772,7 @@ class HttpHermesConnectionClient(
         }
         if (!response.status.isSuccess()) {
             response.readBodyTextBounded()
+            response.throwIfHermesCredentialRejected(credential)
             throw HermesConnectionException(
                 "Hermes host folder listing returned HTTP ${response.status.value}",
             )
@@ -1795,6 +1824,7 @@ class HttpHermesConnectionClient(
         }
         if (!response.status.isSuccess()) {
             response.readBodyTextBounded()
+            response.throwIfHermesCredentialRejected(credential)
             throw HermesConnectionException(
                 "Hermes host folder creation returned HTTP ${response.status.value}",
             )
@@ -1828,6 +1858,7 @@ class HttpHermesConnectionClient(
         }
         if (!response.status.isSuccess()) {
             response.bodyAsChannel().cancel(null)
+            response.throwIfHermesCredentialRejected(credential)
             throw HermesConnectionException(
                 "Hermes managed image returned HTTP ${response.status.value}",
             )
@@ -1897,10 +1928,7 @@ class HttpHermesConnectionClient(
         if (!sessionsResponse.status.isSuccess()) {
             sessionsResponse.readBodyTextBounded()
             val message = "Hermes session listing returned HTTP ${sessionsResponse.status.value}"
-            if (
-                credential != HermesCredential.None &&
-                (sessionsResponse.status.value == 401 || sessionsResponse.status.value == 403)
-            ) {
+            if (credential != HermesCredential.None && sessionsResponse.status.value == 401) {
                 throw HermesAuthenticationRejectedException(message)
             }
             throw HermesConnectionException(message)
