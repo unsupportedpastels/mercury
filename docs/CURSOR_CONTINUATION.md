@@ -1,5 +1,7 @@
 # Cursor continuation brief: external SSH tunnel authentication
 
+> **Superseded where decisions differ:** read `docs/EXTERNAL_SSH_TUNNEL_QUESTIONS_ANSWERS.md` first. It is the authoritative continuation contract. In particular, REST credential refresh is triggered by `401` only; `403` is an operation/policy denial and must not trigger token refresh or automatic replay.
+
 ## Objective
 
 Continue the Android client work for external SSH port forwarding to an unchanged remote `hermes serve` instance.
