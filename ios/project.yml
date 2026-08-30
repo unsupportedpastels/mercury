@@ -92,6 +92,11 @@ targets:
         NSSpeechRecognitionUsageDescription: Mercury uses speech recognition to place dictated words into your message draft.
         NSCameraUsageDescription: Mercury uses the camera only to scan a Mercury Relay pairing QR code.
         MercuryAppGroupIdentifier: $(MERCURY_APP_GROUP_IDENTIFIER)
+        # Plain-HTTP is a supported configuration for LAN self-hosted servers
+        # (the "Use HTTPS" checkbox off). Scoped ATS exception: local
+        # networking only — cleartext to public hosts stays blocked.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         # Best-effort background notifications (no APNs): iOS may opportunistically
         # wake the app to reconcile session state and post local notifications.
         UIBackgroundModes:
