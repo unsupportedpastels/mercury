@@ -4,6 +4,8 @@ import com.unsupportedpastels.hermesandroid.cache.CacheScope
 import com.unsupportedpastels.hermesandroid.cache.CachedSession
 import com.unsupportedpastels.hermesandroid.cache.OfflineCacheRepository
 import com.unsupportedpastels.hermesandroid.cache.OfflineCacheSnapshot
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoCache
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
 import com.unsupportedpastels.hermesandroid.gateway.CacheSource
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
@@ -64,6 +66,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.nio.file.Files
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
@@ -126,6 +130,49 @@ class HermesConnectionViewModelTest {
         assertTrue(snapshot.nativeOAuthSupported)
         assertEquals(listOf("nous"), snapshot.authProviders.map { it.name })
         assertEquals(listOf(origin), client.probedOrigins)
+    }
+
+    @Test
+    fun concurrentDownloadsOfTheSamePathSerializeBehindOneCacheEntry() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val cacheRoot = Files.createTempDirectory("video-cache").toFile()
+        val client = GatedVideoDownloadClient()
+        val viewModel = HermesConnectionViewModel(
+            settings,
+            client,
+            videoCache = ManagedVideoCache(cacheRoot),
+        )
+
+        runCurrent()
+        client.connection.complete(
+            HermesConnectionInfo(
+                version = "0.20.0",
+                authRequired = false,
+                nativeOAuthSupported = false,
+                providers = emptyList(),
+            ),
+        )
+        advanceUntilIdle()
+
+        val first = async { viewModel.downloadManagedVideo("/a/clip.mp4") }
+        val second = async { viewModel.downloadManagedVideo("/a/clip.mp4") }
+        client.firstDownloadStarted.await()
+
+        // The second caller must wait behind the first instead of streaming into
+        // the same .part file concurrently.
+        assertEquals(1, client.started)
+        assertEquals(1, client.active)
+        client.gate.complete(Unit)
+        advanceUntilIdle()
+
+        val firstMedia = first.await()
+        val secondMedia = second.await()
+        assertEquals(1, client.started)
+        assertEquals(firstMedia.file.absolutePath, secondMedia.file.absolutePath)
+        assertTrue(secondMedia.file.isFile)
+
+        cacheRoot.deleteRecursively()
     }
 
     @Test
@@ -3354,6 +3401,35 @@ private class FakeHermesConnectionClient : HermesConnectionClient {
     override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo {
         probedOrigins += serverOrigin
         return response.await()
+    }
+}
+
+private class GatedVideoDownloadClient : HermesConnectionClient {
+    val connection = CompletableDeferred<HermesConnectionInfo>()
+    val gate = CompletableDeferred<Unit>()
+    val firstDownloadStarted = CompletableDeferred<Unit>()
+    var started = 0
+    var active = 0
+
+    override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo = connection.await()
+
+    override suspend fun streamManagedVideoToFile(
+        serverOrigin: ServerOrigin,
+        accessToken: String?,
+        path: String,
+        destination: File,
+    ): ManagedVideoMedia {
+        started += 1
+        active += 1
+        firstDownloadStarted.complete(Unit)
+        try {
+            gate.await()
+            destination.parentFile?.mkdirs()
+            destination.writeBytes(byteArrayOf(1, 2, 3))
+        } finally {
+            active -= 1
+        }
+        return ManagedVideoMedia(destination, "video/mp4")
     }
 }
 

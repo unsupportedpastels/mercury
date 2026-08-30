@@ -131,6 +131,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -337,6 +338,10 @@ class HermesConnectionViewModel(
     private val speechStreamConnector: SpeechStreamConnector? = null,
     private val videoCache: ManagedVideoCache? = null,
 ) : ViewModel() {
+    // Serializes downloads targeting the same origin/path cache entry, so two
+    // concurrent players of the same path never race on the shared `.part` file.
+    private val videoDownloadLocks = ConcurrentHashMap<String, Mutex>()
+
     private val mutableSnapshots = MutableStateFlow(HermesGatewaySnapshot())
     val snapshots: StateFlow<HermesGatewaySnapshot> = mutableSnapshots.asStateFlow()
 
@@ -2536,20 +2541,28 @@ class HermesConnectionViewModel(
     /**
      * Download the managed video at [path] into the origin-scoped disk cache and
      * return the local file for playback. Previously completed downloads are
-     * reused without hitting the network.
+     * reused without hitting the network, and concurrent callers targeting the
+     * same entry are serialized behind a shared cache check.
      */
     suspend fun downloadManagedVideo(path: String): ManagedVideoMedia {
         val cache = videoCache ?: throw HermesConnectionException("Managed videos are unavailable")
         return withHermesRestOperation { serverOrigin, accessToken ->
-            cache.cached(serverOrigin, path) ?: run {
-                val media = client.streamManagedVideoToFile(
-                    serverOrigin,
-                    accessToken,
-                    path,
-                    cache.destinationFor(serverOrigin, path),
-                )
-                cache.prune(serverOrigin, keep = media.file)
-                media
+            val lock = videoDownloadLocks.computeIfAbsent(
+                "${serverOrigin.value}\u0000$path",
+            ) { Mutex() }
+            lock.withLock {
+                withContext(Dispatchers.IO) {
+                    cache.cached(serverOrigin, path) ?: run {
+                        val media = client.streamManagedVideoToFile(
+                            serverOrigin,
+                            accessToken,
+                            path,
+                            cache.destinationFor(serverOrigin, path),
+                        )
+                        cache.prune(serverOrigin, keep = media.file)
+                        media
+                    }
+                }
             }
         }
     }

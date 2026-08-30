@@ -61,8 +61,10 @@ import io.ktor.http.encodeURLPathPart
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.readRemaining
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -1894,31 +1896,35 @@ class HttpHermesConnectionClient(
     ): ManagedVideoMedia = try {
         val canonicalPath = validCanonicalHostFilePath(path)
             ?: throw HermesConnectionException("Host file path is invalid")
-        val response = client.get("${serverOrigin.value}/api/files/download") {
-            accessToken?.let { bearerAuth(it) }
-            parameter("path", canonicalPath)
+        // The streamed body is written through FileOutputStream in chunks; keep
+        // that disk loop off the caller's (often Main) dispatcher.
+        withContext(Dispatchers.IO) {
+            val response = client.get("${serverOrigin.value}/api/files/download") {
+                accessToken?.let { bearerAuth(it) }
+                parameter("path", canonicalPath)
+            }
+            if (!response.status.isSuccess()) {
+                response.bodyAsChannel().cancel(null)
+                throw HermesConnectionException(
+                    "Hermes managed video returned HTTP ${response.status.value}",
+                )
+            }
+            val mimeType = response.headers[io.ktor.http.HttpHeaders.ContentType]
+                ?.substringBefore(';')
+                ?.trim()
+                ?.lowercase()
+            if (mimeType?.startsWith("video/") != true) {
+                response.bodyAsChannel().cancel(null)
+                throw HermesConnectionException("Hermes managed file was not a video")
+            }
+            val declaredLength = response.headers[io.ktor.http.HttpHeaders.ContentLength]?.toLongOrNull()
+            if (declaredLength != null && declaredLength > maxBytes) {
+                response.bodyAsChannel().cancel(null)
+                throw HermesConnectionException("Hermes managed video was too large")
+            }
+            response.writeVideoBodyBounded(destination, maxBytes)
+            ManagedVideoMedia(destination, mimeType)
         }
-        if (!response.status.isSuccess()) {
-            response.bodyAsChannel().cancel(null)
-            throw HermesConnectionException(
-                "Hermes managed video returned HTTP ${response.status.value}",
-            )
-        }
-        val mimeType = response.headers[io.ktor.http.HttpHeaders.ContentType]
-            ?.substringBefore(';')
-            ?.trim()
-            ?.lowercase()
-        if (mimeType?.startsWith("video/") != true) {
-            response.bodyAsChannel().cancel(null)
-            throw HermesConnectionException("Hermes managed file was not a video")
-        }
-        val declaredLength = response.headers[io.ktor.http.HttpHeaders.ContentLength]?.toLongOrNull()
-        if (declaredLength != null && declaredLength > maxBytes) {
-            response.bodyAsChannel().cancel(null)
-            throw HermesConnectionException("Hermes managed video was too large")
-        }
-        response.writeVideoBodyBounded(destination, maxBytes)
-        ManagedVideoMedia(destination, mimeType)
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (error: HermesConnectionException) {

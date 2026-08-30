@@ -161,12 +161,22 @@ internal fun ManagedVideoBlock(
     var error by remember(source) { mutableStateOf<String?>(null) }
     var playbackError by remember(media) { mutableStateOf<String?>(null) }
     var fullscreen by remember(media) { mutableStateOf(false) }
-    var poster by remember(source) { mutableStateOf(ManagedVideoPosterRuntime.get(source)) }
+    var poster by remember(source) { mutableStateOf<ImageBitmap?>(null) }
+
+    // Poster cache entries are keyed by the origin-scoped cache file, never by
+    // the raw source path: different servers may reference the same path, and
+    // the frame must always come from the file this server's cache owns.
+    fun posterKey(media: ManagedVideoMedia): String = media.file.absolutePath
 
     LaunchedEffect(source, onPeekManagedVideo) {
-        if (poster != null) return@LaunchedEffect
         val peek = onPeekManagedVideo ?: return@LaunchedEffect
         val cached = runCatching { peek(source) }.getOrNull() ?: return@LaunchedEffect
+        val key = posterKey(cached)
+        val existing = ManagedVideoPosterRuntime.get(key)
+        if (existing != null) {
+            poster = existing
+            return@LaunchedEffect
+        }
         val posterFile = posterFileFor(cached)
         val frame = if (posterFile.isFile) {
             decodePosterFile(posterFile)
@@ -174,7 +184,7 @@ internal fun ManagedVideoBlock(
             extractPosterFrame(cached.file, posterFile)
         }
         if (frame != null) {
-            ManagedVideoPosterRuntime.put(source, frame)
+            ManagedVideoPosterRuntime.put(key, frame)
             poster = frame
         }
     }
@@ -219,10 +229,11 @@ internal fun ManagedVideoBlock(
             loader(source).fold(
                 onSuccess = { loaded ->
                     media = loaded
-                    if (ManagedVideoPosterRuntime.get(source) == null) {
+                    val key = posterKey(loaded)
+                    if (ManagedVideoPosterRuntime.get(key) == null) {
                         val frame = extractPosterFrame(loaded.file, posterFileFor(loaded))
                         if (frame != null) {
-                            ManagedVideoPosterRuntime.put(source, frame)
+                            ManagedVideoPosterRuntime.put(key, frame)
                             poster = frame
                         }
                     }
