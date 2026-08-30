@@ -148,7 +148,10 @@ data class NativeTokenSet(
     @SerialName("expires_at") val expiresAt: Long = 0,
     val provider: String = "",
     @SerialName("user_id") val userId: String = "",
-)
+) {
+    /** Redacted like every other credential type in the connection layer. */
+    override fun toString(): String = "NativeTokenSet(provider=$provider, ***)"
+}
 
 @Serializable
 private data class NativeTokenRequest(
