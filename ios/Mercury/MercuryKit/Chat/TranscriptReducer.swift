@@ -508,11 +508,17 @@ enum TranscriptEntry: Identifiable, Equatable {
     case toolRun([TranscriptState.Row])
     case workBurst(reasoning: [TranscriptState.Row], tools: [TranscriptState.Row])
 
-    var id: UUID {
+    /// Case-qualified identity: a row's entry can morph between cases as a
+    /// turn streams (reasoning-only workBurst → message once prose arrives).
+    /// Sharing the bare row UUID across cases makes SwiftUI treat the morph
+    /// as "same item" and keep the stale subtree — the streamed answer never
+    /// replaces the collapsed activity line.
+    var id: String {
         switch self {
-        case .message(let row): return row.id
-        case .toolRun(let rows): return rows[0].id
-        case .workBurst(let reasoning, let tools): return reasoning.first?.id ?? tools[0].id
+        case .message(let row): return "m-\(row.id.uuidString)"
+        case .toolRun(let rows): return "t-\(rows[0].id.uuidString)"
+        case .workBurst(let reasoning, let tools):
+            return "w-\((reasoning.first?.id ?? tools[0].id).uuidString)"
         }
     }
 }

@@ -35,3 +35,7 @@ local.properties
 
 # Agent-authored implementation plans are local working artifacts.
 /docs/plans/
+
+# Internal security/bug review notes stay local until findings are fixed.
+/docs/security-review-*.md
+/docs/bug-review-*.md

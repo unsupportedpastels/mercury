@@ -27,7 +27,17 @@ final class ProjectMetadataController {
     private var profile = "default"
     private var activeListSupported = true
 
+    /// Which transport carries the metadata connection.
+    enum Source {
+        case direct(origin: String, accessToken: String?)
+        case relay(RelayPairedTarget)
+    }
+
     func start(origin: String, accessToken: String?, profile: String) async {
+        await start(source: .direct(origin: origin, accessToken: accessToken), profile: profile)
+    }
+
+    func start(source: Source, profile: String, isRetry: Bool = false) async {
         generation &+= 1
         let loadGeneration = generation
         await closeOwnedConnection()
@@ -45,13 +55,22 @@ final class ProjectMetadataController {
         isLoading = true
 
         do {
-            let gateway = try ChatGateway(
-                origin: origin,
-                accessToken: accessToken,
-                ticketClient: WsTicketClient(session: .shared),
-                socketFactory: URLSessionChatWebSocketFactory()
-            )
-            let socket = try await gateway.connect()
+            let socket: any ChatSocketing
+            switch source {
+            case let .direct(origin, accessToken):
+                let gateway = try ChatGateway(
+                    origin: origin,
+                    accessToken: accessToken,
+                    ticketClient: WsTicketClient(session: .shared),
+                    socketFactory: URLSessionChatWebSocketFactory()
+                )
+                socket = try await gateway.connect()
+            case let .relay(target):
+                let connected = try await RelayConnector.connect(
+                    target: target, profile: profile
+                )
+                socket = RelayChatSocket(connected: connected)
+            }
             guard loadGeneration == generation else {
                 await socket.close()
                 return
@@ -68,8 +87,16 @@ final class ProjectMetadataController {
             guard loadGeneration == generation, connection === owned else { return }
             tree = loaded
             isLoading = false
-            let shouldPoll = await refreshActiveSessions(connection: owned, generation: loadGeneration)
-            if shouldPoll { beginActivityPolling(connection: owned, generation: loadGeneration) }
+            if case .relay = source {
+                // Over the relay this connection is superseded the moment a
+                // chat opens (one device socket per installation), so the
+                // 3-second activity poll would only fail forever. Load the
+                // tree once and skip runtime-presence indicators.
+                activeListSupported = false
+            } else {
+                let shouldPoll = await refreshActiveSessions(connection: owned, generation: loadGeneration)
+                if shouldPoll { beginActivityPolling(connection: owned, generation: loadGeneration) }
+            }
         } catch is ChatMethodNotFoundError {
             guard loadGeneration == generation else { return }
             isUnsupported = true
@@ -80,6 +107,17 @@ final class ProjectMetadataController {
             return
         } catch {
             guard loadGeneration == generation else { return }
+            if case .relay = source, !isRetry {
+                // Cold-start race: the session list's initial relay read and
+                // this connection supersede each other on the host's
+                // one-live-stream-per-device rule, so whichever loses throws.
+                // One quiet retry after the list read finishes wins; only a
+                // second failure is a real error worth a banner.
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard loadGeneration == generation else { return }
+                await start(source: source, profile: profile, isRetry: true)
+                return
+            }
             isLoading = false
             errorMessage = "Could not load projects from this server."
         }

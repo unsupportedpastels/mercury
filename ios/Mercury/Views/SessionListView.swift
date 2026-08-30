@@ -62,8 +62,18 @@ struct SessionListView: View {
         return results
     }
 
+    /// True while a chat session is open on top of the list. `.task(id:)`
+    /// re-runs when this flips, so it drives the relay projects-socket
+    /// standdown.
+    private var relayChatIsOpen: Bool {
+        appModel.visibleSessionID != nil
+    }
+
     private var projectScope: String {
-        "\(appModel.serverOrigin ?? "")\u{0}\(appModel.activeProfile)"
+        let host = appModel.serverOrigin
+            ?? appModel.activeRelayTarget.map { "relay:\($0.id.uuidString)" }
+            ?? ""
+        return "\(host)\u{0}\(appModel.activeProfile)"
     }
 
     private var homeProjects: [ProjectSummary] {
@@ -320,11 +330,44 @@ struct SessionListView: View {
                 await appModel.loadSessions()
                 showShareInbox = !appModel.pendingShareEntries.isEmpty
             }
+            .onChange(of: relayChatIsOpen) { _, isOpen in
+                // The relay host keeps one live stream per device: a fresh
+                // connection supersedes the previous lease. While a chat owns
+                // the stream the projects metadata connection must be fully
+                // closed — not merely not-started — or the two supersede each
+                // other, dropping the chat mid-turn (the user sees activity
+                // but no streamed reply). When the chat closes, reload
+                // projects; without this the Home list stays empty after the
+                // first session visit.
+                guard let target = appModel.activeRelayTarget else { return }
+                Task {
+                    if isOpen {
+                        await projectController.stop()
+                    } else {
+                        await projectController.start(
+                            source: .relay(target),
+                            profile: appModel.activeProfile
+                        )
+                    }
+                }
+            }
             .task(id: projectScope) {
                 pinnedProjectIDs = projectPins.pinnedIDs(
                     origin: appModel.serverOrigin ?? "",
                     profile: appModel.activeProfile
                 )
+                if let target = appModel.activeRelayTarget {
+                    // One device socket per installation: never open the
+                    // projects metadata connection while a chat session is
+                    // open or connecting — it would supersede the chat's
+                    // socket and orphan its runtime.
+                    guard appModel.visibleSessionID == nil else { return }
+                    await projectController.start(
+                        source: .relay(target),
+                        profile: appModel.activeProfile
+                    )
+                    return
+                }
                 guard let credentials = currentCredentials() else {
                     await projectController.stop()
                     return

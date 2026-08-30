@@ -60,6 +60,7 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         NSMicrophoneUsageDescription: Mercury uses the microphone only while you dictate a message draft.
         NSSpeechRecognitionUsageDescription: Mercury uses speech recognition to place dictated words into your message draft.
+        NSCameraUsageDescription: Mercury uses the camera only to scan a Mercury Relay pairing QR code.
         MercuryAppGroupIdentifier: $(MERCURY_APP_GROUP_IDENTIFIER)
         # Best-effort background notifications (no APNs): iOS may opportunistically
         # wake the app to reconcile session state and post local notifications.

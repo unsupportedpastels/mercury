@@ -68,7 +68,11 @@ struct SettingsView: View {
                         Label("Sign out of this server", systemImage: "rectangle.portrait.and.arrow.right")
                     }
                 } header: {
-                    Text(appModel.serverOrigin ?? "Not connected")
+                    Text(
+                        appModel.serverOrigin
+                            ?? appModel.activeRelayTarget.map { "Mercury Relay — \($0.displayLabel)" }
+                            ?? "Not connected"
+                    )
                 }
             }
             .scrollContentBackground(.hidden)

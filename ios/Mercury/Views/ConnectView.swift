@@ -12,6 +12,8 @@ struct ConnectView: View {
     @State private var originText = ""
     @State private var validationError: String?
     @State private var showSavedServers = false
+    @State private var relay = RelayAppModel()
+    @State private var showRelayPairing = false
     /// Error banner text injected when arriving via `.failed(_)` phase.
     private let bannerMessage: String?
 
@@ -50,12 +52,20 @@ struct ConnectView: View {
                 selfHostedSection
             case .hermesCloud:
                 cloudSection
+            case .mercuryRelay:
+                relaySection
             }
 
             Spacer()
         }
         .padding(24)
         .amoledScreen()
+        .task { await relay.loadTargets() }
+        .sheet(isPresented: $showRelayPairing, onDismiss: {
+            relay.cancelPairing()
+        }) {
+            RelayPairingView(relay: relay)
+        }
         .sheet(isPresented: $showSavedServers) {
             NavigationStack {
                 ServerListView(
@@ -219,6 +229,79 @@ struct ConnectView: View {
             Label("Sign in once, then pick an agent from your account.", systemImage: "checkmark.circle")
             Label("No URL to paste — agents are discovered automatically.", systemImage: "sparkle.magnifyingglass")
             Label("Multi-org accounts get an org chooser.", systemImage: "person.2")
+        }
+        .font(.caption)
+        .foregroundStyle(Color.secondary)
+        .padding(.top, 4)
+    }
+
+    // MARK: - Mercury Relay
+
+    @ViewBuilder
+    private var relaySection: some View {
+        Button {
+            showRelayPairing = true
+        } label: {
+            HStack {
+                Image(systemName: "qrcode.viewfinder")
+                Text("Pair with QR code")
+                    .fontWeight(.semibold)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(Color.accentPrimary)
+
+        if let targetsError = relay.targetsError {
+            errorBanner(targetsError)
+        }
+
+        if !relay.targets.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Paired hosts").font(.headline)
+                ForEach(relay.targets) { target in
+                    Button {
+                        if target.status == .approved {
+                            Task { await appModel.connectRelay(target) }
+                        } else {
+                            showRelayPairing = true
+                        }
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(target.displayLabel).fontWeight(.semibold)
+                                Text(
+                                    target.status == .approved
+                                        ? "Approved"
+                                        : "Waiting for host approval"
+                                )
+                                .font(.caption)
+                                .foregroundStyle(Color.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            Task { await relay.removeTarget(target) }
+                        } label: {
+                            // Local removal only: revoking the device record
+                            // stays a host/dashboard management action.
+                            Label("Remove from this device", systemImage: "trash")
+                        }
+                    }
+                }
+            }
+        }
+
+        VStack(alignment: .leading, spacing: 8) {
+            Label("End-to-end encrypted — the relay only routes ciphertext.", systemImage: "lock.shield")
+            Label("Requires the Mercury Relay plugin on your Hermes host.", systemImage: "puzzlepiece.extension")
+            Label("The host operator approves each device by fingerprint.", systemImage: "checkmark.seal")
         }
         .font(.caption)
         .foregroundStyle(Color.secondary)

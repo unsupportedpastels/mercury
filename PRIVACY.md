@@ -32,6 +32,8 @@ Host-file contents are downloaded only after an explicit preview, play, save, or
 
 Mercury sends data only to the Hermes server origin you configure in the app. Mercury does **not** operate a shared hosted backend and does not include analytics, advertising, tracking, or telemetry SDKs.
 
+If you explicitly pair the optional **Mercury Relay** mode (iOS), traffic to your host additionally passes through a hosted relay router. That router sees only opaque routing metadata (a random installation route and connection role) plus end-to-end encrypted ciphertext; it cannot read prompts, transcripts, credentials, or session content, and it stores no session data. Relay mode is never required and its pairings can be removed at any time.
+
 When you explicitly choose **Voice input**, Mercury opens an installed Android speech-recognition activity. That service may capture and process audio under its own privacy policy; Mercury receives only the recognized text and does not store the recording.
 
 Your chosen server’s operator and configuration determine how server-side data is processed, retained, logged, and secured. Review that server’s policies before connecting, especially if it is operated by someone else.

@@ -188,10 +188,28 @@ struct MercuryApp: App {
     /// Applies launch-argument overrides for UI testing. Test infrastructure,
     /// not throwaway: every milestone's simulator verification uses these.
     private static func applyLaunchArgOverrides(to appModel: AppModel) {
+        #if DEBUG
+        // The async RootView reset task races the first screen; relay targets
+        // must be gone before the Relay tab can load them, so clear the
+        // persisted envelope synchronously at init.
+        if ProcessInfo.processInfo.arguments.contains("-uitest-reset-local-state"),
+           let empty = try? JSONEncoder().encode(EmptyPersistedRelayTargets()) {
+            try? KeychainRelayTargetPersistence().writeRelayTargetData(empty)
+        }
+        #endif
         if let origin = launchArgumentValue("-uitest-origin") {
             appModel.setServerOrigin(origin)
         }
     }
+
+    #if DEBUG
+    /// Mirrors PersistedRelayTargets' empty envelope without widening the
+    /// store's private persistence types.
+    private struct EmptyPersistedRelayTargets: Encodable {
+        var version = RelayTargetPolicy.persistedVersion
+        var targets: [String] = []
+    }
+    #endif
 
     private static func launchArgumentValue(_ flag: String) -> String? {
         guard let index = ProcessInfo.processInfo.arguments.firstIndex(of: flag),

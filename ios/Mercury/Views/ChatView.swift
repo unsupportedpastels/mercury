@@ -354,7 +354,7 @@ struct ChatView: View {
         }
         .navigationTitle(titleText.isEmpty ? "Session" : titleText)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(Color.amoledBlack, for: .navigationBar)
+        .toolbarBackground(.amoledBlack, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .task {
             // Visibility can change while SwiftUI retains this view and restarts
@@ -639,6 +639,7 @@ struct ChatView: View {
 
     // MARK: Open / resume
 
+    @MainActor
     private func open() async {
         if isNewSession {
             // Brand-new chat: no history exists, so skip the REST transcript
@@ -646,23 +647,27 @@ struct ChatView: View {
             await connectAndResume()
             return
         }
-        await loadTranscript()
+        await loadTranscript(allowStandaloneRelayRead: true)
         await connectAndResume()
     }
 
     @discardableResult
+    @MainActor
     private func loadTranscript(
         durableSessionID requestedID: String? = nil,
-        preservingActiveTurn: Bool = false
+        preservingActiveTurn: Bool = false,
+        using liveConnection: ChatConnection? = nil,
+        allowStandaloneRelayRead: Bool = false
     ) async -> Bool {
-        guard let origin = appModel.serverOrigin else {
+        let isRelay = appModel.activeRelayTarget != nil
+        guard isRelay || appModel.serverOrigin != nil else {
             loadError = "No server connected."
             return false
         }
         let transcriptID = requestedID ?? sessionID
         guard !transcriptID.isEmpty else { return false }
         let turnWasActive = preservingActiveTurn && (isSending || transcript.hasStreamingAssistant)
-        if !preservingActiveTurn {
+        if !preservingActiveTurn, let origin = appModel.serverOrigin {
             let cached = await appModel.cachedTranscript(
                 origin: origin,
                 profile: appModel.activeProfile,
@@ -679,12 +684,27 @@ struct ChatView: View {
                 initialScrollDone = true
             }
         }
-        let client = makeHTTPClient(origin: origin)
-        let sessions = SessionsClient(client: client, profile: appModel.activeProfile)
         do {
-            let history = TranscriptPageOrdering.forDisplay(
-                try await sessions.transcript(sessionID: transcriptID)
-            )
+            let fetched: [TranscriptMessage]
+            if isRelay {
+                // The router permits one device socket: a standalone read
+                // while any chat connection exists (or is mid-handshake in a
+                // reconnect) would supersede it and force a reconnect loop.
+                // Standalone is safe only for the initial pre-connect load;
+                // later reads must ride an existing connection, and
+                // reconnects refresh from the resume snapshot anyway.
+                let live = liveConnection ?? connection
+                if live == nil && !allowStandaloneRelayRead { return false }
+                fetched = try await relayTranscriptMessages(
+                    transcriptID: transcriptID, limit: 100, offset: 0, using: live
+                )
+            } else {
+                guard let origin = appModel.serverOrigin else { return false }
+                let client = makeHTTPClient(origin: origin)
+                let sessions = SessionsClient(client: client, profile: appModel.activeProfile)
+                fetched = try await sessions.transcript(sessionID: transcriptID)
+            }
+            let history = TranscriptPageOrdering.forDisplay(fetched)
             let restored = history.map { message in
                 TranscriptState.RestoredMessage(
                     role: message.role,
@@ -715,9 +735,48 @@ struct ChatView: View {
         }
     }
 
+    /// Fetches one transcript page over the relay's in-process read
+    /// (`relay.session.transcript`, same shape as the REST endpoint). The
+    /// live chat connection carries the read on its own encrypted channel;
+    /// before one exists, a short-lived relay connection serves it (the
+    /// router permits one device socket, so never both at once).
+    private func relayTranscriptMessages(
+        transcriptID: String,
+        limit: Int,
+        offset: Int,
+        using live: ChatConnection?
+    ) async throws -> [TranscriptMessage] {
+        guard let target = appModel.activeRelayTarget else {
+            throw ChatError.transport("No relay target is active")
+        }
+        let params: [String: Any] = [
+            "profile": appModel.activeProfile,
+            "session_id": transcriptID,
+            "limit": limit,
+            "offset": offset,
+            "order": "latest",
+        ]
+        let result: [String: Any]
+        if let live {
+            result = try await live.relayRequest("relay.session.transcript", params: params)
+        } else {
+            let connected = try await RelayConnector.connect(
+                target: target, profile: appModel.activeProfile
+            )
+            let short = try ChatConnection(socket: RelayChatSocket(connected: connected))
+            _ = short.start()
+            defer { Task { await short.close() } }
+            result = try await short.relayRequest("relay.session.transcript", params: params)
+        }
+        guard let raw = result["messages"] as? [[String: Any]] else { return [] }
+        let data = try JSONSerialization.data(withJSONObject: raw)
+        return (try? JSONDecoder().decode([TranscriptMessage].self, from: data)) ?? []
+    }
+
     /// SwiftUI keeps this view alive while iOS backgrounds the app, so its
     /// initial task does not run again on reopen. Refresh the visible transcript
     /// explicitly and reset a dead socket's foreground reconnect budget.
+    @MainActor
     private func catchUpAfterForeground() async {
         guard didOpen, !closedByUs else { return }
         appModel.setVisibleSession(notificationSessionID)
@@ -737,20 +796,34 @@ struct ChatView: View {
     /// insertion.
     private func loadEarlierHistory() async {
         guard !isLoadingHistory, !(hasMoreHistory == false && historyError == nil) else { return }
-        guard let origin = appModel.serverOrigin else { return }
+        let isRelay = appModel.activeRelayTarget != nil
+        guard isRelay || appModel.serverOrigin != nil else { return }
         let transcriptID = durableID ?? sessionID
         guard !transcriptID.isEmpty else { return }
         isLoadingHistory = true
         defer { isLoadingHistory = false }
-        let client = makeHTTPClient(origin: origin)
-        let sessions = SessionsClient(client: client, profile: appModel.activeProfile)
         do {
-            let older = TranscriptPageOrdering.forDisplay(
-                try await sessions.olderTranscript(
+            let fetchedOlder: [TranscriptMessage]
+            if isRelay {
+                // Backfill only rides the live chat connection; a standalone
+                // socket would supersede it (one device socket per install).
+                guard let live = connection else { return }
+                fetchedOlder = try await relayTranscriptMessages(
+                    transcriptID: transcriptID,
+                    limit: TranscriptHistoryPolicy.pageSize,
+                    offset: TranscriptHistoryPolicy.nextOffset(loadedCount: loadedTranscriptCount),
+                    using: live
+                )
+            } else {
+                guard let origin = appModel.serverOrigin else { return }
+                let client = makeHTTPClient(origin: origin)
+                let sessions = SessionsClient(client: client, profile: appModel.activeProfile)
+                fetchedOlder = try await sessions.olderTranscript(
                     sessionID: transcriptID,
                     offset: TranscriptHistoryPolicy.nextOffset(loadedCount: loadedTranscriptCount)
                 )
-            )
+            }
+            let older = TranscriptPageOrdering.forDisplay(fetchedOlder)
             guard !older.isEmpty else {
                 hasMoreHistory = false
                 return
@@ -807,25 +880,43 @@ struct ChatView: View {
     /// Returns true when the session reached `.live` (resume/create succeeded);
     /// false means the caller should try again or give up.
     @discardableResult
+    @MainActor
     private func establishConnection(attempt: Int) async -> Bool {
         // Task re-entry safety: for the new-chat flow, once the runtime exists
         // (createSession already ran) never run this again.
         if isNewSession && runtimeSessionID != nil { return true }
-        guard let origin = appModel.serverOrigin else { return false }
-        let token = storedAccessToken(origin: origin)
+        guard appModel.activeRelayTarget != nil || appModel.serverOrigin != nil else {
+            return false
+        }
 
         var candidateConnection: ChatConnection?
         do {
-            let ticketClient = WsTicketClient(session: .shared)
-            let gateway = try ChatGateway(
-                origin: origin,
-                accessToken: token,
-                ticketClient: ticketClient,
-                socketFactory: URLSessionChatWebSocketFactory()
-            )
-            // Tickets are single-use: every attempt mints a fresh one.
-            let socket = try await gateway.connect()
-            let candidate = try ChatConnection(socket: socket)
+            let candidate: ChatConnection
+            if let relayTarget = appModel.activeRelayTarget {
+                // Relay mode: same Hermes JSON-RPC contract through the
+                // E2EE channel. The router permits one device socket per
+                // installation, so while this chat is open it owns the app's
+                // only relay connection (list refreshes pause while a chat
+                // is visible).
+                let connected = try await RelayConnector.connect(
+                    target: relayTarget,
+                    profile: appModel.activeProfile
+                )
+                candidate = try ChatConnection(socket: RelayChatSocket(connected: connected))
+            } else {
+                guard let origin = appModel.serverOrigin else { return false }
+                let token = storedAccessToken(origin: origin)
+                let ticketClient = WsTicketClient(session: .shared)
+                let gateway = try ChatGateway(
+                    origin: origin,
+                    accessToken: token,
+                    ticketClient: ticketClient,
+                    socketFactory: URLSessionChatWebSocketFactory()
+                )
+                // Tickets are single-use: every attempt mints a fresh one.
+                let socket = try await gateway.connect()
+                candidate = try ChatConnection(socket: socket)
+            }
             candidateConnection = candidate
             let stream = candidate.start()
 
@@ -879,8 +970,11 @@ struct ChatView: View {
                     // a second REST transcript load here because the first
                     // load may have raced the tool phase and omitted the final
                     // assistant response. Keep the resume snapshot visible if
-                    // that follow-up request is temporarily unavailable.
-                    _ = await loadTranscript(durableSessionID: sessionID)
+                    // that follow-up request is temporarily unavailable. The
+                    // candidate is not published yet, so pass it explicitly:
+                    // in relay mode a standalone read here would supersede
+                    // this very connection and loop the reconnect.
+                    _ = await loadTranscript(durableSessionID: sessionID, using: candidate)
                     transcript.finishStreamingAssistant()
                 }
             }
@@ -899,12 +993,20 @@ struct ChatView: View {
             eventTask = Task { [weak candidate] in
                 guard let candidate else { return }
                 for await event in stream {
+                    // Guard AND apply inside one MainActor hop: handleEvent
+                    // mutates @State (the transcript reducer among it), and a
+                    // nonisolated Task runs off the main actor in Swift 5
+                    // mode. Off-main @State writes tear against render — the
+                    // transcript list kept showing a stale mid-turn snapshot
+                    // ("Working · 1 step") while the streamed answer was
+                    // already reduced into rows, on both transports.
                     let stillOwnsConnection = await MainActor.run {
-                        connectionOwnership.isCurrent(ownershipToken)
-                            && connection === candidate
+                        guard connectionOwnership.isCurrent(ownershipToken)
+                            && connection === candidate else { return false }
+                        handleEvent(event)
+                        return true
                     }
                     guard stillOwnsConnection else { break }
-                    handleEvent(event)
                 }
                 await MainActor.run {
                     guard connectionOwnership.isCurrent(ownershipToken),
@@ -940,6 +1042,7 @@ struct ChatView: View {
         }
     }
 
+    @MainActor
     private func connectAndResume() async {
         connectionState = .connecting
         closedByUs = false
@@ -952,6 +1055,7 @@ struct ChatView: View {
     /// Android recoverChat parity: bounded attempts, fixed backoff ladder
     /// (500ms/1s/2s), cancel-safe between sleeps, offline banner at the end
     /// with a manual-retry tap target.
+    @MainActor
     private func scheduleReconnect() {
         guard reconnectTask == nil, !closedByUs else { return }
         reconnectTask = Task {
@@ -973,6 +1077,7 @@ struct ChatView: View {
         }
     }
 
+    @MainActor
     private func retryConnectionNow() {
         reconnectTask?.cancel()
         reconnectTask = nil
@@ -1707,13 +1812,21 @@ struct ChatView: View {
                 titleText = adopted
             }
 
-        case .sessionInfo(_, _, let model, let provider, let reasoningEffort, let fastMode, let title, _):
+        case .sessionInfo(let infoRuntimeID, let storedID, let model, let provider, let reasoningEffort, let fastMode, let title, _):
             if let model, let provider {
                 currentModelSelection = ModelSelection(provider: provider, model: model)
             }
             if let reasoningEffort { currentReasoningEffort = reasoningEffort }
             if let fastMode { currentFastMode = fastMode }
             if let title, !title.isEmpty { titleText = title }
+            // A reclaimed/remapped runtime (e.g. a relay reconnect racing a
+            // superseded socket) streams the turn under a fresh runtime id.
+            // When the gateway ties that runtime to our durable session,
+            // accept its events so the transcript renders instead of
+            // silently filtering the whole turn.
+            if let storedID, storedID == (durableID ?? sessionID), !infoRuntimeID.isEmpty {
+                transcript.ownSessionIDs.insert(infoRuntimeID)
+            }
 
         case .statusUpdate:
             connectionNote = nil
