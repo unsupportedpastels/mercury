@@ -210,7 +210,7 @@ object ServerOriginPolicy {
     }
 
     private fun hostIsLoopbackOrPrivate(rawHost: String): Boolean {
-        val host = rawHost.lowercase().trim('[', ']')
+        val host = rawHost.lowercase().trim('[', ']').removeSuffix(".")
         if (host == "localhost" || host == "::1" ||
             host.endsWith(".localhost") || host.endsWith(".local")
         ) {

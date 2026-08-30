@@ -65,6 +65,8 @@ class ServerOriginPolicyTest {
         assertEquals("https://xn--4xa.gr", valid("ς.gr"))
         assertEquals("https://ab.example", valid("a\u200Cb.example"))
         assertEquals("https://foo.example", valid("ＦＯＯ.example"))
+        assertEquals("https://foobar.example", valid("foo\u00ADbar.example"))
+        assertEquals("https://foo.example", valid("foo\u3002example"))
         assertEquals("https://example.com.", valid("example.com."))
         assertIs<OriginParseResult.Invalid>(ServerOriginPolicy.canonicalize("ẞ.de"))
     }
@@ -133,6 +135,8 @@ class ServerOriginPolicyTest {
     @Test
     fun cleartextAllowedOnlyForPrivateHttp() {
         assertTrue(ServerOriginPolicy.allowsCleartextHttp("http://192.168.1.5:8080"))
+        assertEquals("http://localhost.", valid("http://localhost."))
+        assertEquals("http://127.0.0.1.", valid("http://127.0.0.1."))
         assertFalse(ServerOriginPolicy.allowsCleartextHttp("http://example.com"))
         assertFalse(ServerOriginPolicy.allowsCleartextHttp("https://192.168.1.5"))
     }

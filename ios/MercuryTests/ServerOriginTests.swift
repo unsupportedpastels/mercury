@@ -63,6 +63,8 @@ final class ServerOriginTests: XCTestCase {
         XCTAssertEqual(ServerOrigin.normalize("https://ς.gr"), "https://xn--4xa.gr")
         XCTAssertEqual(ServerOrigin.normalize("https://a\u{200C}b.example"), "https://ab.example")
         XCTAssertEqual(ServerOrigin.normalize("https://ＦＯＯ.example"), "https://foo.example")
+        XCTAssertEqual(ServerOrigin.normalize("https://foo\u{00AD}bar.example"), "https://foobar.example")
+        XCTAssertEqual(ServerOrigin.normalize("https://foo\u{3002}example"), "https://foo.example")
         XCTAssertEqual(ServerOrigin.normalize("https://example.com."), "https://example.com.")
         XCTAssertNil(ServerOrigin.normalize("https://ẞ.de"))
     }
@@ -93,6 +95,8 @@ final class ServerOriginTests: XCTestCase {
         XCTAssertTrue(ServerOrigin.isLoopbackOrPrivate("http://127.0.0.1:8080"))
         XCTAssertTrue(ServerOrigin.isLoopbackOrPrivate("https://localhost"))
         XCTAssertTrue(ServerOrigin.isLoopbackOrPrivate("http://127.255.0.9"))
+        XCTAssertEqual(ServerOrigin.normalize("http://localhost."), "http://localhost.")
+        XCTAssertEqual(ServerOrigin.normalize("http://127.0.0.1."), "http://127.0.0.1.")
     }
 
     func testRFC1918Detection() {
