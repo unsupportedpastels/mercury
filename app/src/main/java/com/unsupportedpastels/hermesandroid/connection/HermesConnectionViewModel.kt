@@ -22,6 +22,7 @@ import com.unsupportedpastels.hermesandroid.app.isNoProjectBucket
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
 import com.unsupportedpastels.mercury.core.attachment.AttachmentAddResult
 import com.unsupportedpastels.mercury.core.notifications.NotificationTextPolicy
+import com.unsupportedpastels.mercury.core.transcript.InterruptSentinel
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentByteReader
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentPolicy
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentReadException
@@ -4436,8 +4437,30 @@ class HermesConnectionViewModel(
                         }
                     }
                     is HermesChatEvent.MessageComplete -> {
+                        // The interrupt sentinel is cancellation metadata, not
+                        // assistant prose (hermes-agent #7921): keep the streamed
+                        // buffer instead of quoting it, and drop the bubble
+                        // entirely when the interrupted turn streamed nothing.
+                        val sentinelSuppressed =
+                            event.text?.let(InterruptSentinel::isInterruptSentinel) == true
+                        val finalText = event.text.takeUnless { sentinelSuppressed }
                         updateAssistant(durableSessionId, streaming = false) { current ->
-                            event.text ?: current
+                            finalText ?: current
+                        }
+                        if (sentinelSuppressed) {
+                            updateChat(durableSessionId) { current ->
+                                val messages = current.messages.toMutableList()
+                                val index = messages.indexOfLast { it.role == ChatMessageRole.Assistant }
+                                if (index >= 0 &&
+                                    messages[index].text.isBlank() &&
+                                    messages[index].reasoningText.isBlank()
+                                ) {
+                                    messages.removeAt(index)
+                                    current.copy(messages = messages)
+                                } else {
+                                    current
+                                }
+                            }
                         }
                         val billingNotice = event.billing?.let { billing ->
                             ChatBillingNotice(
@@ -4848,6 +4871,13 @@ class HermesConnectionViewModel(
             null
         }
         if (text == null && reasoning == null) return null
+        // Persisted interrupt sentinels are cancellation metadata written by
+        // servers that predate the upstream transcript fix; never render them.
+        if (role == ChatMessageRole.Assistant &&
+            text != null && InterruptSentinel.isInterruptSentinel(text)
+        ) {
+            return null
+        }
         return ChatMessage(
             role = role,
             text = text.orEmpty(),
