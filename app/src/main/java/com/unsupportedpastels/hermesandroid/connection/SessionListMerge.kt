@@ -2,6 +2,8 @@ package com.unsupportedpastels.hermesandroid.connection
 
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
+import com.unsupportedpastels.mercury.core.sessions.SessionListMergePolicy
+import com.unsupportedpastels.mercury.core.sessions.SessionMergeEntry
 
 /**
  * Replaces the durable session list with a server-fetched list while keeping
@@ -18,11 +20,13 @@ internal fun mergeServerSessionsPreservingDrafts(
     currentSessions: List<SessionSummary>,
     pendingDrafts: Set<DurableSessionId>,
 ): List<SessionSummary> {
-    if (pendingDrafts.isEmpty()) return serverSessions
-    val serverIds = serverSessions.mapTo(mutableSetOf(), SessionSummary::id)
-    val preservedDrafts = currentSessions.filter { session ->
-        session.isLocalDraft && session.id in pendingDrafts && session.id !in serverIds
-    }
-    if (preservedDrafts.isEmpty()) return serverSessions
-    return preservedDrafts + serverSessions
+    val preserved = SessionListMergePolicy.preservedDraftIndices(
+        serverIds = serverSessions.map { it.id.value },
+        currentSessions = currentSessions.map {
+            SessionMergeEntry(id = it.id.value, isLocalDraft = it.isLocalDraft)
+        },
+        pendingDraftIds = pendingDrafts.mapTo(mutableSetOf()) { it.value },
+    )
+    if (preserved.isEmpty()) return serverSessions
+    return preserved.map(currentSessions::get) + serverSessions
 }
