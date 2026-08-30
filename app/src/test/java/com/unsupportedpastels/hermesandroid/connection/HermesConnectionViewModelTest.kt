@@ -446,7 +446,173 @@ class HermesConnectionViewModelTest {
     }
 
     @Test
-    fun reconnectDuringRecoveryBootstrapKeepsTheReconnectCredential() = runTest(dispatcher) {
+    fun aReadRejectedAfterTheTerminalStateDoesNotStartAnotherBootstrap() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val gate = CompletableDeferred<Unit>()
+        val client = LateRejectedReadTunnelClient(lateReadGate = gate)
+        val bootstrap = FlakyTunnelBootstrap(
+            origin,
+            listOf("connect-token", "recovery-token", "must-not-be-used"),
+        )
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        // In flight, and holding the connect credential, before the terminal state.
+        val late = async { runCatching { viewModel.loadManagedFile("/workspace/notes.txt") } }
+        advanceUntilIdle()
+
+        val rejectedTwice = runCatching { viewModel.loadHostFiles("/workspace") }
+        advanceUntilIdle()
+        assertTrue(rejectedTwice.isFailure)
+        assertEquals(
+            TunnelConnectionFailure.CredentialRejected,
+            viewModel.snapshots.value.tunnelConnectionFailure,
+        )
+        assertEquals(2, bootstrap.calls)
+
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        assertTrue(late.await().isFailure)
+        // No further automatic attempt after a second rejection until manual Retry
+        // or a new generation, and no late waiter starting its own bootstrap.
+        assertEquals(2, bootstrap.calls)
+        assertEquals(
+            TunnelConnectionFailure.CredentialRejected,
+            viewModel.snapshots.value.tunnelConnectionFailure,
+        )
+    }
+
+    @Test
+    fun aScrapeThatLandsAfterTheTerminalStateDoesNotReviveTheScope() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val retryGate = CompletableDeferred<Unit>()
+        val lateStartGate = CompletableDeferred<Unit>()
+        val secondRecoveryGate = CompletableDeferred<Unit>()
+        val client = TerminalDuringRecoveryTunnelClient(
+            retryGate = retryGate,
+            lateStartGate = lateStartGate,
+        )
+        val bootstrap = GatedSecondRecoveryBootstrap(
+            origin = origin,
+            secondRecoveryGate = secondRecoveryGate,
+        )
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        // First read burns its single retry and then parks, so its second rejection
+        // can be released after another read's recovery is already under way.
+        val first = async { runCatching { viewModel.loadHostFiles("/workspace") } }
+        advanceUntilIdle()
+        val second = async { runCatching { viewModel.loadManagedFile("/workspace/notes.txt") } }
+        advanceUntilIdle()
+        lateStartGate.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(3, bootstrap.calls)
+
+        retryGate.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(
+            TunnelConnectionFailure.CredentialRejected,
+            viewModel.snapshots.value.tunnelConnectionFailure,
+        )
+
+        secondRecoveryGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertTrue(first.await().isFailure)
+        assertTrue(second.await().isFailure)
+        // The scrape completed against a scope that had already gone terminal, so
+        // it must not leave a usable credential behind for the next read.
+        assertTrue(runCatching { viewModel.loadHostFiles("/workspace") }.isFailure)
+    }
+
+    @Test
+    fun foregroundReconnectsAfterTheTunnelBecameUnavailable() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val foreground = MutableStateFlow(true)
+        val bootstrap = FlakyTunnelBootstrap(origin, listOf(null, "recovered-token"))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = TunnelConnectionClient(),
+            loopbackSessionBootstrapClient = bootstrap,
+            appForegroundStates = foreground,
+        )
+        advanceUntilIdle()
+
+        assertEquals(ConnectionState.Disconnected, viewModel.snapshots.value.connectionState)
+        assertEquals(
+            TunnelConnectionFailure.TunnelUnavailable,
+            viewModel.snapshots.value.tunnelConnectionFailure,
+        )
+
+        foreground.value = false
+        runCurrent()
+        foreground.value = true
+        advanceUntilIdle()
+
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+        assertEquals(null, viewModel.snapshots.value.tunnelConnectionFailure)
+        assertEquals(2, bootstrap.calls)
+    }
+
+    @Test
+    fun foregroundDoesNotReconnectAfterATerminalCredentialRejection() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val foreground = MutableStateFlow(true)
+        val client = ConcurrentHostReadTunnelClient(
+            expectedConcurrentReads = 1,
+            rejectEveryRead = true,
+        )
+        val bootstrap = FlakyTunnelBootstrap(
+            origin,
+            listOf("connect-token", "recovery-token", "must-not-be-used"),
+        )
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+            appForegroundStates = foreground,
+        )
+        advanceUntilIdle()
+
+        assertTrue(runCatching { viewModel.loadHostFiles("/workspace") }.isFailure)
+        advanceUntilIdle()
+        assertEquals(
+            TunnelConnectionFailure.CredentialRejected,
+            viewModel.snapshots.value.tunnelConnectionFailure,
+        )
+
+        foreground.value = false
+        runCurrent()
+        foreground.value = true
+        advanceUntilIdle()
+
+        // A foreground event alone must not restart a terminal credential failure.
+        assertEquals(ConnectionState.Disconnected, viewModel.snapshots.value.connectionState)
+        assertEquals(
+            TunnelConnectionFailure.CredentialRejected,
+            viewModel.snapshots.value.tunnelConnectionFailure,
+        )
+        assertEquals(2, bootstrap.calls)
+    }
+
+    /**
+     * A reconnect always advances the generation, so the generation check at the top
+     * of the epoch coroutine is what discards a scrape that started before it. This
+     * pins that check; the installer's own guard is covered separately by the
+     * terminal-revival case, which is the only way to reach it.
+     */
+    @Test
+    fun rebootstrapAtAReplacedGenerationIsDiscardedBeforeItIsInstalled() = runTest(dispatcher) {
         val origin = ServerOrigin.parse("http://127.0.0.1:19119")
         val rejectionGate = CompletableDeferred<Unit>()
         val client = ConcurrentHostReadTunnelClient(
@@ -470,8 +636,8 @@ class HermesConnectionViewModelTest {
 
         assertTrue(read.await().isFailure)
         assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
-        // The reconnect installed the newest credential; a recovery scrape that
-        // started before it must never overwrite that record.
+        // Reads after the reconnect carry the credential the reconnect installed,
+        // so the discarded scrape left no trace behind.
         val afterRecovery = runCatching { viewModel.loadHostFiles("/workspace") }
         advanceUntilIdle()
         assertTrue(afterRecovery.isSuccess)
@@ -3977,6 +4143,121 @@ private class RefreshRejectingTunnelClient : HermesConnectionClient {
             return listOf(SessionSummary(DurableSessionId("tunnel-1"), "Tunnel session"))
         }
         throw HermesAuthenticationRejectedException("Hermes sessions returned HTTP 401")
+    }
+}
+
+/** Holds the third bootstrap open so a recovery can still be in flight later. */
+private class GatedSecondRecoveryBootstrap(
+    private val origin: ServerOrigin,
+    private val secondRecoveryGate: CompletableDeferred<Unit>,
+) : LoopbackSessionBootstrapClient {
+    var calls = 0
+        private set
+
+    override suspend fun bootstrap(origin: ServerOrigin): LoopbackSessionBootstrapResult {
+        assertEquals(this.origin, origin)
+        calls += 1
+        if (calls == 3) secondRecoveryGate.await()
+        return LoopbackSessionBootstrapResult.Success(
+            HermesCredential.LoopbackSession.create(origin, "session-token-$calls"),
+        )
+    }
+}
+
+/**
+ * Rejects the connect credential and the first replacement, parking the retry that
+ * carries the replacement so its rejection can be released after a second read has
+ * already opened its own recovery. Any credential beyond those two is accepted, so
+ * a scrape that revives a terminal scope shows up as a later read succeeding.
+ */
+private class TerminalDuringRecoveryTunnelClient(
+    private val retryGate: CompletableDeferred<Unit>,
+    private val lateStartGate: CompletableDeferred<Unit>,
+) : HermesConnectionClient {
+    private val doomed = mutableListOf<HermesCredential>()
+    private var hostListingAttempts = 0
+
+    override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo =
+        throw AssertionError("Tunnel connection must use the public-only probe")
+
+    override suspend fun probeExternalTunnel(serverOrigin: ServerOrigin) =
+        HermesConnectionInfo("0.20.4", false, false, emptyList())
+
+    override suspend fun loadSessionsForProfile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        archivedOnly: Boolean,
+    ): List<SessionSummary> {
+        if (doomed.isEmpty()) doomed += credential
+        return listOf(SessionSummary(DurableSessionId("tunnel-1"), "Tunnel session"))
+    }
+
+    override suspend fun loadHostFiles(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        path: String?,
+    ): HostFileListing {
+        hostListingAttempts += 1
+        if (hostListingAttempts == 2) {
+            doomed += credential
+            retryGate.await()
+        }
+        if (credential in doomed) {
+            throw HermesAuthenticationRejectedException("Hermes host listing returned HTTP 401")
+        }
+        return HostFileListing(path = path ?: "/workspace", entries = emptyList())
+    }
+
+    override suspend fun downloadManagedFile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        path: String,
+    ): HostFileContent {
+        lateStartGate.await()
+        if (credential in doomed) {
+            throw HermesAuthenticationRejectedException("Hermes host read returned HTTP 401")
+        }
+        return HostFileContent("notes.txt", path, "text/plain", ByteArray(0))
+    }
+}
+
+/**
+ * Rejects host listings immediately and the managed-file read only after
+ * [lateReadGate] opens, so one read can exhaust its single retry and publish the
+ * terminal state while another is still in flight holding the connect credential.
+ */
+private class LateRejectedReadTunnelClient(
+    private val lateReadGate: CompletableDeferred<Unit>,
+) : HermesConnectionClient {
+    override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo =
+        throw AssertionError("Tunnel connection must use the public-only probe")
+
+    override suspend fun probeExternalTunnel(serverOrigin: ServerOrigin) =
+        HermesConnectionInfo("0.20.4", false, false, emptyList())
+
+    override suspend fun loadSessionsForProfile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        archivedOnly: Boolean,
+    ): List<SessionSummary> = listOf(SessionSummary(DurableSessionId("tunnel-1"), "Tunnel session"))
+
+    override suspend fun loadHostFiles(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        path: String?,
+    ): HostFileListing = throw HermesAuthenticationRejectedException(
+        "Hermes host listing returned HTTP 401",
+    )
+
+    override suspend fun downloadManagedFile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        path: String,
+    ): HostFileContent {
+        lateReadGate.await()
+        throw HermesAuthenticationRejectedException("Hermes host read returned HTTP 401")
     }
 }
 

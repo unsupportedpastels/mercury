@@ -247,7 +247,20 @@ private class LoopbackRecoveryEpoch(
     val origin: ServerOrigin,
     val generation: Long,
     val rejected: HermesCredential.LoopbackSession,
-    val bootstrap: Deferred<HermesCredential.LoopbackSession>,
+    /** Null once the scope is terminal, meaning "do not retry", not "retry later". */
+    val bootstrap: Deferred<HermesCredential.LoopbackSession?>,
+)
+
+/**
+ * A tunnel scope whose recovery already ended in a published terminal state.
+ * Suppressing further automatic bootstraps this way rather than by pinning the
+ * failed epoch is deliberate: a pinned epoch left reads failing against a dead
+ * record with no way out, whereas this marker is scoped to one origin generation,
+ * so a manual retry or any new origin/mode generation simply leaves it behind.
+ */
+private class LoopbackRecoveryTerminal(
+    val origin: ServerOrigin,
+    val generation: Long,
 )
 
 /** The scope an optimistic voice-config write belongs to. */
@@ -384,6 +397,7 @@ class HermesConnectionViewModel(
     private var activeTokens: ActiveTokenRecord? = null
     private var activeLoopbackCredential: ActiveLoopbackCredentialRecord? = null
     private var loopbackRecoveryEpoch: LoopbackRecoveryEpoch? = null
+    private var loopbackRecoveryTerminal: LoopbackRecoveryTerminal? = null
 
     // Serializes token refresh: concurrent callers that all observe an expired access
     // token must not each spend the same single-use rotated refresh token, and a stale
@@ -955,6 +969,7 @@ class HermesConnectionViewModel(
             loopbackCredentialMutex.withLock {
                 ensureCurrentTunnel(serverOrigin, currentGeneration)
                 loopbackRecoveryEpoch = null
+                loopbackRecoveryTerminal = null
                 activeLoopbackCredential =
                     ActiveLoopbackCredentialRecord(serverOrigin, currentGeneration, credential)
             }
@@ -1011,6 +1026,7 @@ class HermesConnectionViewModel(
         loopbackCredentialMutex.withLock {
             activeLoopbackCredential = null
             loopbackRecoveryEpoch = null
+            loopbackRecoveryTerminal = LoopbackRecoveryTerminal(origin, expectedGeneration)
         }
         mutableSnapshots.value = mutableSnapshots.value.copy(
             connectionState = ConnectionState.Disconnected,
@@ -6100,7 +6116,10 @@ class HermesConnectionViewModel(
             read(initialCredential)
         } catch (rejected: HermesAuthenticationRejectedException) {
             if (initialCredential !is HermesCredential.LoopbackSession) throw rejected
+            // Null means this scope already published a terminal state, so this read
+            // surfaces its own rejection single-shot instead of reopening recovery.
             val refreshed = refreshLoopbackCredential(origin, expectedGeneration, initialCredential)
+                ?: throw rejected
             try {
                 read(refreshed)
             } catch (second: HermesAuthenticationRejectedException) {
@@ -6116,23 +6135,32 @@ class HermesConnectionViewModel(
     /**
      * One shared bootstrap per recovery epoch. Every read rejected while carrying
      * the same loopback credential awaits the same outcome, so ten concurrent
-     * `401`s coalesce into a single bootstrap and all waiters receive the same
-     * replacement credential. A *failed* bootstrap is shared for the same reason:
-     * otherwise each waiter would start its own attempt in turn and produce a
-     * sequential storm. Once the replacement credential later becomes stale on its
-     * own, that later rejection carries a different credential and opens a new
-     * epoch.
+     * `401`s coalesce into a single bootstrap and every waiter receives the same
+     * replacement credential — or, while the attempt is still in flight, the same
+     * failure.
+     *
+     * Once an attempt finishes, the epoch is retired rather than pinned; a pinned
+     * dead epoch would leave every later read failing against it with no way out.
+     * A failed attempt publishes a terminal state for the scope instead, and this
+     * returns null for anything rejected afterwards, so a read that was already in
+     * flight surfaces its own rejection instead of opening a second automatic
+     * attempt. The scope leaves that state through a manual retry or a new
+     * origin/mode generation.
+     *
+     * When a replacement credential later goes stale on its own, that rejection
+     * carries a different credential and opens a new epoch.
      */
     private suspend fun refreshLoopbackCredential(
         origin: ServerOrigin,
         expectedGeneration: Long,
         rejected: HermesCredential.LoopbackSession,
-    ): HermesCredential.LoopbackSession {
+    ): HermesCredential.LoopbackSession? {
         val epoch = loopbackCredentialMutex.withLock {
             ensureCurrentTunnel(origin, expectedGeneration)
             val current = activeLoopbackCredential
                 ?.takeIf { it.origin == origin && it.generation == expectedGeneration }
             if (current != null && current.credential !== rejected) return current.credential
+            if (isTerminalLoopbackScope(origin, expectedGeneration)) return null
             loopbackRecoveryEpoch
                 ?.takeIf {
                     it.origin == origin &&
@@ -6143,6 +6171,10 @@ class HermesConnectionViewModel(
         }
         return epoch.bootstrap.await()
     }
+
+    private fun isTerminalLoopbackScope(origin: ServerOrigin, expectedGeneration: Long): Boolean =
+        loopbackRecoveryTerminal
+            ?.let { it.origin == origin && it.generation == expectedGeneration } == true
 
     private fun startLoopbackRecoveryEpoch(
         origin: ServerOrigin,
@@ -6157,7 +6189,7 @@ class HermesConnectionViewModel(
             ensureCurrentTunnel(origin, expectedGeneration)
             when (result) {
                 is LoopbackSessionBootstrapResult.Success ->
-                    installRecoveredLoopbackCredential(origin, expectedGeneration, rejected, result.credential)
+                    installRecoveredLoopbackCredential(origin, expectedGeneration, result.credential)
                 // Terminal for this attempt, and never a credential rejection: a
                 // tunnel that stopped forwarding must leave the sign-in state
                 // untouched so a reconnect can still heal it.
@@ -6172,24 +6204,21 @@ class HermesConnectionViewModel(
     }
 
     /**
-     * Installs the replacement under [loopbackCredentialMutex] so a reconnect that
-     * completed while this scrape was in flight wins instead of being clobbered by
-     * the older scrape. Acquiring the lock here cannot deadlock against the epoch
-     * registration, which happens under the same lock but releases it before any
-     * waiter awaits this deferred.
+     * Installs the replacement under [loopbackCredentialMutex], which is also what
+     * the terminal publish takes, so a scope that went terminal while this scrape
+     * was in flight is not revived by it. Acquiring the lock here cannot deadlock
+     * against the epoch registration, which happens under the same lock but
+     * releases it before any waiter awaits this deferred.
      */
     private suspend fun installRecoveredLoopbackCredential(
         origin: ServerOrigin,
         expectedGeneration: Long,
-        rejected: HermesCredential.LoopbackSession,
         recovered: HermesCredential.LoopbackSession,
-    ): HermesCredential.LoopbackSession = loopbackCredentialMutex.withLock {
+    ): HermesCredential.LoopbackSession? = loopbackCredentialMutex.withLock {
         ensureCurrentTunnel(origin, expectedGeneration)
-        activeLoopbackCredential
-            ?.takeIf {
-                it.origin == origin && it.generation == expectedGeneration && it.credential !== rejected
-            }
-            ?.let { return@withLock it.credential }
+        // A terminal state published while this scrape was in flight wins: installing
+        // now would silently revive a scope the user has to retry explicitly.
+        if (isTerminalLoopbackScope(origin, expectedGeneration)) return@withLock null
         activeLoopbackCredential = ActiveLoopbackCredentialRecord(origin, expectedGeneration, recovered)
         // The record owns the token now; retire the epoch so its completed
         // deferred stops holding a second reference to it.
@@ -6311,6 +6340,7 @@ class HermesConnectionViewModel(
         loopbackCredentialMutex.withLock {
             activeLoopbackCredential = null
             loopbackRecoveryEpoch = null
+            loopbackRecoveryTerminal = null
         }
         pendingDraftSessions.clear()
         serverDurableIds.clear()
