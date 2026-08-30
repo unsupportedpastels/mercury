@@ -52,7 +52,7 @@ struct ReconciliationEngine {
                 watermark.hasOpenApproval = true
                 appendInputNotification(
                     kind: .approval,
-                    body: "Authorization is required to continue",
+                    body: NotificationTextPolicy.approvalFallback,
                     sessionID: delta.sessionID,
                     sessionTitle: delta.sessionTitle,
                     visibility: visibility,
@@ -64,7 +64,7 @@ struct ReconciliationEngine {
                 watermark.hasOpenClarify = true
                 appendInputNotification(
                     kind: .clarification,
-                    body: "Clarification is required to continue",
+                    body: NotificationTextPolicy.clarificationFallback,
                     sessionID: delta.sessionID,
                     sessionTitle: delta.sessionTitle,
                     visibility: visibility,
@@ -76,7 +76,7 @@ struct ReconciliationEngine {
                 watermark.hasOpenSecure = true
                 appendInputNotification(
                     kind: .secureInput,
-                    body: "Secure input required",
+                    body: NotificationTextPolicy.secureInputFallback,
                     sessionID: delta.sessionID,
                     sessionTitle: delta.sessionTitle,
                     visibility: visibility,

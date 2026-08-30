@@ -21,6 +21,7 @@ import com.unsupportedpastels.hermesandroid.app.reconcileProjectSession
 import com.unsupportedpastels.hermesandroid.app.isNoProjectBucket
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
 import com.unsupportedpastels.mercury.core.attachment.AttachmentAddResult
+import com.unsupportedpastels.mercury.core.notifications.NotificationTextPolicy
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentByteReader
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentPolicy
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentReadException
@@ -4531,7 +4532,7 @@ class HermesConnectionViewModel(
                         notifications.approvalRequired(
                             durableSessionId,
                             sessionTitle(durableSessionId),
-                            event.description ?: event.command ?: "Authorization is required to continue",
+                            event.description ?: event.command ?: NotificationTextPolicy.APPROVAL_FALLBACK,
                         )
                     }
                     is HermesChatEvent.ApprovalExpire -> updateRunState(durableSessionId, event)
@@ -4548,7 +4549,7 @@ class HermesConnectionViewModel(
                             notifications.unsupportedInputRequired(
                                 durableSessionId,
                                 sessionTitle(durableSessionId),
-                                event.prompt ?: "Secure input is required to continue",
+                                event.prompt ?: NotificationTextPolicy.SECURE_INPUT_FALLBACK,
                             )
                         }
                     }

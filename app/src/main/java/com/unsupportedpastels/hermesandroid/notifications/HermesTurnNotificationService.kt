@@ -13,6 +13,8 @@ import androidx.core.app.NotificationCompat
 import com.unsupportedpastels.hermesandroid.MainActivity
 import com.unsupportedpastels.hermesandroid.R
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
+import com.unsupportedpastels.mercury.core.notifications.NotificationInputKind
+import com.unsupportedpastels.mercury.core.notifications.NotificationTextPolicy
 
 interface TurnNotificationController {
     fun turnStarted(sessionId: DurableSessionId, title: String, activeCount: Int)
@@ -41,13 +43,16 @@ internal class AndroidTurnNotificationController(
     override fun activeCountChanged(activeCount: Int) = publishActiveCount(activeCount)
 
     override fun approvalRequired(sessionId: DurableSessionId, title: String, preview: String) =
-        SessionNotificationPoster.postInput(context, "Hermes needs approval", sessionId, title, preview)
+        SessionNotificationPoster.postInput(
+            context, NotificationTextPolicy.inputHeading(NotificationInputKind.APPROVAL), sessionId, title, preview)
 
     override fun clarificationRequired(sessionId: DurableSessionId, title: String, preview: String) =
-        SessionNotificationPoster.postInput(context, "Hermes needs your input", sessionId, title, preview)
+        SessionNotificationPoster.postInput(
+            context, NotificationTextPolicy.inputHeading(NotificationInputKind.CLARIFICATION), sessionId, title, preview)
 
     override fun unsupportedInputRequired(sessionId: DurableSessionId, title: String, preview: String) =
-        SessionNotificationPoster.postInput(context, "Hermes needs secure input", sessionId, title, preview)
+        SessionNotificationPoster.postInput(
+            context, NotificationTextPolicy.inputHeading(NotificationInputKind.SECURE_INPUT), sessionId, title, preview)
 
     override fun turnCompleted(sessionId: DurableSessionId, title: String, text: String, status: String?) =
         SessionNotificationPoster.postCompletion(context, sessionId, title, text, status)
@@ -98,7 +103,7 @@ internal object SessionNotificationPoster {
             manager.cancel(notificationId(sessionId.value, INPUT_KIND))
             return
         }
-        val text = preview.take(240)
+        val text = NotificationTextPolicy.inputPreview(preview)
         manager.notify(notificationId(sessionId.value, INPUT_KIND), NotificationCompat.Builder(context, CHANNEL_ATTENTION)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(heading)
@@ -123,11 +128,9 @@ internal object SessionNotificationPoster {
     ) {
         val manager = notificationManager(context)
         val preview = finalResponsePreview(text)
-        val heading = when (status?.lowercase()) {
-            "error", "failed" -> "Mercury task failed"
-            "cancelled", "canceled", "interrupted" -> "Mercury task was cancelled"
-            else -> "Mercury finished"
-        }
+        val heading = NotificationTextPolicy.completionHeading(
+            NotificationTextPolicy.completionStatusFromWire(status),
+        )
         manager.cancel(notificationId(sessionId.value, INPUT_KIND))
         if (!shouldPostSessionNotification(sessionId, SessionNotificationVisibilityRegistry.states.value)) {
             manager.cancel(notificationId(sessionId.value, COMPLETE_KIND))
