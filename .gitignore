@@ -1,6 +1,8 @@
 *.iml
 .gradle
 .kotlin/
+__pycache__/
+*.pyc
 .env
 *.jks
 *.jks.b64

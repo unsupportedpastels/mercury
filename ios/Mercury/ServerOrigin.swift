@@ -70,4 +70,36 @@ enum ServerOrigin {
 
         return "\(scheme)://\(remainder.lowercased())"
     }
+
+    /// Candidate Keychain account names used before default ports were
+    /// elided. Callers pass the new canonical origin, so reconstruct the one
+    /// legacy spelling that could otherwise no longer be derived.
+    static func legacyCredentialAccountCandidates(for canonicalOrigin: String) -> [String] {
+        let scheme: String
+        let defaultPort: Int
+        let authority: Substring
+        if canonicalOrigin.hasPrefix("https://") {
+            scheme = "https"
+            defaultPort = 443
+            authority = canonicalOrigin.dropFirst("https://".count)
+        } else if canonicalOrigin.hasPrefix("http://") {
+            scheme = "http"
+            defaultPort = 80
+            authority = canonicalOrigin.dropFirst("http://".count)
+        } else {
+            return []
+        }
+        guard !authority.isEmpty,
+              !authority.contains("/"),
+              !authority.contains("?"),
+              !authority.contains("#")
+        else { return [] }
+
+        if authority.hasPrefix("[") {
+            guard authority.hasSuffix("]") else { return [] }
+        } else if authority.contains(":") {
+            return []
+        }
+        return ["\(scheme)://\(authority):\(defaultPort)"]
+    }
 }

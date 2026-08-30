@@ -20,6 +20,16 @@ final class RelayProtocolVectorTests: XCTestCase {
         return try XCTUnwrap(object as? [String: Any])
     }
 
+    private func stringDictionary(_ value: Any?) throws -> [String: String] {
+        let raw = try XCTUnwrap(value as? [String: Any])
+        var result: [String: String] = [:]
+        for (key, value) in raw {
+            if value is NSNull { continue }
+            result[key] = try XCTUnwrap(value as? String, "non-string fixture value for \(key)")
+        }
+        return result
+    }
+
     private func hexData(_ text: String) -> Data {
         precondition(text.count % 2 == 0)
         var data = Data(capacity: text.count / 2)
@@ -45,7 +55,7 @@ final class RelayProtocolVectorTests: XCTestCase {
     private func vectorPair(
         _ vector: [String: Any]
     ) throws -> (mobile: RelaySecureChannel, host: RelaySecureChannel) {
-        let keys = try XCTUnwrap(vector["keys"] as? [String: String])
+        let keys = try stringDictionary(vector["keys"])
         let installation = hexData(keys["installation_id"]!)
         let mobile = try RelaySecureChannel(
             isInitiator: true,
@@ -94,7 +104,7 @@ final class RelayProtocolVectorTests: XCTestCase {
             let binding = try XCTUnwrap(vector["channel_binding"] as? String)
             XCTAssertEqual(hexString(try mobile.channelBinding), binding, identifier)
             XCTAssertEqual(try host.channelBinding, try mobile.channelBinding)
-            let keys = try XCTUnwrap(vector["keys"] as? [String: String])
+            let keys = try stringDictionary(vector["keys"])
             XCTAssertEqual(
                 try host.remoteStaticPublic,
                 hexData(keys["initiator_static_public"]!),
@@ -165,7 +175,7 @@ final class RelayProtocolVectorTests: XCTestCase {
 
     func testWrongResponderIdentityFailsAuthentication() throws {
         let vector = try secureChannelVector("reconnect-xk")
-        let keys = try XCTUnwrap(vector["keys"] as? [String: String])
+        let keys = try stringDictionary(vector["keys"])
         let wrongMobile = try RelaySecureChannel(
             initiatorStaticPrivateKey: hexData(keys["initiator_static_private"]!),
             installationID: hexData(keys["installation_id"]!),
@@ -188,7 +198,7 @@ final class RelayProtocolVectorTests: XCTestCase {
 
     func testWrongPrologueFailsAuthentication() throws {
         let vector = try secureChannelVector("reconnect-xk")
-        let keys = try XCTUnwrap(vector["keys"] as? [String: String])
+        let keys = try stringDictionary(vector["keys"])
         var wrongInstallation = hexData(keys["installation_id"]!)
         wrongInstallation[wrongInstallation.count - 1] ^= 1
         let mobile = try RelaySecureChannel(

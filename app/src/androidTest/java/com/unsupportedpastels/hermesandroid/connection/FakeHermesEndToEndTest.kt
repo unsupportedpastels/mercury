@@ -14,6 +14,8 @@ import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.unsupportedpastels.hermesandroid.MainActivity
 import org.junit.Assume.assumeTrue
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -138,11 +140,13 @@ class FakeHermesEndToEndTest {
         // Give the sentinel completion time to arrive, then assert suppression.
         Thread.sleep(10_000)
         composeRule.waitForIdle()
-        assert(!hasText("Operation interrupted")) {
-            "interrupt sentinel was rendered as assistant prose"
-        }
-        assert(hasText("The answer is 42")) {
-            "streamed partial was lost after sentinel completion"
-        }
+        assertFalse(
+            "interrupt sentinel was rendered as assistant prose",
+            hasText("Operation interrupted"),
+        )
+        assertTrue(
+            "streamed partial was lost after sentinel completion",
+            hasText("The answer is 42"),
+        )
     }
 }

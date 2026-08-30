@@ -51,6 +51,34 @@ def log(line):
         print(line, flush=True)
 
 
+def http_log_summary(method, raw_path):
+    """Log only the route; query values can contain single-use tickets."""
+    return f"HTTP {method} {urlsplit(raw_path).path}"
+
+
+def rpc_log_summary(direction, text):
+    """Summarize JSON-RPC metadata without prompts, transcripts, or arguments."""
+    try:
+        message = json.loads(text)
+    except (TypeError, ValueError):
+        return f"WS {direction}: invalid JSON"
+    if not isinstance(message, dict):
+        return f"WS {direction}: invalid frame"
+    request_id = message.get("id")
+    method = message.get("method")
+    if method == "event":
+        params = message.get("params")
+        event_type = params.get("type") if isinstance(params, dict) else None
+        return f"WS {direction}: event {event_type or 'unknown'}"
+    if isinstance(method, str):
+        return f"WS {direction}: request {method} id={request_id}"
+    if "error" in message:
+        return f"WS {direction}: error response id={request_id}"
+    if "result" in message:
+        return f"WS {direction}: response id={request_id}"
+    return f"WS {direction}: unclassified frame"
+
+
 def mint_session_token():
     token = secrets.token_urlsafe(24)
     with _lock:
@@ -131,7 +159,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parts = urlsplit(self.path)
         path, query = parts.path, parse_qs(parts.query)
-        log(f"HTTP GET {self.path}")
+        log(http_log_summary("GET", self.path))
 
         if path == "/api/status":
             self.send_json({
@@ -217,7 +245,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parts = urlsplit(self.path)
         path = parts.path
-        log(f"HTTP POST {self.path}")
+        log(http_log_summary("POST", self.path))
 
         if path == "/auth/password-login":
             body = self.read_body_json()
@@ -240,7 +268,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         path = urlsplit(self.path).path
-        log(f"HTTP PUT {self.path}")
+        log(http_log_summary("PUT", self.path))
         if path == "/api/config":
             if self.require_auth():
                 self.read_body_json()
@@ -280,12 +308,12 @@ class Handler(BaseHTTPRequestHandler):
         log("WS closed")
 
     def do_DELETE(self):
-        log(f"HTTP DELETE {self.path}")
+        log(http_log_summary("DELETE", self.path))
         if self.require_auth():
             self.send_json({"ok": True})
 
     def do_PATCH(self):
-        log(f"HTTP PATCH {self.path}")
+        log(http_log_summary("PATCH", self.path))
         if self.require_auth():
             body = self.read_body_json()
             self.send_json({"ok": True, "title": body.get("title"),
@@ -342,7 +370,7 @@ class WsSession:
 
     def send_json(self, obj):
         text = json.dumps(obj)
-        log(f"WS send: {text}")
+        log(rpc_log_summary("send", text))
         self.send_frame(0x1, text.encode("utf-8"))
 
     # -- main loop ----------------------------------------------------------
@@ -367,7 +395,7 @@ class WsSession:
                 if opcode != 0x1:
                     continue
                 text = payload.decode("utf-8", errors="replace")
-                log(f"WS recv: {text}")
+                log(rpc_log_summary("recv", text))
                 self.handle_rpc(text)
         finally:
             self.closed = True
@@ -488,12 +516,18 @@ class WsSession:
             log(f"WS prompt stream aborted: {error}")
 
 
+class SafeThreadingHTTPServer(ThreadingHTTPServer):
+    """Suppress request addresses and tracebacks from expected test disconnects."""
+
+    def handle_error(self, request, client_address):
+        log("HTTP client disconnected")
+
+
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8787
-    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    server = SafeThreadingHTTPServer(("0.0.0.0", port), Handler)
     server.daemon_threads = True
-    log(f"fake-hermes listening on http://0.0.0.0:{port} "
-        f"(password: {PASSWORD!r}, session: {DURABLE_SESSION_ID!r})")
+    log(f"fake-hermes listening on port {port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

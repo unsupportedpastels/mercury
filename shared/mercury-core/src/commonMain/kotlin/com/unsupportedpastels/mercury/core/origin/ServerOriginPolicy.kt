@@ -16,9 +16,9 @@ sealed interface OriginParseResult {
  *   server always canonicalizes to the same string on both platforms.
  * - Credentials, paths (beyond one trailing slash), queries, and fragments
  *   are rejected; unbracketed IPv6 is rejected, bracketed accepted.
- * - Non-ASCII hosts are punycoded (pure-Kotlin RFC 3492) with STD3 label
- *   rules, matching the previous Android `java.net.IDN` behavior on both
- *   platforms.
+ * - Non-ASCII hosts use platform IDNA primitives after common compatibility
+ *   mapping, then common STD3 validation. This preserves Android's prior
+ *   transitional behavior while producing the same scoped key on iOS.
  *
  * Rejection reasons are user-visible contract (Android's dialog shows them).
  */
@@ -32,6 +32,8 @@ object ServerOriginPolicy {
     private const val HAS_PATH = "Server origin must not include a path"
     private const val INVALID_PORT = "Server origin contains an invalid port"
     private const val IPV6_NEEDS_BRACKETS = "IPv6 server origins must use brackets"
+    private const val PUBLIC_CLEARTEXT =
+        "Plain HTTP is allowed only for local or private-network servers"
 
     fun canonicalize(input: String, useTls: Boolean = true): OriginParseResult {
         val trimmed = input.trim()
@@ -76,7 +78,11 @@ object ServerOriginPolicy {
 
         val defaultPort = if (scheme == "https") 443 else 80
         val portSuffix = if (port == -1 || port == defaultPort) "" else ":$port"
-        return OriginParseResult.Valid("$scheme://$host$portSuffix")
+        val origin = "$scheme://$host$portSuffix"
+        if (scheme == "http" && !isLoopbackOrPrivate(origin)) {
+            return OriginParseResult.Invalid(PUBLIC_CLEARTEXT)
+        }
+        return OriginParseResult.Valid(origin)
     }
 
     /**
@@ -104,7 +110,7 @@ object ServerOriginPolicy {
         return hostIsLoopbackOrPrivate(host)
     }
 
-    /** Cleartext HTTP is acceptable only for loopback/RFC1918 hosts. */
+    /** Cleartext HTTP is acceptable only for loopback, local, or RFC1918 hosts. */
     fun allowsCleartextHttp(origin: String): Boolean =
         origin.startsWith("http://") && isLoopbackOrPrivate(origin)
 
@@ -150,116 +156,43 @@ object ServerOriginPolicy {
         return port.takeIf { it in 1..65535 }
     }
 
-    // MARK: IDN / punycode (RFC 3492 + STD3 label rules)
+    // MARK: IDN normalization
 
     private fun idnToAscii(host: String): String? {
-        val labels = host.split('.')
-        if (labels.any { it.isEmpty() }) return null
-        val encoded = labels.map { label ->
-            val ascii = if (label.all { it.code < 0x80 }) {
-                label.lowercase()
-            } else {
-                "xn--" + (Punycode.encode(label.lowercase()) ?: return null)
-            }
+        // Java's released IDNA2003 path rejects capital sharp-S while modern
+        // Darwin URL handling maps it to a live ACE label. Reject it commonly
+        // rather than letting the same spelling target different servers.
+        if ('\u1E9E' in host) return null
+        val mapped = host.idna2003CompatibilityMap()
+        val asciiHost = platformIdnToAscii(mapped)?.lowercase() ?: return null
+        val hasRootLabel = asciiHost.endsWith('.')
+        val labels = (if (hasRootLabel) asciiHost.dropLast(1) else asciiHost).split('.')
+        if (labels.any(String::isEmpty)) return null
+        for (ascii in labels) {
             if (ascii.isEmpty() || ascii.length > 63) return null
-            // STD3: letters, digits, hyphen only; no leading/trailing hyphen.
             if (ascii.any { it !in 'a'..'z' && it !in '0'..'9' && it != '-' }) return null
             if (ascii.startsWith('-') || ascii.endsWith('-')) return null
-            ascii
         }
-        val joined = encoded.joinToString(".")
-        return joined.takeIf { it.length <= 253 }
+        return asciiHost.takeIf { it.length <= if (hasRootLabel) 254 else 253 }
     }
 
-    private object Punycode {
-        private const val BASE = 36
-        private const val T_MIN = 1
-        private const val T_MAX = 26
-        private const val SKEW = 38
-        private const val DAMP = 700
-        private const val INITIAL_BIAS = 72
-        private const val INITIAL_N = 128
-
-        fun encode(label: String): String? {
-            val input = label.toCodePoints()
-            val output = StringBuilder()
-            val basic = input.filter { it < 0x80 }
-            basic.forEach { output.append(it.toChar()) }
-            var handled = basic.size
-            val basicLength = handled
-            if (basicLength > 0) output.append('-')
-
-            var n = INITIAL_N
-            var delta = 0
-            var bias = INITIAL_BIAS
-            while (handled < input.size) {
-                val m = input.filter { it >= n }.minOrNull() ?: return null
-                val widen = (m - n).toLong() * (handled + 1).toLong()
-                if (widen > Int.MAX_VALUE - delta) return null
-                delta += widen.toInt()
-                n = m
-                for (codePoint in input) {
-                    if (codePoint < n) {
-                        delta += 1
-                        if (delta == Int.MAX_VALUE) return null
-                    }
-                    if (codePoint == n) {
-                        var q = delta
-                        var k = BASE
-                        while (true) {
-                            val threshold = when {
-                                k <= bias -> T_MIN
-                                k >= bias + T_MAX -> T_MAX
-                                else -> k - bias
-                            }
-                            if (q < threshold) break
-                            output.append(digitToChar(threshold + (q - threshold) % (BASE - threshold)))
-                            q = (q - threshold) / (BASE - threshold)
-                            k += BASE
-                        }
-                        output.append(digitToChar(q))
-                        bias = adapt(delta, handled + 1, handled == basicLength)
-                        delta = 0
-                        handled += 1
-                    }
-                }
-                delta += 1
-                n += 1
+    /**
+     * Compatibility mappings for the deviation characters that Java's
+     * IDNA2003 implementation handled before this policy moved to commonMain.
+     * Keeping these mappings prevents a Unicode spelling from silently
+     * retargeting an existing Android server origin during migration.
+     */
+    private fun String.idna2003CompatibilityMap(): String = buildString(length) {
+        for (character in this@idna2003CompatibilityMap) {
+            when {
+                character == '\u00DF' -> append("ss")
+                character == '\u03C2' -> append('\u03C3')
+                character == '\u200C' || character == '\u200D' -> Unit
+                character in '\uFF01'..'\uFF5E' -> append((character.code - 0xFEE0).toChar())
+                else -> append(character)
             }
-            return output.toString()
-        }
-
-        private fun adapt(rawDelta: Int, numPoints: Int, firstTime: Boolean): Int {
-            var delta = if (firstTime) rawDelta / DAMP else rawDelta / 2
-            delta += delta / numPoints
-            var k = 0
-            while (delta > ((BASE - T_MIN) * T_MAX) / 2) {
-                delta /= BASE - T_MIN
-                k += BASE
-            }
-            return k + (((BASE - T_MIN + 1) * delta) / (SKEW + delta))
-        }
-
-        private fun digitToChar(digit: Int): Char =
-            if (digit < 26) ('a' + digit) else ('0' + digit - 26)
-
-        private fun String.toCodePoints(): List<Int> {
-            val points = mutableListOf<Int>()
-            var index = 0
-            while (index < length) {
-                val character = this[index]
-                if (character.isHighSurrogate() && index + 1 < length && this[index + 1].isLowSurrogate()) {
-                    points += (((character.code - 0xD800) shl 10) or (this[index + 1].code - 0xDC00)) + 0x10000
-                    index += 2
-                } else {
-                    points += character.code
-                    index += 1
-                }
-            }
-            return points
         }
     }
-
     // MARK: host helpers
 
     private fun hostOf(origin: String): String? {
@@ -297,3 +230,6 @@ object ServerOriginPolicy {
         }
     }
 }
+
+/** Platform IDNA primitive; common policy supplies mapping and final STD3 validation. */
+internal expect fun platformIdnToAscii(host: String): String?

@@ -161,7 +161,7 @@ Mercury connects only to the server origin you configure. It does not include a 
 
 - Credentials, cookies, connection state, and cached transcripts are scoped to the normalized server origin and stored with Android Keystore-backed encryption.
 - WebSocket tickets are fresh, single-use, and held in memory only.
-- Production connections should use HTTPS. Cleartext traffic is disabled in the manifest.
+- Production connections must use HTTPS. Plain HTTP is accepted only for loopback or private-network servers selected explicitly in the app.
 - Your prompts, attachments, and transcript data are processed by the Hermes server you choose — not by a Mercury-operated service. No telemetry, no analytics, no third-party servers.
 
 See [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md) for details.

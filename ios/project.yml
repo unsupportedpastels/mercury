@@ -164,6 +164,9 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+        # @testable import Mercury exposes public signatures backed by the
+        # static KMP module, so the test compiler must resolve MercuryCore too.
+        FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/mercury-core/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
     dependencies:
       - target: Mercury
       - target: MercuryShareKit

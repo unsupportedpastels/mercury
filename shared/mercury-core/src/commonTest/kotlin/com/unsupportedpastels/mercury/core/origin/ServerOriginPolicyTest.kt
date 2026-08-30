@@ -24,14 +24,17 @@ class ServerOriginPolicyTest {
     @Test
     fun bareHostUsesTlsFlagForScheme() {
         assertEquals("https://hermes.example.com", valid("hermes.example.com"))
-        assertEquals("http://hermes.example.com", valid("hermes.example.com", useTls = false))
         assertEquals("https://10.1.2.3:8080", valid("10.1.2.3:8080"))
         assertEquals("http://192.168.1.5:8080", valid("192.168.1.5:8080", useTls = false))
+        assertEquals(
+            "Plain HTTP is allowed only for local or private-network servers",
+            reason("hermes.example.com", useTls = false),
+        )
     }
 
     @Test
     fun explicitSchemeWinsOverTlsFlag() {
-        assertEquals("http://example.com", valid("http://example.com", useTls = true))
+        assertEquals("http://192.168.1.5", valid("http://192.168.1.5", useTls = true))
         assertEquals("https://example.com", valid("https://example.com", useTls = false))
     }
 
@@ -47,13 +50,23 @@ class ServerOriginPolicyTest {
         assertEquals("https://example.com", valid("HTTPS://Example.COM:443/"))
         assertEquals("http://10.0.1.2", valid("HTTP://10.0.1.2:80/"))
         assertEquals("https://example.com:8443", valid("https://example.com:8443"))
-        assertEquals("http://example.com:443", valid("http://example.com:443"))
+        assertEquals("http://192.168.1.5:443", valid("http://192.168.1.5:443"))
     }
 
     @Test
     fun unicodeHostsArePunycoded() {
         assertEquals("https://xn--r8jz45g.xn--zckzah", valid("https://例え.テスト/"))
         assertEquals("https://xn--bcher-kva.example", valid("bücher.example"))
+    }
+
+    @Test
+    fun unicodeCompatibilityMatchesThePreviousAndroidCanonicalOrigin() {
+        assertEquals("https://fass.de", valid("faß.de"))
+        assertEquals("https://xn--4xa.gr", valid("ς.gr"))
+        assertEquals("https://ab.example", valid("a\u200Cb.example"))
+        assertEquals("https://foo.example", valid("ＦＯＯ.example"))
+        assertEquals("https://example.com.", valid("example.com."))
+        assertIs<OriginParseResult.Invalid>(ServerOriginPolicy.canonicalize("ẞ.de"))
     }
 
     @Test
@@ -80,6 +93,10 @@ class ServerOriginPolicyTest {
         assertEquals("Server origin must include a valid host", reason("https://exa mple.com"))
         assertEquals("Server origin must include a valid host", reason("https://bad_host.example"))
         assertEquals("Server origin must include a valid host", reason("https://a..b"))
+        assertEquals(
+            "Plain HTTP is allowed only for local or private-network servers",
+            reason("http://example.com"),
+        )
     }
 
     // --- webSocketValue -------------------------------------------------------

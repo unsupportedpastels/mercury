@@ -34,8 +34,8 @@ class ServerOriginTest {
         )
         // An explicit scheme always wins over the flag.
         assertEquals(
-            "http://example.com",
-            ServerOrigin.parse("http://example.com", useTls = true).value,
+            "http://192.168.1.5",
+            ServerOrigin.parse("http://192.168.1.5", useTls = true).value,
         )
     }
 
@@ -53,6 +53,7 @@ class ServerOriginTest {
             "https://xn--r8jz45g.xn--zckzah",
             ServerOrigin.parse("https://例え.テスト/").value,
         )
+        assertEquals("https://fass.de", ServerOrigin.parse("https://faß.de").value)
     }
 
     @Test
@@ -70,6 +71,7 @@ class ServerOriginTest {
             "https://example.com/api",
             "https://example.com?ticket=secret",
             "https://example.com#fragment",
+            "http://example.com",
         ).forEach { input ->
             assertThrows(IllegalArgumentException::class.java) {
                 ServerOrigin.parse(input)
