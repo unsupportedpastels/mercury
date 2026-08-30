@@ -190,7 +190,7 @@ data class HermesChatResponse(
  */
 data class SlashCompletionItem(
     val text: String,
-    val display: String = "/$text",
+    val display: String = com.unsupportedpastels.mercury.core.slash.SlashCommandPolicy.defaultDisplay(text),
     val meta: String? = null,
 )
 
@@ -288,21 +288,10 @@ data class ModelSwitchResult(
     val confirmationMessage: String? = null,
 )
 
-val ValidReasoningEfforts = setOf(
-    "none",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-    "ultra",
-)
+val ValidReasoningEfforts = com.unsupportedpastels.mercury.core.slash.SlashCommandPolicy.VALID_REASONING_EFFORTS
 
-fun canonicalReasoningEffort(value: String): String? = value
-    .trim()
-    .lowercase()
-    .takeIf(ValidReasoningEfforts::contains)
+fun canonicalReasoningEffort(value: String): String? =
+    com.unsupportedpastels.mercury.core.slash.SlashCommandPolicy.canonicalReasoningEffort(value)
 
 interface HermesChatEvent {
     val sessionId: RuntimeSessionId
