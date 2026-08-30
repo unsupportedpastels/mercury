@@ -51,6 +51,10 @@ class HermesRestRejectionTaxonomyTest {
         "sessionSearch" to { client -> client.searchSessions(origin, credential, "audit") },
         "profileListing" to { client -> client.loadProfiles(origin, credential) },
         "modelOptions" to { client -> client.loadDefaultModelOptions(origin, credential, "default") },
+        // `/api/model/info` is on the released server's public allowlist, so it
+        // cannot actually answer 401. The classifier is defensive only; it is
+        // covered here so a future server that does protect the route inherits
+        // the same taxonomy instead of a silent gap.
         "currentModelInfo" to { client -> client.loadCurrentModelInfo(origin, credential, "default") },
         "reasoningEffort" to { client ->
             client.loadProfileReasoningEffort(origin, credential, "default", "nous", "hermes-4")
