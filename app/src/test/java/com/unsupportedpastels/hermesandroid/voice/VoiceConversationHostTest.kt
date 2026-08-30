@@ -142,15 +142,20 @@ private class FakeHostSpeechSocket : SpeechStreamSocket {
         inbound.trySend(frame)
     }
 
-    fun serverCloses() {
+    fun serverCloses(code: Int? = null) {
+        peerCloseCode = code
         inbound.trySend(null)
     }
+
+    private var peerCloseCode: Int? = null
 
     override suspend fun sendText(text: String) {
         sent += text
     }
 
     override suspend fun receiveFrame(): SpeechSocketFrame? = inbound.receive()
+
+    override suspend fun closeCode(): Int? = peerCloseCode
 
     override suspend fun close() {
         inbound.trySend(null)
@@ -341,6 +346,32 @@ class VoiceConversationHostTest {
         advanceUntilIdle()
 
         assertEquals(listOf("Hello world."), h.restSpoken)
+        host.end()
+    }
+
+    /**
+     * A `4401` before any audio must not be laundered into the REST fallback:
+     * REST TTS is billable and the credential has just been refused, so the
+     * only correct outcome is to stop and let credential recovery run.
+     */
+    @Test
+    fun aRejectedSpeechStreamNeverSynthesizesOverBillableRest() = runTest {
+        val h = Harness(streamingAvailable = true)
+        val host = h.startHost(this)
+        h.onSubmit = { h.replies.value = view(turnRunning = true, messageCount = 2) }
+        h.utterance()
+        advanceUntilIdle()
+
+        h.streamSocket.serverCloses(4401)
+        h.replies.value = view(
+            turnRunning = false,
+            finalText = "Hello world.",
+            finalIndex = 1,
+            messageCount = 2,
+        )
+        advanceUntilIdle()
+
+        assertTrue(h.restSpoken.isEmpty())
         host.end()
     }
 

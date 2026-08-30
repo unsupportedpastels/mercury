@@ -1,5 +1,7 @@
 package com.unsupportedpastels.hermesandroid.voice
 
+import com.unsupportedpastels.hermesandroid.gateway.allowsCredentialRecovery
+import com.unsupportedpastels.hermesandroid.gateway.classifySocketClose
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
@@ -30,6 +32,13 @@ interface SpeechStreamSocket {
 
     /** Next frame, or null when the peer closed the socket. */
     suspend fun receiveFrame(): SpeechSocketFrame?
+
+    /**
+     * The application close code the peer sent, read once [receiveFrame] has
+     * returned null. Null when the socket dropped without a close frame. Shares
+     * the chat socket's taxonomy so both transports treat `4401` alike.
+     */
+    suspend fun closeCode(): Int? = null
 
     suspend fun close()
 }
@@ -66,6 +75,14 @@ enum class SpeechStreamOutcome {
      * the caller may synthesize the final text once via `POST /api/audio/speak`.
      */
     Fallback,
+
+    /**
+     * The socket closed with `4401`: the credential was rejected. REST
+     * synthesis is billable and would present the same refused credential, so
+     * this outcome grants no fallback licence — the caller stops and lets
+     * credential recovery run.
+     */
+    CredentialRejected,
 
     /** The caller stopped the stream deliberately. */
     Stopped,
@@ -218,7 +235,7 @@ class SpeechStreamRun(
                     null -> log("pump:closed-or-timeout")
                 }
                 when (frame) {
-                    null -> return dropOutcome()
+                    null -> return closedOutcome()
                     is SpeechSocketFrame.Text -> when (val parsed = parseSpeechServerFrame(frame.text)) {
                         is SpeechServerFrame.Start -> {
                             if (started) return dropOutcome()
@@ -261,6 +278,20 @@ class SpeechStreamRun(
             } catch (_: Exception) {
             }
         }
+    }
+
+    /**
+     * The socket closed (or the pre-audio watchdog fired). Classify the close
+     * code: only `4401` withdraws the fallback licence, because REST synthesis
+     * would bill for a retry with a credential the server just refused. Every
+     * other class keeps the existing one-shot fallback behaviour.
+     */
+    private suspend fun closedOutcome(): SpeechStreamOutcome {
+        if (audioStarted) return dropOutcome()
+        val code = runCatching { socket.closeCode() }.getOrNull()
+        if (!classifySocketClose(code).allowsCredentialRecovery) return dropOutcome()
+        sink.stop()
+        return SpeechStreamOutcome.CredentialRejected
     }
 
     /** A drop after audio must never replay whole text; before audio it may fall back. */

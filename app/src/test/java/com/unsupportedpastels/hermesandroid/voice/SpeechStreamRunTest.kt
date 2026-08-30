@@ -17,9 +17,12 @@ private class FakeSpeechSocket : SpeechStreamSocket {
         inbound.trySend(frame)
     }
 
-    fun serverCloses() {
+    fun serverCloses(code: Int? = null) {
+        peerCloseCode = code
         inbound.trySend(null)
     }
+
+    private var peerCloseCode: Int? = null
 
     override suspend fun sendText(text: String) {
         if (closed) throw IllegalStateException("closed")
@@ -27,6 +30,8 @@ private class FakeSpeechSocket : SpeechStreamSocket {
     }
 
     override suspend fun receiveFrame(): SpeechSocketFrame? = inbound.receive()
+
+    override suspend fun closeCode(): Int? = peerCloseCode
 
     override suspend fun close() {
         closed = true
@@ -110,6 +115,50 @@ class SpeechStreamRunTest {
             listOf("""{"text":"Hello "}""", """{"text":"world."}""", """{"done":true}"""),
             socket.sent,
         )
+    }
+
+    /**
+     * §21: a `4401` close is the one class that may drive credential recovery.
+     * It must never resolve to [SpeechStreamOutcome.Fallback], because that is
+     * the caller's licence to synthesize the same text over billable REST TTS
+     * with a credential the server has just refused.
+     */
+    @Test
+    fun aCredentialRejectionCloseIsNotAFallbackLicence() = runTest {
+        val socket = FakeSpeechSocket()
+        val sink = RecordingSink()
+        val run = SpeechStreamRun(socket, sink)
+
+        socket.serverCloses(4401)
+
+        assertEquals(SpeechStreamOutcome.CredentialRejected, run.pump())
+        assertFalse(sink.finished)
+    }
+
+    /** Every other close class keeps the existing one-shot REST fallback. */
+    @Test
+    fun policyFeatureAndServerErrorClosesStayFallbacks() = runTest {
+        listOf(4403, 4404, 4408, 1011, 1006, null).forEach { code ->
+            val socket = FakeSpeechSocket()
+            val run = SpeechStreamRun(socket, RecordingSink())
+
+            socket.serverCloses(code)
+
+            assertEquals("close code $code", SpeechStreamOutcome.Fallback, run.pump())
+        }
+    }
+
+    /** After audio, no close code may re-open the whole-text replay door. */
+    @Test
+    fun aCredentialRejectionAfterAudioStillNeverReplays() = runTest {
+        val socket = FakeSpeechSocket()
+        val run = SpeechStreamRun(socket, RecordingSink())
+
+        socket.serverSends(startFrame())
+        socket.serverSends(SpeechSocketFrame.Binary(byteArrayOf(1, 2, 3, 4)))
+        socket.serverCloses(4401)
+
+        assertEquals(SpeechStreamOutcome.CompletedPartial, run.pump())
     }
 
     @Test

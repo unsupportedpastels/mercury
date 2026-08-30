@@ -22,8 +22,8 @@ import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.post
 import io.ktor.client.request.url
 import io.ktor.http.isSuccess
+import io.ktor.websocket.DefaultWebSocketSession
 import io.ktor.websocket.Frame
-import io.ktor.websocket.WebSocketSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -103,6 +104,14 @@ interface HermesChatSocket {
     /** Returns null when the peer has closed the WebSocket. */
     suspend fun receiveText(): String?
 
+    /**
+     * The application close code the peer sent, read once [receiveText] has
+     * returned null. Null when the socket dropped without a close frame, which
+     * [classifySocketClose] treats as a transport failure rather than a
+     * credential rejection.
+     */
+    suspend fun closeCode(): Int? = null
+
     suspend fun close()
 }
 
@@ -124,10 +133,21 @@ class HermesChatMethodNotFoundException(
     val method: String,
 ) : HermesChatProtocolException("Hermes method is not supported: $method")
 
-class HermesChatTransportException(
+open class HermesChatTransportException(
     message: String,
     cause: Throwable? = null,
 ) : HermesChatException(message, cause)
+
+/**
+ * The peer closed the chat socket. A close is always a transport-level failure,
+ * so every existing transport handler keeps working unchanged; [closeClass]
+ * additionally says whether the credential was rejected, which is the only case
+ * that may drive credential recovery.
+ */
+class HermesChatSocketClosedException(
+    val closeClass: SocketCloseClass,
+    val closeCode: Int?,
+) : HermesChatTransportException("Hermes chat connection closed by peer")
 
 data class ResumedChatSession(
     val runtimeSessionId: RuntimeSessionId,
@@ -451,6 +471,15 @@ fun interface HermesChatConnector {
 interface HermesChatSession {
     val events: Flow<HermesChatEvent>
 
+    /**
+     * How the peer closed this session, or null while it is still open and when
+     * this client closed it. Read after the event stream ends to decide whether
+     * the credential was rejected; a locally closed session never reports one,
+     * so our own teardown can never be mistaken for a rejection.
+     */
+    val closeClass: SocketCloseClass?
+        get() = null
+
     suspend fun resume(
         durableSessionId: DurableSessionId,
         profile: String? = null,
@@ -771,6 +800,12 @@ class HermesChatConnection internal constructor(
     private val json = Json { ignoreUnknownKeys = true }
 
     override val events: Flow<HermesChatEvent> = eventChannel.receiveAsFlow()
+
+    @Volatile
+    private var peerCloseClass: SocketCloseClass? = null
+
+    override val closeClass: SocketCloseClass?
+        get() = peerCloseClass
 
     override suspend fun resume(
         durableSessionId: DurableSessionId,
@@ -1316,7 +1351,13 @@ class HermesChatConnection internal constructor(
                 handleFrame(frame)
             }
             if (!closed.get()) {
-                failPending(HermesChatTransportException("Hermes chat connection closed by peer"))
+                // Only a peer close is classified. A close code read after our
+                // own teardown would let a local disconnect masquerade as a
+                // credential rejection and start a bootstrap nobody asked for.
+                val code = runCatching { socket.closeCode() }.getOrNull()
+                val classification = classifySocketClose(code)
+                peerCloseClass = classification
+                failPending(HermesChatSocketClosedException(classification, code))
             }
         } catch (error: CancellationException) {
             throw error
@@ -2016,7 +2057,7 @@ class KtorChatWebSocketFactory(
 }
 
 private class KtorHermesChatSocket(
-    private val session: WebSocketSession,
+    private val session: DefaultWebSocketSession,
 ) : HermesChatSocket {
     override suspend fun sendText(text: String) {
         session.send(Frame.Text(text))
@@ -2029,7 +2070,21 @@ private class KtorHermesChatSocket(
         }
     }
 
+    /**
+     * Bounded: a peer that half-closes the read side without ever sending a
+     * close frame must not park the reader forever. A missing reason classifies
+     * as a transport failure, which is the safe default.
+     */
+    override suspend fun closeCode(): Int? =
+        withTimeoutOrNull(CLOSE_REASON_TIMEOUT_MILLIS) {
+            session.closeReason.await()
+        }?.code?.toInt()
+
     override suspend fun close() {
         session.cancel()
+    }
+
+    private companion object {
+        const val CLOSE_REASON_TIMEOUT_MILLIS = 2_000L
     }
 }

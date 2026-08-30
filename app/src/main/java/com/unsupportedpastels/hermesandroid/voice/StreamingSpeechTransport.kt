@@ -6,11 +6,12 @@ import com.unsupportedpastels.hermesandroid.gateway.WsTicketClient
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.webSocketSession
 import io.ktor.client.request.url
+import io.ktor.websocket.DefaultWebSocketSession
 import io.ktor.websocket.Frame
-import io.ktor.websocket.WebSocketSession
 import io.ktor.websocket.send
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.withTimeoutOrNull
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
@@ -90,7 +91,7 @@ class KtorSpeechWebSocketFactory(
 class SpeechStreamConnectException : Exception("Could not connect Hermes speech stream")
 
 private class KtorSpeechSocket(
-    private val session: WebSocketSession,
+    private val session: DefaultWebSocketSession,
 ) : SpeechStreamSocket {
     override suspend fun sendText(text: String) {
         session.send(text)
@@ -107,7 +108,21 @@ private class KtorSpeechSocket(
         }
     }
 
+    /**
+     * Bounded: a peer that never sends a close frame must not park the pump.
+     * A missing reason classifies as a transport failure, which keeps the
+     * existing one-shot REST fallback.
+     */
+    override suspend fun closeCode(): Int? =
+        withTimeoutOrNull(CLOSE_REASON_TIMEOUT_MILLIS) {
+            session.closeReason.await()
+        }?.code?.toInt()
+
     override suspend fun close() {
         session.cancel()
+    }
+
+    private companion object {
+        const val CLOSE_REASON_TIMEOUT_MILLIS = 2_000L
     }
 }
