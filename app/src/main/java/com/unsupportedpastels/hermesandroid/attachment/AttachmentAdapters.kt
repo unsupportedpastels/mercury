@@ -1,6 +1,7 @@
 package com.unsupportedpastels.hermesandroid.attachment
 
 import com.unsupportedpastels.hermesandroid.app.ComposerAttachment
+import com.unsupportedpastels.mercury.core.attachment.AttachmentAddResult
 
 /** The policy-relevant view of a composer attachment; the URI is the dedup key. */
 fun ComposerAttachment.asCandidate(): AttachmentCandidate = AttachmentCandidate(

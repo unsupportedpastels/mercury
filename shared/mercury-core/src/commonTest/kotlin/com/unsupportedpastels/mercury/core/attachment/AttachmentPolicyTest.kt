@@ -1,14 +1,18 @@
-package com.unsupportedpastels.hermesandroid.attachment
+package com.unsupportedpastels.mercury.core.attachment
 
-import com.unsupportedpastels.hermesandroid.app.ComposerAttachment
-import com.unsupportedpastels.mercury.core.attachment.AttachmentAddResult
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertThrows
-import org.junit.Assert.assertTrue
-import org.junit.Test
-import java.io.ByteArrayInputStream
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
+/**
+ * Ported from the Android suite (AttachmentPolicyTest.kt) and the behavior the
+ * iOS AttachmentPolicyTests.swift mirrored line-by-line. Error and rejection
+ * strings are asserted verbatim: they are user-visible contract on both
+ * platforms and the historical drift risk this migration exists to remove.
+ */
 class AttachmentPolicyTest {
 
     // --- sanitizeDisplayName -------------------------------------------------
@@ -43,8 +47,7 @@ class AttachmentPolicyTest {
     @Test
     fun sanitizeCapsLength() {
         val longName = "a".repeat(300) + ".txt"
-        val sanitized = AttachmentPolicy.sanitizeDisplayName(longName)
-        assertEquals(AttachmentPolicy.MAX_DISPLAY_NAME_LENGTH, sanitized.length)
+        assertEquals(AttachmentPolicy.MAX_DISPLAY_NAME_LENGTH, AttachmentPolicy.sanitizeDisplayName(longName).length)
     }
 
     // --- kindOf --------------------------------------------------------------
@@ -68,91 +71,95 @@ class AttachmentPolicyTest {
 
     // --- checkAdd (metadata-time caps) ----------------------------------------
 
-    private fun attachment(
+    private fun candidate(
         name: String,
         mime: String? = "text/plain",
         size: Long = 100,
-    ) = ComposerAttachment(id = name, uri = "content://provider/$name", displayName = name, mimeType = mime, sizeBytes = size)
+    ) = AttachmentCandidate(dedupKey = "content://provider/$name", displayName = name, mimeType = mime, sizeBytes = size)
 
     @Test
     fun checkAddAcceptsWithinCaps() {
-        val result = AttachmentPolicy.checkAdd(emptyList(), attachment("a.txt"))
-        assertTrue(result is AttachmentAddResult.Accepted)
+        assertIs<AttachmentAddResult.Accepted>(AttachmentPolicy.checkAdd(emptyList(), candidate("a.txt")))
     }
 
     @Test
-    fun checkAddRejectsBeyondCountCap() {
-        val existing = (1..AttachmentPolicy.MAX_ATTACHMENTS).map { attachment("f$it.txt") }
-        val result = AttachmentPolicy.checkAdd(existing, attachment("extra.txt"))
-        assertTrue(result is AttachmentAddResult.Rejected)
-        assertTrue((result as AttachmentAddResult.Rejected).reason.contains("attachments"))
+    fun checkAddRejectsBeyondCountCapWithExactReason() {
+        val existing = (1..AttachmentPolicy.MAX_ATTACHMENTS).map { candidate("f$it.txt") }
+        val result = AttachmentPolicy.checkAdd(existing, candidate("extra.txt"))
+        assertIs<AttachmentAddResult.Rejected>(result)
+        assertEquals("Maximum of 5 attachments", result.reason)
     }
 
     @Test
-    fun checkAddRejectsOversizedImage() {
+    fun checkAddRejectsOversizedImageWithExactReason() {
         val result = AttachmentPolicy.checkAdd(
             emptyList(),
-            attachment("big.png", mime = "image/png", size = AttachmentPolicy.MAX_IMAGE_BYTES + 1),
+            candidate("big.png", mime = "image/png", size = AttachmentPolicy.MAX_IMAGE_BYTES + 1),
         )
-        assertTrue(result is AttachmentAddResult.Rejected)
+        assertIs<AttachmentAddResult.Rejected>(result)
+        assertEquals("big.png exceeds the 24 MB limit for images", result.reason)
     }
 
     @Test
-    fun checkAddRejectsOversizedFile() {
+    fun checkAddRejectsOversizedFileWithExactReason() {
         val result = AttachmentPolicy.checkAdd(
             emptyList(),
-            attachment("big.pdf", mime = "application/pdf", size = AttachmentPolicy.MAX_FILE_BYTES + 1),
+            candidate("big.pdf", mime = "application/pdf", size = AttachmentPolicy.MAX_FILE_BYTES + 1),
         )
-        assertTrue(result is AttachmentAddResult.Rejected)
+        assertIs<AttachmentAddResult.Rejected>(result)
+        assertEquals("big.pdf exceeds the 10 MB limit for files", result.reason)
     }
 
     @Test
-    fun checkAddRejectsAggregateOverflow() {
-        val big = attachment("big.pdf", size = AttachmentPolicy.MAX_FILE_BYTES)
-        val second = attachment("second.pdf", size = AttachmentPolicy.MAX_FILE_BYTES)
-        val third = attachment("third.pdf", size = AttachmentPolicy.MAX_FILE_BYTES)
-        val fourth = attachment("fourth.pdf", size = AttachmentPolicy.MAX_FILE_BYTES)
-        val result = AttachmentPolicy.checkAdd(listOf(big, second, third), fourth)
-        assertTrue(result is AttachmentAddResult.Rejected)
+    fun checkAddRejectsAggregateOverflowWithExactReason() {
+        val existing = listOf(
+            candidate("a.pdf", size = AttachmentPolicy.MAX_FILE_BYTES),
+            candidate("b.pdf", size = AttachmentPolicy.MAX_FILE_BYTES),
+            candidate("c.pdf", size = AttachmentPolicy.MAX_FILE_BYTES),
+        )
+        val result = AttachmentPolicy.checkAdd(existing, candidate("d.pdf", size = AttachmentPolicy.MAX_FILE_BYTES))
+        assertIs<AttachmentAddResult.Rejected>(result)
+        assertEquals("Total attachment size exceeds the limit", result.reason)
     }
 
     @Test
     fun checkAddAllowsUnknownSize() {
-        val result = AttachmentPolicy.checkAdd(emptyList(), attachment("unknown.bin", size = -1))
-        assertTrue(result is AttachmentAddResult.Accepted)
+        assertIs<AttachmentAddResult.Accepted>(
+            AttachmentPolicy.checkAdd(emptyList(), candidate("unknown.bin", size = -1)),
+        )
     }
 
     @Test
-    fun checkAddRejectsTheSameContentUriTwice() {
-        val candidate = attachment("same.pdf", mime = "application/pdf")
-        val result = AttachmentPolicy.checkAdd(listOf(candidate), candidate.copy(displayName = "renamed.pdf"))
-        assertTrue(result is AttachmentAddResult.Rejected)
-        assertTrue((result as AttachmentAddResult.Rejected).reason.contains("already attached"))
+    fun checkAddRejectsTheSameDedupKeyTwiceWithExactReason() {
+        val first = candidate("same.pdf", mime = "application/pdf")
+        val result = AttachmentPolicy.checkAdd(listOf(first), first.copy(displayName = "renamed.pdf"))
+        assertIs<AttachmentAddResult.Rejected>(result)
+        assertEquals("renamed.pdf is already attached", result.reason)
     }
 
-    // --- readBounded ----------------------------------------------------------
+    // --- staging-time re-checks -----------------------------------------------
 
     @Test
-    fun readBoundedReturnsBytesUnderCap() {
-        val bytes = "hello".toByteArray()
-        val out = AttachmentIo.readBounded(ByteArrayInputStream(bytes), capBytes = 1024)
-        assertEquals("hello", String(out))
-    }
-
-    @Test
-    fun readBoundedAllowsExactlyCap() {
-        val bytes = ByteArray(1024) { 1 }
-        val out = AttachmentIo.readBounded(ByteArrayInputStream(bytes), capBytes = 1024)
-        assertEquals(1024, out.size)
+    fun stagedSizeWithinCapPasses() {
+        AttachmentPolicy.checkStagedSize("ok.pdf", AttachmentKind.FILE, AttachmentPolicy.MAX_FILE_BYTES)
+        AttachmentPolicy.checkStagedSize("ok.png", AttachmentKind.IMAGE, AttachmentPolicy.MAX_IMAGE_BYTES)
     }
 
     @Test
-    fun readBoundedRejectsOversizedStream() {
-        val bytes = ByteArray(2048) { 1 }
-        val error = assertThrows(AttachmentTooLargeException::class.java) {
-            AttachmentIo.readBounded(ByteArrayInputStream(bytes), capBytes = 1024)
+    fun stagedSizeOverCapThrowsWithExactMessage() {
+        val error = assertFailsWith<AttachmentTooLargeException> {
+            AttachmentPolicy.checkStagedSize("big.pdf", AttachmentKind.FILE, AttachmentPolicy.MAX_FILE_BYTES + 1)
         }
-        assertTrue(error.message.orEmpty().contains("1024"))
+        assertEquals("Attachment 'big.pdf' is 10485761 bytes; cap is 10485760 bytes", error.message)
+    }
+
+    @Test
+    fun stagedAggregateOverCapThrowsWithExactMessage() {
+        AttachmentPolicy.checkStagedAggregate(AttachmentPolicy.MAX_AGGREGATE_BYTES)
+        val error = assertFailsWith<AttachmentTooLargeException> {
+            AttachmentPolicy.checkStagedAggregate(AttachmentPolicy.MAX_AGGREGATE_BYTES + 1)
+        }
+        assertEquals("Attachment 'Total attachments' is 31457281 bytes; cap is 31457280 bytes", error.message)
     }
 
     // --- composePromptText ----------------------------------------------------
@@ -167,10 +174,7 @@ class AttachmentPolicyTest {
 
     @Test
     fun composeUsesRefsAloneWhenTextIsBlank() {
-        assertEquals(
-            "@file:notes.txt",
-            AttachmentPolicy.composePromptText("", listOf("@file:notes.txt"), emptyList()),
-        )
+        assertEquals("@file:notes.txt", AttachmentPolicy.composePromptText("", listOf("@file:notes.txt"), emptyList()))
     }
 
     @Test
@@ -189,11 +193,7 @@ class AttachmentPolicyTest {
 
     @Test
     fun composeJoinsMultipleRefsAndKeepsTypedTextLast() {
-        val text = AttachmentPolicy.composePromptText(
-            "read both",
-            listOf("@file:a.txt", "@file:b.txt"),
-            emptyList(),
-        )
+        val text = AttachmentPolicy.composePromptText("read both", listOf("@file:a.txt", "@file:b.txt"), emptyList())
         assertTrue(text.startsWith("@file:a.txt\n@file:b.txt"))
         assertTrue(text.endsWith("\n\nread both"))
         assertFalse(text.contains("[User attached"))
