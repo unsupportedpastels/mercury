@@ -4,7 +4,7 @@ package com.unsupportedpastels.mercury.core.attachment
 class AttachmentTooLargeException(
     val attachmentName: String,
     val capBytes: Long,
-    actualBytes: Long,
+    val actualBytes: Long,
 ) : Exception("Attachment '$attachmentName' is $actualBytes bytes; cap is $capBytes bytes")
 
 /** Image attachments ride the session's queued-image list; everything else is a `@file:` ref. */
@@ -107,6 +107,7 @@ object AttachmentPolicy {
      * Staging-time re-check of one attachment's actual byte count against its
      * per-kind cap (metadata sizes can be absent or dishonest).
      */
+    @Throws(AttachmentTooLargeException::class)
     fun checkStagedSize(displayName: String, kind: AttachmentKind, actualBytes: Long) {
         val capBytes = perKindCapBytes(kind)
         if (actualBytes > capBytes) {
@@ -115,6 +116,7 @@ object AttachmentPolicy {
     }
 
     /** Staging-time re-check of the running aggregate against the total cap. */
+    @Throws(AttachmentTooLargeException::class)
     fun checkStagedAggregate(aggregateBytes: Long) {
         if (aggregateBytes > MAX_AGGREGATE_BYTES) {
             throw AttachmentTooLargeException("Total attachments", MAX_AGGREGATE_BYTES, aggregateBytes)

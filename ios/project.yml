@@ -55,10 +55,10 @@ targets:
         # KMP Phase 0 spike (docs/plans/kmp-shared-core.md): where Gradle drops
         # the static MercuryCore framework for Xcode consumption.
         FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/mercury-core/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
-    # Builds the KMP framework before compiling Swift. Requires a JDK; degrades
-    # to a warning (and SessionRefBridge.swift compiles out via canImport) so
-    # contributors without one still build. Spike-only escape hatch — remove
-    # once KMP is a required part of the iOS build.
+    # Builds the KMP framework before compiling Swift. MercuryCore is a hard
+    # dependency (AttachmentPolicy is a facade over it), so a JDK is required
+    # to build the iOS app — fail here with a clear message instead of a
+    # confusing "no such module MercuryCore" later.
     preBuildScripts:
       - name: Build MercuryCore KMP framework
         basedOnDependencyAnalysis: false
@@ -79,7 +79,8 @@ targets:
             mkdir -p "$OUT"
             rsync -a --delete "$SRCROOT/../shared/mercury-core/build/bin/$KT_DIR/${CONF_LC}Framework/MercuryCore.framework" "$OUT/"
           else
-            echo "warning: no JDK found; skipping MercuryCore KMP framework (Phase 0 spike)"
+            echo "error: building Mercury requires a JDK (brew install openjdk@17) to compile the MercuryCore KMP framework"
+            exit 1
           fi
     info:
       path: Mercury/Info.plist

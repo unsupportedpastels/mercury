@@ -36,10 +36,9 @@ core), also run:
 ./gradlew :shared:mercury-core:check
 ```
 
-Its common tests run on Linux; the Apple framework builds only on macOS, where
-building the iOS app additionally requires a JDK (Xcode invokes Gradle to
-produce the `MercuryCore` framework — without a JDK the spike compiles out and
-the app builds as before).
+Its common tests run on Linux; the Apple framework builds only on macOS.
+Building the iOS app requires a JDK (`brew install openjdk@17`): Xcode invokes
+Gradle to produce the `MercuryCore` framework, which the app now depends on.
 
 Use proportionate RED → GREEN → REFACTOR for reproducible bugs and testable behavior. Documentation, build configuration, and purely visual changes should use the most relevant validation instead—for example, a build/resource validation or inspected screenshots.
 
