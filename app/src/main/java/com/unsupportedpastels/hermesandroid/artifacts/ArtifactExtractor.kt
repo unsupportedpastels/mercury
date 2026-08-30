@@ -23,6 +23,9 @@ object ArtifactExtractor {
     private val typePrefixPattern = Regex("(?i)^(image|audio|file|video)\\s*:\\s*")
     private val imageExtensions = setOf("bmp", "gif", "heic", "jpeg", "jpg", "png", "tif", "tiff", "webp")
     private val audioExtensions = setOf("aac", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav")
+    // Mirrors ui/RemoteMediaImage.kt so the browser and the inline chat player
+    // agree on which MEDIA sources count as video.
+    private val videoExtensions = setOf("m4v", "mkv", "mov", "mp4", "webm")
 
     /** Extract from the text field of every transcript message, in message order. */
     fun extract(
@@ -258,8 +261,10 @@ object ArtifactExtractor {
         val extension = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
         return when {
             extension in imageExtensions -> ArtifactType.Image
+            extension in videoExtensions -> ArtifactType.Video
             extension in audioExtensions -> ArtifactType.Audio
             typePrefixPattern.find(labelHint.orEmpty())?.groupValues?.get(1)?.lowercase(Locale.ROOT) == "image" -> ArtifactType.Image
+            typePrefixPattern.find(labelHint.orEmpty())?.groupValues?.get(1)?.lowercase(Locale.ROOT) == "video" -> ArtifactType.Video
             typePrefixPattern.find(labelHint.orEmpty())?.groupValues?.get(1)?.lowercase(Locale.ROOT) == "audio" -> ArtifactType.Audio
             else -> ArtifactType.File
         }

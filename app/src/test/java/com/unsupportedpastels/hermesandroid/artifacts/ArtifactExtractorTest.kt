@@ -63,6 +63,28 @@ class ArtifactExtractorTest {
     }
 
     @Test
+    fun classifiesManagedAndRemoteVideoSources() {
+        val artifacts = ArtifactExtractor.extract(
+            """
+            MEDIA:/workspace/scene-00/preview.mp4
+            [Video: moving preview](https://cdn.example/previews/scene.webm?dl=1)
+            """.trimIndent(),
+        )
+
+        assertEquals(listOf(ArtifactType.Video, ArtifactType.Video), artifacts.map { it.type })
+        assertEquals(ArtifactOrigin.ManagedPath, artifacts[0].origin)
+        assertEquals(ArtifactOrigin.RemoteUrl, artifacts[1].origin)
+        assertEquals("preview.mp4", artifacts[0].displayName)
+    }
+
+    @Test
+    fun videoLabelPrefixClassifiesWithoutExtension() {
+        val artifacts = ArtifactExtractor.extract("[Video: demo](https://files.example/download)")
+
+        assertEquals(ArtifactType.Video, artifacts.single().type)
+    }
+
+    @Test
     fun rejectsUnsafeUrlsMalformedSourcesAndArbitraryProse() {
         val credentialedUrl = "https://user" + ":pass@example.com/secret.png"
         val artifacts = ArtifactExtractor.extract(

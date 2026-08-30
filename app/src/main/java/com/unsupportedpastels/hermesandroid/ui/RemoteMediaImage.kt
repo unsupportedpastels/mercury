@@ -111,12 +111,25 @@ internal fun hostResolvesToPublicNetwork(
 internal fun resolveHostToAddresses(host: String): List<InetAddress> =
     runCatching { InetAddress.getAllByName(host).toList() }.getOrElse { emptyList() }
 
+internal val gatewayImageMediaExtensions = setOf("png", "jpg", "jpeg", "webp", "gif")
+
+// Mirrors artifacts/ArtifactExtractor.kt so the artifact browser and the inline
+// chat player agree on which MEDIA sources count as video.
+internal val gatewayVideoMediaExtensions = setOf("m4v", "mkv", "mov", "mp4", "webm")
+
 internal fun validateGatewayMediaPath(value: String): Boolean =
     value.startsWith('/') &&
         '\u0000' !in value &&
         value.length in 2..4_096 &&
         value.substringAfterLast('.', missingDelimiterValue = "")
-            .lowercase() in setOf("png", "jpg", "jpeg", "webp", "gif")
+            .lowercase() in gatewayImageMediaExtensions
+
+internal fun validateGatewayVideoPath(value: String): Boolean =
+    value.startsWith('/') &&
+        '\u0000' !in value &&
+        value.length in 2..4_096 &&
+        value.substringAfterLast('.', missingDelimiterValue = "")
+            .lowercase() in gatewayVideoMediaExtensions
 
 internal fun HttpClientConfig<*>.configureRemoteImageHttpClient() {
     followRedirects = false

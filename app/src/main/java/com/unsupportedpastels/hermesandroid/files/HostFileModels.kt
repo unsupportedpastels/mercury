@@ -1,6 +1,7 @@
 package com.unsupportedpastels.hermesandroid.files
 
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import java.io.File
 
 const val MAX_HOST_FILE_ENTRIES = 500
 const val MAX_HOST_FILE_PATH_LENGTH = 1_024
@@ -41,6 +42,12 @@ data class HostFileContent(
 
     override fun hashCode(): Int = 31 * (31 * (31 * name.hashCode() + path.hashCode()) + mimeType.hashCode()) + bytes.contentHashCode()
 }
+
+/** A fully downloaded managed video cached on disk for local playback. */
+data class ManagedVideoMedia(
+    val file: File,
+    val mimeType: String,
+)
 
 data class HostFileScope(val origin: ServerOrigin, val profile: String) {
     init {

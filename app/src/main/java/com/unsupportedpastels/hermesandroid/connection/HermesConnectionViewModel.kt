@@ -32,6 +32,9 @@ import com.unsupportedpastels.hermesandroid.cache.EncryptedOfflineCacheRepositor
 import com.unsupportedpastels.hermesandroid.cache.OfflineCacheRepository
 import com.unsupportedpastels.hermesandroid.files.HostFileContent
 import com.unsupportedpastels.hermesandroid.files.HostFileListing
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoCache
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
+import java.io.File
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
 import com.unsupportedpastels.hermesandroid.gateway.ActiveRuntimeSession
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
@@ -108,6 +111,7 @@ import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.plugins.websocket.WebSockets
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
@@ -127,6 +131,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -331,7 +336,12 @@ class HermesConnectionViewModel(
     private val notifications: TurnNotificationController = NoOpTurnNotificationController,
     private val sessionFilterRepository: SessionFilterRepository? = null,
     private val speechStreamConnector: SpeechStreamConnector? = null,
+    private val videoCache: ManagedVideoCache? = null,
 ) : ViewModel() {
+    // Serializes downloads targeting the same origin/path cache entry, so two
+    // concurrent players of the same path never race on the shared `.part` file.
+    private val videoDownloadLocks = ConcurrentHashMap<String, Mutex>()
+
     private val mutableSnapshots = MutableStateFlow(HermesGatewaySnapshot())
     val snapshots: StateFlow<HermesGatewaySnapshot> = mutableSnapshots.asStateFlow()
 
@@ -2517,6 +2527,45 @@ class HermesConnectionViewModel(
         withHermesRestOperation { serverOrigin, accessToken ->
             client.downloadManagedImage(serverOrigin, accessToken, path)
         }
+
+    /**
+     * Previously downloaded managed video for [path], if present in the
+     * origin-scoped cache. Never touches the network; powers poster previews.
+     */
+    suspend fun peekManagedVideo(path: String): ManagedVideoMedia? {
+        val cache = videoCache ?: return null
+        val origin = activeOrigin ?: return null
+        return withContext(Dispatchers.IO) { cache.cached(origin, path) }
+    }
+
+    /**
+     * Download the managed video at [path] into the origin-scoped disk cache and
+     * return the local file for playback. Previously completed downloads are
+     * reused without hitting the network, and concurrent callers targeting the
+     * same entry are serialized behind a shared cache check.
+     */
+    suspend fun downloadManagedVideo(path: String): ManagedVideoMedia {
+        val cache = videoCache ?: throw HermesConnectionException("Managed videos are unavailable")
+        return withHermesRestOperation { serverOrigin, accessToken ->
+            val lock = videoDownloadLocks.computeIfAbsent(
+                "${serverOrigin.value}\u0000$path",
+            ) { Mutex() }
+            lock.withLock {
+                withContext(Dispatchers.IO) {
+                    cache.cached(serverOrigin, path) ?: run {
+                        val media = client.streamManagedVideoToFile(
+                            serverOrigin,
+                            accessToken,
+                            path,
+                            cache.destinationFor(serverOrigin, path),
+                        )
+                        cache.prune(serverOrigin, keep = media.file)
+                        media
+                    }
+                }
+            }
+        }
+    }
 
     suspend fun createProject(
         name: String,
@@ -6146,6 +6195,7 @@ class HermesConnectionViewModel(
                     ticketClient = KtorWsTicketClient(httpClient),
                     socketFactory = KtorSpeechWebSocketFactory(httpClient),
                 ),
+                videoCache = ManagedVideoCache(File(context.cacheDir, "managed-video")),
             ) as T
         }
     }
