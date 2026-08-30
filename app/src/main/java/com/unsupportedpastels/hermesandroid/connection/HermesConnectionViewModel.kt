@@ -26,6 +26,7 @@ import com.unsupportedpastels.hermesandroid.attachment.AttachmentPolicy
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentReadException
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentStager
 import com.unsupportedpastels.hermesandroid.attachment.ContentAttachmentByteReader
+import com.unsupportedpastels.hermesandroid.attachment.checkAdd
 import com.unsupportedpastels.hermesandroid.cache.CacheScope
 import com.unsupportedpastels.hermesandroid.cache.CachedSession
 import com.unsupportedpastels.hermesandroid.cache.EncryptedOfflineCacheRepository

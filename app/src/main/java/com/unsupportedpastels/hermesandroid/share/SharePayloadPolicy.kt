@@ -3,6 +3,7 @@ package com.unsupportedpastels.hermesandroid.share
 import com.unsupportedpastels.hermesandroid.app.ComposerAttachment
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentAddResult
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentPolicy
+import com.unsupportedpastels.hermesandroid.attachment.checkAdd
 
 /** Pure admission policy for untrusted Android share metadata. */
 object SharePayloadPolicy {

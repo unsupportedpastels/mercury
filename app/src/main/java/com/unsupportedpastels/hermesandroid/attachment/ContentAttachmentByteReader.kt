@@ -22,7 +22,7 @@ class ContentAttachmentByteReader(private val context: Context) : AttachmentByte
         }
         stream?.use { input ->
             try {
-                AttachmentPolicy.readBounded(input, capBytes)
+                AttachmentIo.readBounded(input, capBytes)
             } catch (error: AttachmentTooLargeException) {
                 throw error
             } catch (error: Exception) {

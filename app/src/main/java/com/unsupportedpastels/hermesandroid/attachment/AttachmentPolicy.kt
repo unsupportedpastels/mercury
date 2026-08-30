@@ -1,17 +1,11 @@
 package com.unsupportedpastels.hermesandroid.attachment
 
-import com.unsupportedpastels.hermesandroid.app.ComposerAttachment
-import java.io.InputStream
-
 /** Raised when a staged file exceeds its byte cap while streaming. */
 class AttachmentTooLargeException(
     val attachmentName: String,
     val capBytes: Long,
     actualBytes: Long,
 ) : Exception("Attachment '$attachmentName' is $actualBytes bytes; cap is $capBytes bytes")
-
-/** Raised when a staged file's bytes cannot be read at all. */
-class AttachmentReadException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /** Image attachments ride the session's queued-image list; everything else is a `@file:` ref. */
 enum class AttachmentKind { IMAGE, FILE }
@@ -27,14 +21,23 @@ data class StagedAttachments(
     val names: List<String>,
 )
 
-/** Reads a staged attachment's bytes on the client (the remote host cannot see content:// URIs). */
-fun interface AttachmentByteReader {
-    suspend fun readBytes(attachment: ComposerAttachment): ByteArray
-}
+/**
+ * The policy-relevant view of a staged attachment: platform-free so the policy
+ * can move to the shared KMP core. [dedupKey] identifies the underlying source
+ * (Android: the content:// URI) for duplicate rejection.
+ */
+data class AttachmentCandidate(
+    val dedupKey: String,
+    val displayName: String,
+    val mimeType: String?,
+    val sizeBytes: Long,
+)
 
 /**
  * Pure attachment policy: naming hygiene, image-vs-file routing, byte/count caps
- * (checked at metadata time AND again while streaming), and prompt-text assembly.
+ * (checked at metadata time AND again while staging), and prompt-text assembly.
+ * No platform imports — this object is the Phase 1 candidate for `commonMain`
+ * (docs/plans/kmp-shared-core.md); byte streaming lives in [AttachmentIo].
  */
 object AttachmentPolicy {
     const val MAX_ATTACHMENTS = 5
@@ -77,10 +80,10 @@ object AttachmentPolicy {
 
     /** Metadata-time admission: count cap, known-size per-kind cap, aggregate cap. */
     fun checkAdd(
-        existing: List<ComposerAttachment>,
-        candidate: ComposerAttachment,
+        existing: List<AttachmentCandidate>,
+        candidate: AttachmentCandidate,
     ): AttachmentAddResult {
-        if (existing.any { it.uri == candidate.uri }) {
+        if (existing.any { it.dedupKey == candidate.dedupKey }) {
             return AttachmentAddResult.Rejected("${candidate.displayName} is already attached")
         }
         if (existing.size >= MAX_ATTACHMENTS) {
@@ -100,23 +103,21 @@ object AttachmentPolicy {
     }
 
     /**
-     * Bounded streaming read: never materializes more than [capBytes] + 1 so an
-     * unknown-size or dishonest provider cannot exhaust the Android heap.
+     * Staging-time re-check of one attachment's actual byte count against its
+     * per-kind cap (metadata sizes can be absent or dishonest).
      */
-    fun readBounded(input: InputStream, capBytes: Long): ByteArray {
-        val out = java.io.ByteArrayOutputStream()
-        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-        var total = 0L
-        while (true) {
-            val read = input.read(buffer)
-            if (read < 0) break
-            total += read
-            if (total > capBytes) {
-                throw AttachmentTooLargeException("attachment", capBytes, total)
-            }
-            out.write(buffer, 0, read)
+    fun checkStagedSize(displayName: String, kind: AttachmentKind, actualBytes: Long) {
+        val capBytes = perKindCapBytes(kind)
+        if (actualBytes > capBytes) {
+            throw AttachmentTooLargeException(displayName, capBytes, actualBytes)
         }
-        return out.toByteArray()
+    }
+
+    /** Staging-time re-check of the running aggregate against the total cap. */
+    fun checkStagedAggregate(aggregateBytes: Long) {
+        if (aggregateBytes > MAX_AGGREGATE_BYTES) {
+            throw AttachmentTooLargeException("Total attachments", MAX_AGGREGATE_BYTES, aggregateBytes)
+        }
     }
 
     /**
