@@ -20,7 +20,7 @@ The app must remain an observer by default: it may not resume, take control of, 
 Install JDK 17 and the required Android SDK, add your SDK path to an untracked `local.properties`, then run:
 
 ```bash
-./gradlew testDebugUnitTest lintDebug assembleDebug validateDebugScreenshotTest
+./gradlew testDebugUnitTest lintDebug assembleDebug validateDebugScreenshotTest :shared:mercury-core:check
 ```
 
 For Android-code changes, run at least:
@@ -28,6 +28,18 @@ For Android-code changes, run at least:
 ```bash
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
+
+For changes touching `shared/mercury-core` (the Kotlin Multiplatform contract
+core), also run:
+
+```bash
+./gradlew :shared:mercury-core:check
+```
+
+Its common tests run on Linux; the Apple framework builds only on macOS, where
+building the iOS app additionally requires a JDK (Xcode invokes Gradle to
+produce the `MercuryCore` framework — without a JDK the spike compiles out and
+the app builds as before).
 
 Use proportionate RED → GREEN → REFACTOR for reproducible bugs and testable behavior. Documentation, build configuration, and purely visual changes should use the most relevant validation instead—for example, a build/resource validation or inspected screenshots.
 

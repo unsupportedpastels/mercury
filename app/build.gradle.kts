@@ -84,6 +84,9 @@ kotlin {
 }
 
 dependencies {
+  // Shared KMP contract core (Phase 0 spike; see docs/plans/kmp-shared-core.md)
+  implementation(project(":shared:mercury-core"))
+
   val composeBom = platform(libs.androidx.compose.bom)
   implementation(composeBom)
   androidTestImplementation(composeBom)

@@ -33,7 +33,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
 
       - name: Run verification gates
-        run: ./gradlew testDebugUnitTest lintDebug assembleDebug validateDebugScreenshotTest
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug validateDebugScreenshotTest :shared:mercury-core:check
 
       - name: Upload reports on failure
         if: failure()

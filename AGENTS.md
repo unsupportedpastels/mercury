@@ -38,6 +38,18 @@ Required gates for changed Android code:
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
+For changes touching `shared/mercury-core` (the KMP contract core), also run:
+
+```bash
+./gradlew :shared:mercury-core:check
+```
+
+The shared module's common tests run on Linux via the Android host-test
+target. Its Apple framework builds only on macOS (Apple targets are skipped
+elsewhere; force with `-Pmercury.enableAppleTargets=true`), so shared-module
+or iOS changes still require the Mac/Xcode gate — a green Linux build does not
+prove the generated framework is usable from Swift.
+
 For adaptive UI changes, also run the configured screenshot/UI test gates and test compact, medium, and expanded windows. Do not update screenshot references without visual review.
 
 ## Official project-local skills
