@@ -25,6 +25,17 @@ enum class LoopbackSessionBootstrapFailure {
     TransportFailure,
 }
 
+/**
+ * The loopback session bootstrap could not produce a credential. This is never a
+ * credential rejection: [reason] separates a tunnel that stopped forwarding
+ * ([LoopbackSessionBootstrapFailure.TransportFailure]) from a shell that no
+ * longer looks like the Hermes dashboard, so a dead port cannot clear a
+ * credential or masquerade as a sign-in prompt.
+ */
+class HermesLoopbackBootstrapException(
+    val reason: LoopbackSessionBootstrapFailure,
+) : HermesConnectionException("Hermes tunnel authorization bootstrap did not complete")
+
 sealed interface LoopbackSessionBootstrapResult {
     class Success(
         val credential: HermesCredential.LoopbackSession,

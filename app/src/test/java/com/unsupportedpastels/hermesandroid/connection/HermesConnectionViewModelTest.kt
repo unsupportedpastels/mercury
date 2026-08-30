@@ -85,6 +85,8 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -151,7 +153,11 @@ class HermesConnectionViewModelTest {
         )
         advanceUntilIdle()
         assertEquals(TunnelConnectionFailure.BootstrapRejected, rejected.snapshots.value.tunnelConnectionFailure)
-        assertEquals("Hermes tunnel authorization bootstrap was rejected", rejected.snapshots.value.connectionError)
+        assertEquals(
+            "Hermes tunnel authorization bootstrap was rejected. Verify that the tunnel points to " +
+                "the expected Hermes instance, then retry.",
+            rejected.snapshots.value.connectionError,
+        )
     }
 
     @Test
@@ -351,6 +357,183 @@ class HermesConnectionViewModelTest {
         assertEquals(mapOf(ModelSelection("nous", "hermes-4") to "low"), snapshot.profileModelReasoningOverrides)
         assertEquals(listOf("Tunnel session"), snapshot.durableSessions.map { it.title })
         assertEquals(2, bootstrap.calls)
+    }
+
+    @Test
+    fun unreachableTunnelDuringRecoveryIsNotReportedAsSignInRequired() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val client = RefreshRejectingTunnelClient()
+        val bootstrap = FlakyTunnelBootstrap(origin, listOf("connect-token", null))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        viewModel.refreshHomeData().join()
+        advanceUntilIdle()
+
+        val snapshot = viewModel.snapshots.value
+        // A tunnel that stopped forwarding is a transport failure, not a rejected
+        // credential: publishing SignInRequired here wedges every server that has
+        // no OAuth flow, because foreground reconnect then refuses to heal it.
+        assertNotEquals(AuthenticationState.SignInRequired, snapshot.authenticationState)
+        assertEquals(TunnelConnectionFailure.TunnelUnavailable, snapshot.tunnelConnectionFailure)
+        assertEquals(ConnectionState.Disconnected, snapshot.connectionState)
+    }
+
+    @Test
+    fun failedRecoveryBootstrapPublishesTerminalStateAndStaysRecoverable() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val client = ConcurrentHostReadTunnelClient(expectedConcurrentReads = 1)
+        val bootstrap = FlakyTunnelBootstrap(origin, listOf("connect-token", null, "retry-token"))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        val read = runCatching { viewModel.loadHostFiles("/workspace") }
+        advanceUntilIdle()
+
+        assertTrue(read.isFailure)
+        val failed = viewModel.snapshots.value
+        assertEquals(ConnectionState.Disconnected, failed.connectionState)
+        assertEquals(TunnelConnectionFailure.TunnelUnavailable, failed.tunnelConnectionFailure)
+        assertNotNull(failed.connectionError)
+        // Cached metadata stays visible, labelled offline rather than live.
+        assertEquals(listOf("Tunnel session"), failed.durableSessions.map { it.title })
+        assertEquals(CacheSource.Cached, failed.sessionMetadataSource)
+
+        viewModel.retryConnection().join()
+        advanceUntilIdle()
+
+        val recovered = viewModel.snapshots.value
+        assertEquals(ConnectionState.Connected, recovered.connectionState)
+        assertEquals(null, recovered.tunnelConnectionFailure)
+        assertEquals(CacheSource.Live, recovered.sessionMetadataSource)
+    }
+
+    @Test
+    fun twiceRejectedTunnelTranscriptDoesNotTriggerAnAutomaticReconnect() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val client = RejectingTranscriptTunnelClient()
+        val bootstrap = FlakyTunnelBootstrap(
+            origin,
+            listOf("connect-token", "recovery-token", "must-not-be-used"),
+        )
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        viewModel.openSession(DurableSessionId("tunnel-1")).join()
+        advanceUntilIdle()
+
+        // One connect probe only: a second one means the terminal state published
+        // by the recovery helper was erased by a full automatic reconnect.
+        assertEquals(1, client.probes)
+        assertEquals(2, bootstrap.calls)
+        assertEquals(2, client.transcriptReads)
+        assertEquals(
+            TunnelConnectionFailure.CredentialRejected,
+            viewModel.snapshots.value.tunnelConnectionFailure,
+        )
+    }
+
+    @Test
+    fun reconnectDuringRecoveryBootstrapKeepsTheReconnectCredential() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val rejectionGate = CompletableDeferred<Unit>()
+        val client = ConcurrentHostReadTunnelClient(
+            expectedConcurrentReads = 1,
+            rejectionGate = rejectionGate,
+        )
+        val bootstrap = SwitchableTunnelBootstrap()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        val read = async { runCatching { viewModel.loadHostFiles("/workspace") } }
+        advanceUntilIdle()
+        viewModel.retryConnection().join()
+        advanceUntilIdle()
+        rejectionGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertTrue(read.await().isFailure)
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+        // The reconnect installed the newest credential; a recovery scrape that
+        // started before it must never overwrite that record.
+        val afterRecovery = runCatching { viewModel.loadHostFiles("/workspace") }
+        advanceUntilIdle()
+        assertTrue(afterRecovery.isSuccess)
+        assertEquals(client.connectCredentials.last(), client.retryCredentials.last())
+    }
+
+    @Test
+    fun staleVoiceConfigWriteDoesNotRollBackTheReplacementOrigin() = runTest(dispatcher) {
+        val first = ServerOrigin.parse("https://a.hermes.example")
+        val second = ServerOrigin.parse("https://b.hermes.example")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(first))
+        val gate = CompletableDeferred<Unit>()
+        val client = GatedVoiceConfigClient(autoTtsOrigin = first, writeGate = gate)
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = settings,
+            client = client,
+        )
+        advanceUntilIdle()
+        viewModel.refreshVoiceCapabilities()
+        advanceUntilIdle()
+        assertTrue(viewModel.voiceServerConfig.value.autoTts)
+
+        val write = async { viewModel.setVoiceAutoTts(false) }
+        advanceUntilIdle()
+        settings.value = ServerSettingsState.Ready(second)
+        advanceUntilIdle()
+        viewModel.refreshVoiceCapabilities()
+        advanceUntilIdle()
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        write.await()
+        // The replacement origin advertises autoTts=false; a rollback from the
+        // replaced origin must not restore the old origin's value over it.
+        assertFalse(viewModel.voiceServerConfig.value.autoTts)
+    }
+
+    @Test
+    fun staleReasoningEffortWriteDoesNotLandOnTheNewProfileGeneration() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val gate = CompletableDeferred<Unit>()
+        val client = GatedReasoningEffortClient(writeGate = gate)
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin)),
+            client = client,
+        )
+        advanceUntilIdle()
+        viewModel.loadManagementSettings(profile = "default", refreshStatus = false).join()
+        advanceUntilIdle()
+
+        val write = async { viewModel.setProfileReasoningEffort("high") }
+        advanceUntilIdle()
+        // Two scope changes land back on the same profile name, so only the
+        // profile generation distinguishes the in-flight write's scope.
+        viewModel.loadManagementSettings(profile = "other", refreshStatus = false).join()
+        viewModel.loadManagementSettings(profile = "default", refreshStatus = false).join()
+        advanceUntilIdle()
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        write.await()
+        assertNotEquals("high", viewModel.snapshots.value.profileReasoningDefault)
     }
 
     @Test
@@ -3687,6 +3870,7 @@ private class ConcurrentHostReadTunnelClient(
     private val allArrived = CompletableDeferred<Unit>()
     private var arrivals = 0
     private var connectCredential: HermesCredential? = null
+    val connectCredentials = mutableListOf<HermesCredential>()
     val retryCredentials = mutableListOf<HermesCredential>()
     var readAttempts = 0
         private set
@@ -3703,6 +3887,7 @@ private class ConcurrentHostReadTunnelClient(
         profile: String,
         archivedOnly: Boolean,
     ): List<SessionSummary> {
+        connectCredentials += credential
         if (connectCredential == null) connectCredential = credential
         return listOf(SessionSummary(DurableSessionId("tunnel-1"), "Tunnel session"))
     }
@@ -3744,6 +3929,195 @@ private class ConcurrentHostReadTunnelClient(
     ): ByteArray {
         protectedRead(credential)
         return ByteArray(1)
+    }
+}
+
+/** Bootstrap whose outcomes are scripted; a null entry is a transport failure. */
+private class FlakyTunnelBootstrap(
+    private val origin: ServerOrigin,
+    private val outcomes: List<String?>,
+) : LoopbackSessionBootstrapClient {
+    var calls = 0
+        private set
+
+    override suspend fun bootstrap(origin: ServerOrigin): LoopbackSessionBootstrapResult {
+        assertEquals(this.origin, origin)
+        if (calls >= outcomes.size) throw AssertionError("Unexpected bootstrap attempt #${calls + 1}")
+        val token = outcomes[calls]
+        calls += 1
+        return if (token == null) {
+            LoopbackSessionBootstrapResult.Failure(LoopbackSessionBootstrapFailure.TransportFailure)
+        } else {
+            LoopbackSessionBootstrapResult.Success(HermesCredential.LoopbackSession.create(origin, token))
+        }
+    }
+}
+
+/**
+ * Connects once, then rejects every later profile-session read, so a home
+ * refresh is what drives the loopback recovery epoch.
+ */
+private class RefreshRejectingTunnelClient : HermesConnectionClient {
+    private var connectCredential: HermesCredential? = null
+
+    override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo =
+        throw AssertionError("Tunnel connection must use the public-only probe")
+
+    override suspend fun probeExternalTunnel(serverOrigin: ServerOrigin) =
+        HermesConnectionInfo("0.20.4", false, false, emptyList())
+
+    override suspend fun loadSessionsForProfile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        archivedOnly: Boolean,
+    ): List<SessionSummary> {
+        if (connectCredential == null) {
+            connectCredential = credential
+            return listOf(SessionSummary(DurableSessionId("tunnel-1"), "Tunnel session"))
+        }
+        throw HermesAuthenticationRejectedException("Hermes sessions returned HTTP 401")
+    }
+}
+
+/** Rejects every transcript read with the unauthorized subtype. */
+private class RejectingTranscriptTunnelClient : HermesConnectionClient {
+    var probes = 0
+        private set
+    var transcriptReads = 0
+        private set
+
+    override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo =
+        throw AssertionError("Tunnel connection must use the public-only probe")
+
+    override suspend fun probeExternalTunnel(serverOrigin: ServerOrigin): HermesConnectionInfo {
+        probes += 1
+        return HermesConnectionInfo("0.20.4", false, false, emptyList())
+    }
+
+    override suspend fun loadSessionsForProfile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        archivedOnly: Boolean,
+    ): List<SessionSummary> = listOf(SessionSummary(DurableSessionId("tunnel-1"), "Tunnel session"))
+
+    override suspend fun loadTranscript(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        durableSessionId: DurableSessionId,
+    ): List<ChatMessage> {
+        transcriptReads += 1
+        throw HermesUnauthorizedException()
+    }
+}
+
+/**
+ * Auth-free server whose voice config is origin-specific, with the config write
+ * held open so an origin change can land before the optimistic rollback.
+ */
+private class GatedVoiceConfigClient(
+    private val autoTtsOrigin: ServerOrigin,
+    private val writeGate: CompletableDeferred<Unit>,
+) : HermesConnectionClient {
+    override suspend fun probe(serverOrigin: ServerOrigin) =
+        HermesConnectionInfo("0.20.4", false, false, emptyList())
+
+    override suspend fun loadSessionsForProfile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        archivedOnly: Boolean,
+    ): List<SessionSummary> = emptyList()
+
+    override suspend fun probeVoiceCapabilities(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+    ): VoiceCapabilities = VoiceCapabilities.NONE
+
+    override suspend fun loadVoiceServerConfig(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+    ): VoiceServerConfig = VoiceServerConfig.DEFAULT.copy(autoTts = serverOrigin == autoTtsOrigin)
+
+    override suspend fun updateServerConfig(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        config: JsonObject,
+    ): Boolean {
+        writeGate.await()
+        return false
+    }
+}
+
+/**
+ * Auth-free server with per-profile reasoning values and a held-open reasoning
+ * write, so a profile-generation change can land while the write is in flight.
+ */
+private class GatedReasoningEffortClient(
+    private val writeGate: CompletableDeferred<Unit>,
+) : HermesConnectionClient {
+    override suspend fun probe(serverOrigin: ServerOrigin) =
+        HermesConnectionInfo("0.20.4", false, false, emptyList())
+
+    override suspend fun loadSessionsForProfile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        archivedOnly: Boolean,
+    ): List<SessionSummary> = emptyList()
+
+    override suspend fun loadProfiles(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+    ): List<String> = listOf("default", "other")
+
+    override suspend fun loadDefaultModelOptions(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+    ): ModelOptions = ModelOptions(
+        current = ModelSelection("nous", "hermes-4"),
+        providers = listOf(ModelProviderOption("nous", "Nous", listOf("hermes-4"))),
+        profile = profile,
+    )
+
+    override suspend fun loadCurrentModelInfo(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+    ): CurrentModelInfo = CurrentModelInfo(
+        profile = profile,
+        model = "hermes-4",
+        provider = "nous",
+        effectiveContextLength = null,
+        capabilities = ModelCapabilities(),
+    )
+
+    override suspend fun loadProfileReasoningEffort(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        provider: String,
+        model: String,
+    ): String? = if (profile == "other") "medium" else "low"
+
+    override suspend fun loadProfileReasoningDefault(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+    ): String? = if (profile == "other") "medium" else "low"
+
+    override suspend fun setProfileReasoningEffort(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        effort: String,
+    ) {
+        writeGate.await()
     }
 }
 
