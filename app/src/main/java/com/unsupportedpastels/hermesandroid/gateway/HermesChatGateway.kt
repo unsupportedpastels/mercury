@@ -15,6 +15,7 @@ import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
 import com.unsupportedpastels.hermesandroid.connection.readBodyTextBounded
+import com.unsupportedpastels.mercury.core.transcript.ChatEventDecoder
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.webSocketSession
 import io.ktor.client.request.bearerAuth
@@ -62,13 +63,13 @@ private const val MAX_CONFIGURED_FRAME_BYTES = HERMES_CHAT_MAX_FRAME_BYTES
 private const val DEFAULT_MAX_FRAME_BYTES = MAX_CONFIGURED_FRAME_BYTES
 private const val MAX_TICKET_RESPONSE_BYTES = 16 * 1024
 private const val MAX_EVENT_BUFFER = 128
-internal const val HERMES_CHAT_MAX_EVENT_ID_CHARS = 256
-internal const val HERMES_CHAT_MAX_EVENT_NAME_CHARS = 256
-internal const val HERMES_CHAT_MAX_EVENT_TEXT_CHARS = 4_096
-internal const val HERMES_CHAT_MAX_MESSAGE_TEXT_CHARS = 1024 * 1024
-internal const val HERMES_CHAT_MAX_EVENT_CONTEXT_CHARS = 4_096
-internal const val HERMES_CHAT_MAX_EVENT_CHOICE_CHARS = 256
-internal const val HERMES_CHAT_MAX_EVENT_CHOICES = 32
+internal const val HERMES_CHAT_MAX_EVENT_ID_CHARS = ChatEventDecoder.MAX_EVENT_ID_CHARS
+internal const val HERMES_CHAT_MAX_EVENT_NAME_CHARS = ChatEventDecoder.MAX_EVENT_NAME_CHARS
+internal const val HERMES_CHAT_MAX_EVENT_TEXT_CHARS = ChatEventDecoder.MAX_EVENT_TEXT_CHARS
+internal const val HERMES_CHAT_MAX_MESSAGE_TEXT_CHARS = ChatEventDecoder.MAX_MESSAGE_TEXT_CHARS
+internal const val HERMES_CHAT_MAX_EVENT_CONTEXT_CHARS = ChatEventDecoder.MAX_EVENT_CONTEXT_CHARS
+internal const val HERMES_CHAT_MAX_EVENT_CHOICE_CHARS = ChatEventDecoder.MAX_EVENT_CHOICE_CHARS
+internal const val HERMES_CHAT_MAX_EVENT_CHOICES = ChatEventDecoder.MAX_EVENT_CHOICES
 const val DEFAULT_PROJECT_PREVIEW_LIMIT = 3
 const val DEFAULT_PROJECT_SESSION_LIMIT = 500
 private const val MAX_PROJECT_PREVIEW_LIMIT = 3
@@ -1339,7 +1340,7 @@ class HermesChatConnection internal constructor(
         if (message.stringValue("jsonrpc") != "2.0") return
 
         if (message.stringValue("method") == "event") {
-            handleEvent(message)
+            handleSharedEvent(message)
             return
         }
 
@@ -1367,257 +1368,46 @@ class HermesChatConnection internal constructor(
         }
     }
 
-    private fun handleEvent(message: JsonObject) {
+    private fun handleSharedEvent(message: JsonObject) {
         val params = message["params"] as? JsonObject ?: return
-        val sessionId = params.boundedRequired("session_id", HERMES_CHAT_MAX_EVENT_ID_CHARS)?.let {
-            runCatching { RuntimeSessionId(it) }.getOrNull()
-        } ?: return
+        val sessionId = params.boundedRequired("session_id", ChatEventDecoder.MAX_EVENT_ID_CHARS)
+            ?: return
         val type = params.stringValue("type") ?: return
-        val knownTypes = setOf(
-            "message.start",
-            "message.delta",
-            "message.complete",
-            "error",
-            "tool.start",
-            "tool.complete",
-            "tool.generating",
-            "status.update",
-            "clarify.request",
-            "clarify.expire",
-            "approval.request",
-            "approval.expire",
-            "secret.request",
-            "secret.expire",
-            "sudo.request",
-            "sudo.expire",
-            "terminal.read.request",
-            "terminal.read.expire",
-            "preview.read.request",
-            "preview.read.expire",
-            "window.read.request",
-            "window.read.expire",
-            "session.info",
-            "session.title",
-            "reasoning.delta",
-            "reasoning.available",
-            "message.interim",
-            // Intentionally ignored (no mobile surface in HAM): gateway.ready,
-            // skin.changed, sessions.changed, cron.changed, pet.changed,
-            // thinking.delta (spinner copy, not model reasoning), reaction,
-            // moa.*, voice.*, wake.detected, browser.progress,
-            // terminal.close, notification.clear, preview.restart.progress.
-            // They are display chrome or desktop-only affordances; HAM polls
-            // session lists instead of trusting change events.
-        )
-        if (type !in knownTypes) return
-        val payload = params["payload"] as? JsonObject ?: return
-        val event = when (type) {
-            "message.start" -> HermesChatEvent.MessageStart(
-                sessionId = sessionId,
-                text = payload.boundedText("text", HERMES_CHAT_MAX_MESSAGE_TEXT_CHARS),
-            )
-
-            "message.delta" -> payload.boundedText("text", HERMES_CHAT_MAX_MESSAGE_TEXT_CHARS)?.let { text ->
-                HermesChatEvent.MessageDelta(sessionId, text)
-            }
-
-            "message.complete" -> HermesChatEvent.MessageComplete(
-                sessionId = sessionId,
-                text = payload.boundedText("text", HERMES_CHAT_MAX_MESSAGE_TEXT_CHARS),
-                status = payload.boundedOptional("status", HERMES_CHAT_MAX_EVENT_NAME_CHARS),
-                error = payload.boundedOptional("error", HERMES_CHAT_MAX_EVENT_TEXT_CHARS),
-                reasoning = payload.boundedText("reasoning", HERMES_CHAT_MAX_MESSAGE_TEXT_CHARS),
-                warning = payload.boundedOptional("warning", HERMES_CHAT_MAX_EVENT_TEXT_CHARS),
-                failureReason = payload.boundedOptional("failure_reason", HERMES_CHAT_MAX_EVENT_TEXT_CHARS),
-                recoverable = payload.booleanValue("recoverable") ?: false,
-                billing = (payload["billing"] as? JsonObject)?.let { billing ->
-                    HermesChatEvent.BillingInfo(
-                        provider = billing.boundedOptional("provider", MAX_MODEL_PROVIDER_CHARS),
-                        billingUrl = billing.boundedOptional("billing_url", HERMES_CHAT_MAX_EVENT_TEXT_CHARS),
-                        isNous = billing.booleanValue("is_nous") ?: false,
-                        message = billing.boundedOptional("message", HERMES_CHAT_MAX_EVENT_TEXT_CHARS),
-                    )
-                },
-            )
-
-            "reasoning.delta", "reasoning.available" ->
-                payload.boundedText("text", HERMES_CHAT_MAX_MESSAGE_TEXT_CHARS)?.let { text ->
-                    HermesChatEvent.ReasoningDelta(
-                        sessionId = sessionId,
-                        text = text,
-                        replace = type == "reasoning.available",
-                    )
-                }
-
-            "message.interim" -> payload.boundedText("text", HERMES_CHAT_MAX_MESSAGE_TEXT_CHARS)?.let { text ->
-                HermesChatEvent.MessageInterim(
-                    sessionId = sessionId,
-                    text = text,
-                    alreadyStreamed = payload.booleanValue("already_streamed") ?: false,
-                )
-            }
-
-            "tool.generating" -> payload.boundedRequired("name", HERMES_CHAT_MAX_EVENT_NAME_CHARS)
-                ?.let { HermesChatEvent.ToolGenerating(sessionId, it) }
-
-            "session.title" -> payload.boundedRequired("title", HERMES_CHAT_MAX_EVENT_NAME_CHARS)
-                ?.let { HermesChatEvent.SessionTitle(sessionId, it) }
-
-            "session.info" -> HermesChatEvent.SessionInfo(
-                sessionId = sessionId,
-                storedSessionId = payload.boundedOptional(
-                    "stored_session_id",
-                    ProjectSummary.MAX_SESSION_TITLE_LENGTH,
-                )?.let { runCatching { DurableSessionId(it) }.getOrNull() },
-                model = payload.boundedOptional("model", MAX_MODEL_ID_CHARS),
-                provider = payload.boundedOptional("provider", MAX_MODEL_PROVIDER_CHARS),
-                reasoningEffort = payload.boundedOptional(
-                    "reasoning_effort",
-                    HERMES_CHAT_MAX_EVENT_NAME_CHARS,
-                ),
-                title = payload.boundedOptional("title", HERMES_CHAT_MAX_EVENT_NAME_CHARS),
-                running = payload.booleanValue("running"),
-            )
-
-            "error" -> payload.boundedOptional("message", HERMES_CHAT_MAX_EVENT_TEXT_CHARS)
-                ?.let { HermesChatEvent.Error(sessionId, it) }
-
-            "tool.start" -> {
-                val toolId = payload.boundedRequired("tool_id", HERMES_CHAT_MAX_EVENT_ID_CHARS)
-                val name = payload.boundedRequired("name", HERMES_CHAT_MAX_EVENT_NAME_CHARS)
-                if (toolId == null || name == null) {
-                    null
-                } else {
-                    HermesChatEvent.ToolStart(
-                        sessionId = sessionId,
-                        toolId = toolId,
-                        name = name,
-                        context = payload.boundedOptional("context", HERMES_CHAT_MAX_EVENT_CONTEXT_CHARS),
-                        todos = payload.boundedTodoItems(),
-                    )
-                }
-            }
-
-            "tool.complete" -> {
-                val toolId = payload.boundedRequired("tool_id", HERMES_CHAT_MAX_EVENT_ID_CHARS)
-                val name = payload.boundedRequired("name", HERMES_CHAT_MAX_EVENT_NAME_CHARS)
-                if (toolId == null || name == null) {
-                    null
-                } else {
-                    HermesChatEvent.ToolComplete(
-                        sessionId = sessionId,
-                        toolId = toolId,
-                        name = name,
-                        summary = payload.boundedOptional("summary", HERMES_CHAT_MAX_EVENT_TEXT_CHARS),
-                        todos = payload.boundedTodoItems(),
-                    )
-                }
-            }
-
-            "status.update" -> {
-                val kind = payload.boundedRequired("kind", HERMES_CHAT_MAX_EVENT_NAME_CHARS)
-                val text = payload.boundedRequired("text", HERMES_CHAT_MAX_EVENT_TEXT_CHARS)
-                if (kind == null || text == null) null else HermesChatEvent.StatusUpdate(sessionId, kind, text)
-            }
-
-            "clarify.request" -> {
-                val requestId = payload.boundedRequired("request_id", HERMES_CHAT_MAX_EVENT_ID_CHARS)
-                val question = payload.boundedRequired("question", HERMES_CHAT_MAX_EVENT_TEXT_CHARS)
-                if (requestId == null || question == null) {
-                    null
-                } else {
-                    HermesChatEvent.ClarifyRequest(
-                        sessionId = sessionId,
-                        requestId = requestId,
-                        question = question,
-                        choices = payload.boundedChoices(),
-                        multiSelect = payload.booleanValue("multi_select") ?: false,
-                    )
-                }
-            }
-
-            "clarify.expire" -> payload.boundedRequired("request_id", HERMES_CHAT_MAX_EVENT_ID_CHARS)
-                ?.let { HermesChatEvent.ClarifyExpire(sessionId, it) }
-
-            "approval.request" -> {
-                val choices = payload.boundedChoices()
-                if (choices.isEmpty()) {
-                    null
-                } else {
-                    val approval = HermesChatEvent.ApprovalRequest(
-                        sessionId = sessionId,
-                        requestId = payload.boundedOptional("request_id", HERMES_CHAT_MAX_EVENT_ID_CHARS),
-                        command = payload.boundedOptional("command", HERMES_CHAT_MAX_EVENT_TEXT_CHARS),
-                        description = payload.boundedOptional("description", HERMES_CHAT_MAX_EVENT_TEXT_CHARS),
-                        choices = choices,
-                    )
-                    synchronized(interactionLock) {
-                        pendingApprovals.getOrPut(sessionId.value) { ArrayDeque() }
-                            .addLast(
-                                PendingApproval(
-                                    requestId = approval.requestId,
-                                    command = approval.command,
-                                    description = approval.description,
-                                    choices = choices,
-                                ),
-                            )
-                    }
-                    approval
-                }
-            }
-
-            "approval.expire" -> payload.boundedRequired("request_id", HERMES_CHAT_MAX_EVENT_ID_CHARS)
-                ?.let { requestId ->
-                    synchronized(interactionLock) {
-                        pendingApprovals[sessionId.value]?.let { queue ->
-                            queue.removeIf { it.requestId == requestId }
-                            if (queue.isEmpty()) pendingApprovals.remove(sessionId.value)
-                        }
-                    }
-                    HermesChatEvent.ApprovalExpire(sessionId, requestId)
-                }
-
-            "secret.request", "sudo.request", "terminal.read.request",
-            "preview.read.request", "window.read.request",
-            -> {
-                val requestId = payload.boundedRequired("request_id", HERMES_CHAT_MAX_EVENT_ID_CHARS)
-                val kind = when (type) {
-                    "secret.request" -> UnsupportedBlockingKind.Secret
-                    "sudo.request" -> UnsupportedBlockingKind.Sudo
-                    "preview.read.request" -> UnsupportedBlockingKind.PreviewRead
-                    "window.read.request" -> UnsupportedBlockingKind.WindowRead
-                    else -> UnsupportedBlockingKind.TerminalRead
-                }
-                requestId?.let {
-                    HermesChatEvent.UnsupportedBlockingRequest(
-                        sessionId = sessionId,
-                        kind = kind,
-                        requestId = it,
-                        prompt = payload.boundedOptional("prompt", HERMES_CHAT_MAX_EVENT_TEXT_CHARS),
-                    )
-                }
-            }
-
-            "secret.expire", "sudo.expire", "terminal.read.expire",
-            "preview.read.expire", "window.read.expire",
-            -> {
-                val requestId = payload.boundedRequired("request_id", HERMES_CHAT_MAX_EVENT_ID_CHARS)
-                val kind = when (type) {
-                    "secret.expire" -> UnsupportedBlockingKind.Secret
-                    "sudo.expire" -> UnsupportedBlockingKind.Sudo
-                    "preview.read.expire" -> UnsupportedBlockingKind.PreviewRead
-                    "window.read.expire" -> UnsupportedBlockingKind.WindowRead
-                    else -> UnsupportedBlockingKind.TerminalRead
-                }
-                requestId?.let { HermesChatEvent.UnsupportedBlockingExpire(sessionId, kind, it) }
-            }
-
-            else -> null
+        val payloadElement = params["payload"] ?: return
+        val shared = ChatEventDecoder.decode(type, sessionId, payloadElement.toString()) ?: return
+        val payload = payloadElement as? JsonObject
+        val todos = if (shared is com.unsupportedpastels.mercury.core.transcript.ChatEvent.ToolStart ||
+            shared is com.unsupportedpastels.mercury.core.transcript.ChatEvent.ToolComplete
+        ) {
+            payload?.boundedTodoItems()
+        } else {
+            null
         }
-        // With DROP_OLDEST the send only fails once the channel is closed, which
-        // teardown already handles; a full buffer silently sheds the oldest event.
-        if (event != null) eventChannel.trySend(event)
+        val event = shared.toAndroidEvent(todos) ?: return
+
+        when (event) {
+            is HermesChatEvent.ApprovalRequest -> synchronized(interactionLock) {
+                pendingApprovals.getOrPut(event.sessionId.value) { ArrayDeque() }
+                    .addLast(
+                        PendingApproval(
+                            requestId = event.requestId,
+                            command = event.command,
+                            description = event.description,
+                            choices = event.choices,
+                        ),
+                    )
+            }
+            is HermesChatEvent.ApprovalExpire -> synchronized(interactionLock) {
+                pendingApprovals[event.sessionId.value]?.let { queue ->
+                    queue.removeIf { it.requestId == event.requestId }
+                    if (queue.isEmpty()) pendingApprovals.remove(event.sessionId.value)
+                }
+            }
+            else -> Unit
+        }
+        eventChannel.trySend(event)
     }
+
 
     private fun parseResumeResult(
         result: JsonObject,
@@ -1804,16 +1594,6 @@ class HermesChatConnection internal constructor(
     }
 }
 
-private fun JsonObject.boundedChoices(): List<String> =
-    (this["choices"] as? JsonArray)
-        .orEmpty()
-        .mapNotNull { element ->
-            (element as? JsonPrimitive)?.contentOrNull
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() && it.length <= HERMES_CHAT_MAX_EVENT_CHOICE_CHARS }
-        }
-        .distinct()
-        .take(HERMES_CHAT_MAX_EVENT_CHOICES)
 
 private const val MAX_TODO_PARSE_DEPTH = 2
 private val todoJson = Json { ignoreUnknownKeys = true }
@@ -1937,18 +1717,6 @@ private fun String.isSafeProcessText(): Boolean = all {
     !it.isISOControl() || it == '\n' || it == '\r' || it == '\t'
 }
 
-/**
- * Bounded read for message TEXT fields (message.start/delta/complete).
- *
- * Unlike [boundedOptional] this never trims: streaming tokenizers attach the
- * inter-word space to the FRONT of the next token ("HE", " WORLD"), so trimming
- * each delta destroys word boundaries and jams the streamed text together.
- * Metadata fields (status, error, question, ...) keep the trimming read.
- */
-private fun JsonObject.boundedText(name: String, maxChars: Int): String? =
-    stringValue(name)
-        ?.takeIf(String::isNotEmpty)
-        ?.take(maxChars)
 
 private fun JsonObject.stringValue(name: String): String? =
     (this[name] as? JsonPrimitive)?.contentOrNull

@@ -4385,36 +4385,11 @@ class HermesConnectionViewModel(
                     return@collect
                 }
                 when (event) {
-                    is HermesChatEvent.MessageStart -> updateAssistant(durableSessionId) { current ->
-                        event.text ?: current
-                    }
-                    is HermesChatEvent.MessageDelta -> updateAssistant(durableSessionId) { current ->
-                        current + event.text
-                    }
-                    is HermesChatEvent.ReasoningDelta -> appendAssistantReasoning(
-                        durableSessionId,
-                        event.text,
-                        event.replace,
-                    )
-                    is HermesChatEvent.MessageInterim -> updateChat(durableSessionId) { current ->
-                        if (event.text.isBlank()) {
-                            current
-                        } else {
-                            val messages = current.messages.toMutableList()
-                            val streamingIndex = messages.indexOfLast {
-                                it.role == ChatMessageRole.Assistant && it.isStreaming
-                            }
-                            if (streamingIndex >= 0) {
-                                messages[streamingIndex] = messages[streamingIndex].copy(
-                                    text = event.text,
-                                    isStreaming = false,
-                                )
-                            } else {
-                                messages += ChatMessage(ChatMessageRole.Assistant, event.text)
-                            }
-                            current.copy(messages = messages)
-                        }
-                    }
+                    is HermesChatEvent.MessageStart,
+                    is HermesChatEvent.MessageDelta,
+                    is HermesChatEvent.ReasoningDelta,
+                    is HermesChatEvent.MessageInterim,
+                    -> updateChat(durableSessionId) { it.applyTranscriptEvent(event) }
                     is HermesChatEvent.ToolGenerating -> updateRunState(durableSessionId, event)
                     is HermesChatEvent.SessionTitle -> updateSessionTitle(
                         durableSessionId,
@@ -4437,31 +4412,7 @@ class HermesConnectionViewModel(
                         }
                     }
                     is HermesChatEvent.MessageComplete -> {
-                        // The interrupt sentinel is cancellation metadata, not
-                        // assistant prose (hermes-agent #7921): keep the streamed
-                        // buffer instead of quoting it, and drop the bubble
-                        // entirely when the interrupted turn streamed nothing.
-                        val sentinelSuppressed =
-                            event.text?.let(InterruptSentinel::isInterruptSentinel) == true
-                        val finalText = event.text.takeUnless { sentinelSuppressed }
-                        updateAssistant(durableSessionId, streaming = false) { current ->
-                            finalText ?: current
-                        }
-                        if (sentinelSuppressed) {
-                            updateChat(durableSessionId) { current ->
-                                val messages = current.messages.toMutableList()
-                                val index = messages.indexOfLast { it.role == ChatMessageRole.Assistant }
-                                if (index >= 0 &&
-                                    messages[index].text.isBlank() &&
-                                    messages[index].reasoningText.isBlank()
-                                ) {
-                                    messages.removeAt(index)
-                                    current.copy(messages = messages)
-                                } else {
-                                    current
-                                }
-                            }
-                        }
+                        updateChat(durableSessionId) { it.applyTranscriptEvent(event) }
                         val billingNotice = event.billing?.let { billing ->
                             ChatBillingNotice(
                                 provider = billing.provider,
@@ -4482,22 +4433,6 @@ class HermesConnectionViewModel(
                                 null
                             } else {
                                 "Hermes response failed"
-                            }
-                        }
-                        event.reasoning?.takeIf(String::isNotBlank)?.let { reasoning ->
-                            updateChat(durableSessionId) { current ->
-                                val messages = current.messages.toMutableList()
-                                val index = messages.indexOfLast {
-                                    it.role == ChatMessageRole.Assistant
-                                }
-                                if (index >= 0 && messages[index].reasoningText.isBlank()) {
-                                    messages[index] = messages[index].copy(
-                                        reasoningText = reasoning,
-                                    )
-                                    current.copy(messages = messages)
-                                } else {
-                                    current
-                                }
                             }
                         }
                         updateChat(durableSessionId) {
@@ -4527,9 +4462,8 @@ class HermesConnectionViewModel(
                         )
                     }
                     is HermesChatEvent.Error -> {
-                        updateAssistant(durableSessionId, streaming = false) { current -> current }
                         updateChat(durableSessionId) {
-                            it.copy(
+                            it.applyTranscriptEvent(event).copy(
                                 isSending = false,
                                 error = event.message.take(160),
                                 runState = it.runState.reduce(event),
@@ -4885,58 +4819,6 @@ class HermesConnectionViewModel(
         )
     }
 
-    private fun updateAssistant(
-        durableSessionId: DurableSessionId,
-        streaming: Boolean = true,
-        transform: (String) -> String,
-    ) {
-        updateChat(durableSessionId) { current ->
-            val messages = current.messages.toMutableList()
-            val index = messages.indexOfLast {
-                it.role == ChatMessageRole.Assistant && it.isStreaming
-            }
-            if (index >= 0) {
-                messages[index] = messages[index].copy(
-                    text = transform(messages[index].text),
-                    isStreaming = streaming,
-                )
-            } else {
-                messages += ChatMessage(
-                    role = ChatMessageRole.Assistant,
-                    text = transform(""),
-                    isStreaming = streaming,
-                )
-            }
-            current.copy(messages = messages)
-        }
-    }
-
-    private fun appendAssistantReasoning(
-        durableSessionId: DurableSessionId,
-        text: String,
-        replace: Boolean,
-    ) {
-        if (text.isBlank()) return
-        updateChat(durableSessionId) { current ->
-            val messages = current.messages.toMutableList()
-            val index = messages.indexOfLast {
-                it.role == ChatMessageRole.Assistant && it.isStreaming
-            }
-            if (index >= 0) {
-                messages[index] = messages[index].copy(
-                    reasoningText = if (replace) text else messages[index].reasoningText + text,
-                )
-            } else {
-                messages += ChatMessage(
-                    role = ChatMessageRole.Assistant,
-                    text = "",
-                    reasoningText = text,
-                    isStreaming = true,
-                )
-            }
-            current.copy(messages = messages)
-        }
-    }
 
     private fun updateSessionTitle(
         durableSessionId: DurableSessionId,

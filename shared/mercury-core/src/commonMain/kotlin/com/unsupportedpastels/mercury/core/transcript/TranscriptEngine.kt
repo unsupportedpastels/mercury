@@ -102,8 +102,16 @@ object TranscriptEngine {
         TranscriptSnapshot(adoptsLiveTitles = isNewSession)
 
     fun apply(state: TranscriptSnapshot, event: ChatEvent): TranscriptSnapshot = when (event) {
-        is ChatEvent.MessageStart ->
-            state.appendRow(role = "assistant", text = event.text ?: "", completed = false)
+        is ChatEvent.MessageStart -> {
+            val last = state.lastOpenAssistantIndex()
+            if (last != null) {
+                state.updateRow(last) { row ->
+                    event.text?.let { row.copy(text = it) } ?: row
+                }
+            } else {
+                state.appendRow(role = "assistant", text = event.text ?: "", completed = false)
+            }
+        }
 
         is ChatEvent.MessageDelta -> {
             val last = state.lastOpenAssistantIndex()
@@ -121,11 +129,20 @@ object TranscriptEngine {
             // its streamed buffer, and drop the row when nothing was streamed.
             val sentinelSuppressed = event.text?.let(InterruptSentinel::isInterruptSentinel) ?: false
             val finalText = if (sentinelSuppressed) null else event.text
+            val finalReasoning = event.reasoning?.takeUnless { it.isSpaceBlank() }
             val last = state.lastOpenAssistantIndex()
             val next = when {
                 last != null -> {
                     var updated = state.updateRow(last) {
-                        it.copy(text = finalText ?: it.text, completed = true)
+                        it.copy(
+                            text = finalText ?: it.text,
+                            reasoningText = if (it.reasoningText.isSpaceBlank()) {
+                                finalReasoning ?: it.reasoningText
+                            } else {
+                                it.reasoningText
+                            },
+                            completed = true,
+                        )
                     }
                     val row = updated.rows[last]
                     if (sentinelSuppressed && row.text.isSpaceBlank() && row.reasoningText.isSpaceBlank()) {
@@ -134,7 +151,14 @@ object TranscriptEngine {
                     updated
                 }
                 finalText != null ->
-                    state.appendRow(role = "assistant", text = finalText, completed = true)
+                    state.appendRow(
+                        role = "assistant",
+                        text = finalText,
+                        completed = true,
+                        reasoningText = finalReasoning.orEmpty(),
+                    )
+                finalReasoning != null ->
+                    state.appendRow(role = "assistant", text = "", completed = true, reasoningText = finalReasoning)
                 else -> state
             }
             next.finishRunningTools()
@@ -177,7 +201,7 @@ object TranscriptEngine {
         }
 
         is ChatEvent.Error ->
-            state.copy(lastError = event.message).finishRunningTools()
+            finishStreamingAssistant(state.copy(lastError = event.message))
 
         is ChatEvent.ToolStart -> {
             val boundedId = event.toolId.take(MAX_TOOL_FIELD_LENGTH)

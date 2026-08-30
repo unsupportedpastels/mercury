@@ -2,8 +2,8 @@ package com.unsupportedpastels.mercury.core.transcript
 
 /**
  * Typed chat-event surface shared by both clients, mirroring the Hermes wire
- * event set. Wire decoding stays platform-side for now; this is the input
- * alphabet of the shared transcript engine.
+ * event set. [ChatEventDecoder] owns tolerant bounded payload decoding while
+ * each platform retains its native transport envelope and lifecycle.
  */
 enum class UnsupportedBlockingKind {
     Secret,

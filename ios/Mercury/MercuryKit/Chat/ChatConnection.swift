@@ -1,4 +1,5 @@
 import Foundation
+import MercuryCore
 
 // MARK: - Chat connection state machine
 //
@@ -739,7 +740,7 @@ final class ChatConnection: @unchecked Sendable {
         guard let version = message["jsonrpc"] as? String, version == "2.0" else { return }
 
         if (message["method"] as? String) == "event" {
-            handleEvent(message)
+            handleSharedEvent(message)
             return
         }
 
@@ -770,256 +771,50 @@ final class ChatConnection: @unchecked Sendable {
 
     // MARK: - Event decoding
 
-    /// Known event types, copied verbatim from Android's knownTypes list.
-    /// Types outside this set are ignored (forward compatibility).
-    private static let knownEventTypes: Set<String> = [
-        "message.start", "message.delta", "message.complete", "error",
-        "tool.start", "tool.complete", "tool.generating", "status.update",
-        "clarify.request", "clarify.expire", "approval.request", "approval.expire",
-        "secret.request", "secret.expire", "sudo.request", "sudo.expire",
-        "terminal.read.request", "terminal.read.expire",
-        "preview.read.request", "preview.read.expire",
-        "window.read.request", "window.read.expire",
-        "session.info", "session.title", "reasoning.delta", "reasoning.available",
-        "message.interim",
-        // Intentionally ignored (no mobile surface): gateway.ready, skin.changed,
-        // sessions.changed, cron.changed, pet.changed, thinking.delta, reaction,
-        // moa.*, voice.*, wake.detected, browser.progress, terminal.close,
-        // notification.clear, preview.restart.progress.
-    ]
-
-    private func handleEvent(_ message: [String: Any]) {
+    private func handleSharedEvent(_ message: [String: Any]) {
         guard let params = message["params"] as? [String: Any],
-              let sessionIDRaw = boundedRequiredField("session_id", in: params, maxChars: maxEventIDChars),
-              !sessionIDRaw.isEmpty,
+              let sessionID = boundedRequiredField("session_id", in: params, maxChars: maxEventIDChars),
               let type = stringField("type", in: params),
-              Self.knownEventTypes.contains(type),
-              let payload = params["payload"] as? [String: Any]
+              let payload = params["payload"] as? [String: Any],
+              let data = try? JSONSerialization.data(withJSONObject: payload),
+              let payloadJSON = String(data: data, encoding: .utf8),
+              let shared = MercuryCore.ChatEventDecoder.shared.decode(
+                type: type,
+                sessionId: sessionID,
+                payloadJson: payloadJSON
+              ),
+              let event = ChatEvent(shared: shared)
         else { return }
 
-        let event: ChatEvent?
-        switch type {
-        case "message.start":
-            event = .messageStart(
-                sessionID: sessionIDRaw,
-                text: boundedTextField("text", in: payload, maxChars: maxMessageTextChars)
-            )
-
-        case "message.delta":
-            if let text = boundedTextField("text", in: payload, maxChars: maxMessageTextChars) {
-                event = .messageDelta(sessionID: sessionIDRaw, text: text)
-            } else {
-                event = nil
-            }
-
-        case "message.complete":
-            let billing = (payload["billing"] as? [String: Any]).map { billing in
-                BillingInfo(
-                    provider: boundedOptionalField("provider", in: billing, maxChars: maxEventNameChars),
-                    billingURL: boundedOptionalField("billing_url", in: billing, maxChars: maxEventTextChars),
-                    isNous: boolField("is_nous", in: billing) ?? false,
-                    message: boundedOptionalField("message", in: billing, maxChars: maxEventTextChars)
-                )
-            }
-            event = .messageComplete(
-                sessionID: sessionIDRaw,
-                text: boundedTextField("text", in: payload, maxChars: maxMessageTextChars),
-                status: boundedOptionalField("status", in: payload, maxChars: maxEventNameChars),
-                error: boundedOptionalField("error", in: payload, maxChars: maxEventTextChars),
-                reasoning: boundedTextField("reasoning", in: payload, maxChars: maxMessageTextChars),
-                warning: boundedOptionalField("warning", in: payload, maxChars: maxEventTextChars),
-                failureReason: boundedOptionalField("failure_reason", in: payload, maxChars: maxEventTextChars),
-                recoverable: boolField("recoverable", in: payload) ?? false,
-                billing: billing
-            )
-
-        case "reasoning.delta", "reasoning.available":
-            if let text = boundedTextField("text", in: payload, maxChars: maxMessageTextChars) {
-                event = .reasoningDelta(
-                    sessionID: sessionIDRaw,
-                    text: text,
-                    replace: type == "reasoning.available"
-                )
-            } else {
-                event = nil
-            }
-
-        case "message.interim":
-            if let text = boundedTextField("text", in: payload, maxChars: maxMessageTextChars) {
-                event = .messageInterim(
-                    sessionID: sessionIDRaw,
-                    text: text,
-                    alreadyStreamed: boolField("already_streamed", in: payload) ?? false
-                )
-            } else {
-                event = nil
-            }
-
-        case "tool.generating":
-            if let name = boundedRequiredField("name", in: payload, maxChars: maxEventNameChars) {
-                event = .toolGenerating(sessionID: sessionIDRaw, name: name)
-            } else {
-                event = nil
-            }
-
-        case "session.title":
-            if let title = boundedRequiredField("title", in: payload, maxChars: maxEventNameChars) {
-                event = .sessionTitle(sessionID: sessionIDRaw, title: title)
-            } else {
-                event = nil
-            }
-
-        case "session.info":
-            event = .sessionInfo(
-                sessionID: sessionIDRaw,
-                storedSessionID: boundedOptionalField("stored_session_id", in: payload, maxChars: maxEventNameChars),
-                model: boundedOptionalField("model", in: payload, maxChars: maxEventNameChars),
-                provider: boundedOptionalField("provider", in: payload, maxChars: maxEventNameChars),
-                reasoningEffort: boundedOptionalField("reasoning_effort", in: payload, maxChars: maxEventNameChars),
-                fastMode: boolField("fast", in: payload),
-                title: boundedOptionalField("title", in: payload, maxChars: maxEventNameChars),
-                running: boolField("running", in: payload)
-            )
-
-        case "error":
-            if let text = boundedOptionalField("message", in: payload, maxChars: maxEventTextChars) {
-                event = .error(sessionID: sessionIDRaw, message: text)
-            } else {
-                event = nil
-            }
-
-        case "tool.start":
-            guard let toolID = boundedRequiredField("tool_id", in: payload, maxChars: maxEventIDChars),
-                  let name = boundedRequiredField("name", in: payload, maxChars: maxEventNameChars) else {
-                event = nil
-                break
-            }
-            event = .toolStart(
-                sessionID: sessionIDRaw,
-                toolID: toolID,
-                name: name,
-                context: boundedOptionalField("context", in: payload, maxChars: maxEventContextChars)
-            )
-
-        case "tool.complete":
-            guard let toolID = boundedRequiredField("tool_id", in: payload, maxChars: maxEventIDChars),
-                  let name = boundedRequiredField("name", in: payload, maxChars: maxEventNameChars) else {
-                event = nil
-                break
-            }
-            event = .toolComplete(
-                sessionID: sessionIDRaw,
-                toolID: toolID,
-                name: name,
-                summary: boundedOptionalField("summary", in: payload, maxChars: maxEventTextChars)
-            )
-
-        case "status.update":
-            guard let kind = boundedRequiredField("kind", in: payload, maxChars: maxEventNameChars),
-                  let text = boundedRequiredField("text", in: payload, maxChars: maxEventTextChars) else {
-                event = nil
-                break
-            }
-            event = .statusUpdate(sessionID: sessionIDRaw, kind: kind, text: text)
-
-        case "clarify.request":
-            guard let requestID = boundedRequiredField("request_id", in: payload, maxChars: maxEventIDChars),
-                  let question = boundedRequiredField("question", in: payload, maxChars: maxEventTextChars) else {
-                event = nil
-                break
-            }
-            event = .clarifyRequest(
-                sessionID: sessionIDRaw,
-                requestID: requestID,
-                question: question,
-                choices: boundedChoices(in: payload),
-                multiSelect: boolField("multi_select", in: payload) ?? false
-            )
-
-        case "clarify.expire":
-            if let requestID = boundedRequiredField("request_id", in: payload, maxChars: maxEventIDChars) {
-                event = .clarifyExpire(sessionID: sessionIDRaw, requestID: requestID)
-            } else {
-                event = nil
-            }
-
-        case "approval.request":
-            let choices = boundedChoices(in: payload)
-            if choices.isEmpty {
-                event = nil
-                break
-            }
-            let approval = PendingApproval(
-                requestID: optionalStringField("request_id", in: payload),
-                command: boundedOptionalField("command", in: payload, maxChars: maxEventTextChars),
-                description: boundedOptionalField("description", in: payload, maxChars: maxEventTextChars),
-                choices: choices
-            )
+        switch event {
+        case .approvalRequest(_, let requestID, let command, let description, let choices):
             stateLock.lock()
-            pendingApprovals[sessionIDRaw, default: []].append(approval)
-            stateLock.unlock()
-            event = Self.approvalEvent(for: approval, sessionID: sessionIDRaw)
-
-        case "approval.expire":
-            if let requestID = boundedRequiredField("request_id", in: payload, maxChars: maxEventIDChars) {
-                stateLock.lock()
-                if var queue = pendingApprovals[sessionIDRaw] {
-                    queue.removeAll { $0.requestID == requestID }
-                    if queue.isEmpty {
-                        pendingApprovals.removeValue(forKey: sessionIDRaw)
-                    } else {
-                        pendingApprovals[sessionIDRaw] = queue
-                    }
-                }
-                stateLock.unlock()
-                event = .approvalExpire(sessionID: sessionIDRaw, requestID: requestID)
-            } else {
-                event = nil
-            }
-
-        case "secret.request", "sudo.request", "terminal.read.request",
-             "preview.read.request", "window.read.request":
-            let kind: UnsupportedBlockingKind
-            switch type {
-            case "secret.request": kind = .secret
-            case "sudo.request": kind = .sudo
-            case "preview.read.request": kind = .previewRead
-            case "window.read.request": kind = .windowRead
-            default: kind = .terminalRead
-            }
-            if let requestID = boundedRequiredField("request_id", in: payload, maxChars: maxEventIDChars) {
-                event = .unsupportedBlockingRequest(
-                    sessionID: sessionIDRaw,
-                    kind: kind,
+            pendingApprovals[sessionID, default: []].append(
+                PendingApproval(
                     requestID: requestID,
-                    prompt: boundedOptionalField("prompt", in: payload, maxChars: maxEventTextChars)
+                    command: command,
+                    description: description,
+                    choices: choices
                 )
-            } else {
-                event = nil
+            )
+            stateLock.unlock()
+        case .approvalExpire(_, let requestID):
+            stateLock.lock()
+            if var queue = pendingApprovals[sessionID] {
+                queue.removeAll { $0.requestID == requestID }
+                if queue.isEmpty {
+                    pendingApprovals.removeValue(forKey: sessionID)
+                } else {
+                    pendingApprovals[sessionID] = queue
+                }
             }
-
-        case "secret.expire", "sudo.expire", "terminal.read.expire",
-             "preview.read.expire", "window.read.expire":
-            let kind: UnsupportedBlockingKind
-            switch type {
-            case "secret.expire": kind = .secret
-            case "sudo.expire": kind = .sudo
-            case "preview.read.expire": kind = .previewRead
-            case "window.read.expire": kind = .windowRead
-            default: kind = .terminalRead
-            }
-            if let requestID = boundedRequiredField("request_id", in: payload, maxChars: maxEventIDChars) {
-                event = .unsupportedBlockingExpire(sessionID: sessionIDRaw, kind: kind, requestID: requestID)
-            } else {
-                event = nil
-            }
-
+            stateLock.unlock()
         default:
-            event = nil
+            break
         }
-
-        if let event { emit(event) }
+        emit(event)
     }
+
 
     private static func approvalEvent(for approval: PendingApproval, sessionID: String) -> ChatEvent {
         .approvalRequest(
@@ -1249,9 +1044,6 @@ final class ChatConnection: @unchecked Sendable {
         object[name] as? String
     }
 
-    private func optionalStringField(_ name: String, in object: [String: Any]) -> String? {
-        object[name] as? String
-    }
 
     private func int64Field(_ name: String, in object: [String: Any]) -> Int64? {
         switch object[name] {
@@ -1405,19 +1197,6 @@ final class ChatConnection: @unchecked Sendable {
         return String(value.prefix(maxChars))
     }
 
-    private func boundedChoices(in payload: [String: Any]) -> [String] {
-        guard let raw = payload["choices"] as? [Any] else { return [] }
-        var seen = Set<String>()
-        var result: [String] = []
-        for element in raw {
-            guard let choice = element as? String else { continue }
-            let trimmed = choice.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, trimmed.count <= maxEventChoiceChars, seen.insert(trimmed).inserted else { continue }
-            result.append(trimmed)
-            if result.count >= maxEventChoiceCount { break }
-        }
-        return result
-    }
 
     // MARK: - Outbound input guards (boundedRpcInput parity)
 

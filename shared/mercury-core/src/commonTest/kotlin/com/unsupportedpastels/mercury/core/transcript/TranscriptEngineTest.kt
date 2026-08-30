@@ -65,12 +65,14 @@ class TranscriptEngineTest {
     }
 
     @Test
-    fun duplicateStartOpensSecondRow() {
+    fun duplicateStartReusesTheOpenAssistantRow() {
         val state = reduce(
             ChatEvent.MessageStart(sid, null),
-            ChatEvent.MessageStart(sid, null),
+            ChatEvent.MessageDelta(sid, "partial"),
+            ChatEvent.MessageStart(sid, "replacement"),
         )
-        assertEquals(2, state.rows.size)
+        assertEquals(1, state.rows.size)
+        assertEquals("replacement", state.rows.single().text)
     }
 
     // --- interrupt sentinel ---------------------------------------------------
