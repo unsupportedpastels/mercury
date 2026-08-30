@@ -99,6 +99,15 @@ class RemoteMediaImageTest {
     }
 
     @Test
+    fun acceptsVideoHostPathsButRejectsNonVideoAndMalformedPaths() {
+        assertTrue(validateGatewayVideoPath("/workspace/scene-00/preview.mp4"))
+        assertTrue(validateGatewayVideoPath("/workspace/scene-00/preview.WEBM"))
+        assertFalse(validateGatewayVideoPath("relative/preview.mp4"))
+        assertFalse(validateGatewayVideoPath("/workspace/scene-00/generated.jpg"))
+        assertFalse(validateGatewayVideoPath("/workspace/scene-00/no-extension"))
+    }
+
+    @Test
     fun oversizedImageBodyIsRejectedBeforeDecode() = runTest {
         val client = HttpClient(MockEngine {
             respond(

@@ -26,6 +26,7 @@ import com.unsupportedpastels.hermesandroid.gateway.parseOperationalStatus
 import com.unsupportedpastels.hermesandroid.files.HostFileContent
 import com.unsupportedpastels.hermesandroid.files.HostFileEntry
 import com.unsupportedpastels.hermesandroid.files.HostFileListing
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
 import com.unsupportedpastels.hermesandroid.files.MAX_HOST_FILE_BYTES
 import com.unsupportedpastels.hermesandroid.files.MAX_HOST_FILE_ENTRIES
 import com.unsupportedpastels.hermesandroid.files.validCanonicalHostFilePath
@@ -79,6 +80,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import java.io.File
+import java.io.FileOutputStream
 import java.util.Base64
 
 @Serializable
@@ -335,6 +338,8 @@ private const val MAX_SESSION_PAGE_SIZE = 500
 private const val MAX_HOST_DIRECTORY_ENTRIES = 500
 internal const val MAX_CRON_RUNS = 20
 private const val MAX_MANAGED_IMAGE_BYTES = 10 * 1024 * 1024
+private const val MAX_MANAGED_VIDEO_BYTES = 256L * 1024 * 1024
+private const val DEFAULT_VIDEO_STREAM_BUFFER_BYTES = 64 * 1024
 internal const val MAX_EFFECTIVE_CONTEXT_LENGTH = 100_000_000
 private const val MAX_HOST_FILE_LISTING_BODY_BYTES = 512 * 1024
 private const val MAX_HOST_FILE_READ_BODY_BYTES = 1024 * 1024
@@ -544,6 +549,20 @@ interface HermesConnectionClient {
         accessToken: String?,
         path: String,
     ): ByteArray = throw UnsupportedOperationException()
+
+    /**
+     * Stream the managed video at [path] into [destination] (which must live in a
+     * per-origin cache directory). Requires a video response content type,
+     * streams to disk without buffering the body in memory, and lands the file
+     * atomically via a `.part` rename so [destination] only ever denotes a
+     * complete download.
+     */
+    suspend fun streamManagedVideoToFile(
+        serverOrigin: ServerOrigin,
+        accessToken: String?,
+        path: String,
+        destination: File,
+    ): ManagedVideoMedia = throw UnsupportedOperationException()
 
     suspend fun updateSession(
         serverOrigin: ServerOrigin,
@@ -1851,6 +1870,100 @@ class HttpHermesConnectionClient(
         throw error
     } catch (error: Exception) {
         throw HermesConnectionException("Could not download Hermes managed image", error)
+    }
+
+    override suspend fun streamManagedVideoToFile(
+        serverOrigin: ServerOrigin,
+        accessToken: String?,
+        path: String,
+        destination: File,
+    ): ManagedVideoMedia = streamManagedVideoToFile(
+        serverOrigin = serverOrigin,
+        accessToken = accessToken,
+        path = path,
+        destination = destination,
+        maxBytes = MAX_MANAGED_VIDEO_BYTES,
+    )
+
+    internal suspend fun streamManagedVideoToFile(
+        serverOrigin: ServerOrigin,
+        accessToken: String?,
+        path: String,
+        destination: File,
+        maxBytes: Long,
+    ): ManagedVideoMedia = try {
+        val canonicalPath = validCanonicalHostFilePath(path)
+            ?: throw HermesConnectionException("Host file path is invalid")
+        val response = client.get("${serverOrigin.value}/api/files/download") {
+            accessToken?.let { bearerAuth(it) }
+            parameter("path", canonicalPath)
+        }
+        if (!response.status.isSuccess()) {
+            response.bodyAsChannel().cancel(null)
+            throw HermesConnectionException(
+                "Hermes managed video returned HTTP ${response.status.value}",
+            )
+        }
+        val mimeType = response.headers[io.ktor.http.HttpHeaders.ContentType]
+            ?.substringBefore(';')
+            ?.trim()
+            ?.lowercase()
+        if (mimeType?.startsWith("video/") != true) {
+            response.bodyAsChannel().cancel(null)
+            throw HermesConnectionException("Hermes managed file was not a video")
+        }
+        val declaredLength = response.headers[io.ktor.http.HttpHeaders.ContentLength]?.toLongOrNull()
+        if (declaredLength != null && declaredLength > maxBytes) {
+            response.bodyAsChannel().cancel(null)
+            throw HermesConnectionException("Hermes managed video was too large")
+        }
+        response.writeVideoBodyBounded(destination, maxBytes)
+        ManagedVideoMedia(destination, mimeType)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: HermesConnectionException) {
+        throw error
+    } catch (error: Exception) {
+        throw HermesConnectionException("Could not download Hermes managed video", error)
+    }
+
+    /**
+     * Streams the response body into [destination] through a `.part` file so a
+     * failed or oversized download never leaves a half-written video behind.
+     */
+    private suspend fun HttpResponse.writeVideoBodyBounded(destination: File, maxBytes: Long) {
+        val channel = bodyAsChannel()
+        val part = File(destination.parentFile, destination.name + ".part")
+        try {
+            FileOutputStream(part).use { out ->
+                val buffer = ByteArray(DEFAULT_VIDEO_STREAM_BUFFER_BYTES)
+                var total = 0L
+                while (!channel.isClosedForRead) {
+                    val source = channel.readRemaining(DEFAULT_VIDEO_STREAM_BUFFER_BYTES.toLong())
+                    if (source.exhausted()) break
+                    while (!source.exhausted()) {
+                        val read = source.readAtMostTo(buffer, 0, buffer.size)
+                        if (read <= 0) break
+                        total += read
+                        if (total > maxBytes) {
+                            throw HermesConnectionException("Hermes managed video was too large")
+                        }
+                        out.write(buffer, 0, read)
+                    }
+                    source.close()
+                }
+                out.flush()
+            }
+            if (!part.renameTo(destination)) {
+                part.copyTo(destination, overwrite = true)
+                part.delete()
+            }
+        } catch (error: Throwable) {
+            part.delete()
+            throw error
+        } finally {
+            channel.cancel(null)
+        }
     }
 
     private suspend fun loadSessionsPage(

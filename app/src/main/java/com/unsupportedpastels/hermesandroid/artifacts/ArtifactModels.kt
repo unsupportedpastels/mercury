@@ -3,6 +3,7 @@ package com.unsupportedpastels.hermesandroid.artifacts
 /** The safe presentation category of a transcript-delivered artifact. */
 enum class ArtifactType {
     Image,
+    Video,
     Audio,
     File,
 }

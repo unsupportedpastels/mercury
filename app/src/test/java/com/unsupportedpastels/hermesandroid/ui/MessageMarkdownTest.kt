@@ -60,6 +60,38 @@ class MessageMarkdownTest {
     }
 
     @Test
+    fun parsesGatewayLocalVideoMediaDirectiveAsVideoBlockInsteadOfRawPath() {
+        val path = "/workspace/project/scene-00/preview.mp4"
+
+        val blocks = parseMessageMarkdown("Preview:\n\nMEDIA:$path\n\nDone")
+
+        val video = blocks.filterIsInstance<MarkdownVideoBlock>().single()
+        assertEquals(path, video.url)
+        assertTrue(blocks.filterIsInstance<MarkdownImageBlock>().isEmpty())
+        assertFalse(
+            blocks.filterIsInstance<MarkdownTextBlock>()
+                .any { it.plainText.contains("MEDIA:") },
+        )
+    }
+
+    @Test
+    fun videoMediaDirectiveCoversCaseInsensitivePreviewExtensions() {
+        for (path in listOf("/a/clip.MP4", "/a/clip.webm", "/a/clip.mov", "/a/clip.m4v", "/a/clip.mkv")) {
+            val blocks = parseMessageMarkdown("MEDIA:$path")
+            assertEquals(path, blocks.filterIsInstance<MarkdownVideoBlock>().single().url)
+        }
+    }
+
+    @Test
+    fun nonMediaManagedFileStaysPlainTextInsteadOfVideoBlock() {
+        val blocks = parseMessageMarkdown("MEDIA:/workspace/report.pdf")
+
+        assertTrue(blocks.filterIsInstance<MarkdownVideoBlock>().isEmpty())
+        assertTrue(blocks.filterIsInstance<MarkdownImageBlock>().isEmpty())
+        assertTrue(blocks.filterIsInstance<MarkdownTextBlock>().isNotEmpty())
+    }
+
+    @Test
     fun compactsEmbeddedImagePayloadAndHidesServerAttachmentPath() {
         val source = buildString {
             appendLine("before")
