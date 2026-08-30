@@ -10,6 +10,7 @@ struct ConnectView: View {
 
     @State private var mode: ConnectionMode = .selfHosted
     @State private var originText = ""
+    @State private var useTls = true
     @State private var validationError: String?
     @State private var showSavedServers = false
     @State private var relay = RelayAppModel()
@@ -105,6 +106,16 @@ struct ConnectView: View {
             )
             .submitLabel(.go)
             .onSubmit(continueTapped)
+
+        Toggle(isOn: $useTls) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Use HTTPS")
+                Text("Connect securely — turn off only for plain-HTTP servers")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 4)
 
         if let validationError {
             Text(validationError)
@@ -321,11 +332,11 @@ struct ConnectView: View {
 
     private func continueTapped() {
         validationError = nil
-        guard ServerOrigin.normalize(originText) != nil else {
+        guard let canonical = ServerOrigin.normalize(originText, useTls: useTls) else {
             validationError = "That doesn't look like a server address. Try something like hermes.example.com or 192.168.1.20:8080."
             return
         }
-        Task { await appModel.probeSelfHosted(origin: originText) }
+        Task { await appModel.probeSelfHosted(origin: canonical) }
     }
 
     private func cloudSignInTapped() {

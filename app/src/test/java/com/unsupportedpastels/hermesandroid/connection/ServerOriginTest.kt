@@ -26,6 +26,20 @@ class ServerOriginTest {
     }
 
     @Test
+    fun bareHostsUseTheTlsFlag() {
+        assertEquals("https://hermes.example.com", ServerOrigin.parse("hermes.example.com").value)
+        assertEquals(
+            "http://192.168.1.5:8080",
+            ServerOrigin.parse("192.168.1.5:8080", useTls = false).value,
+        )
+        // An explicit scheme always wins over the flag.
+        assertEquals(
+            "http://example.com",
+            ServerOrigin.parse("http://example.com", useTls = true).value,
+        )
+    }
+
+    @Test
     fun preservesExplicitNonDefaultPort() {
         assertEquals(
             "https://example.com:8443",
@@ -42,6 +56,12 @@ class ServerOriginTest {
     }
 
     @Test
+    fun webSocketValueMapsScheme() {
+        assertEquals("wss://example.com", ServerOrigin.parse("https://example.com").webSocketValue)
+        assertEquals("ws://10.0.1.2:8080", ServerOrigin.parse("http://10.0.1.2:8080").webSocketValue)
+    }
+
+    @Test
     fun rejectsUnsupportedSchemesAndNonOriginUrls() {
         listOf(
             "",
@@ -50,7 +70,6 @@ class ServerOriginTest {
             "https://example.com/api",
             "https://example.com?ticket=secret",
             "https://example.com#fragment",
-            "example.com",
         ).forEach { input ->
             assertThrows(IllegalArgumentException::class.java) {
                 ServerOrigin.parse(input)

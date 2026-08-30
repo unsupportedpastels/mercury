@@ -55,7 +55,7 @@ struct KeychainCredentialStore: CredentialStoring {
 
     private let normalize: (String) -> String?
 
-    init(normalize: @escaping (String) -> String? = ServerOrigin.normalize) {
+    init(normalize: @escaping (String) -> String? = { ServerOrigin.normalize($0) }) {
         self.normalize = normalize
     }
 
@@ -64,6 +64,24 @@ struct KeychainCredentialStore: CredentialStoring {
     func tokens(for origin: String) -> TokenPair? {
         guard let account = accountKey(for: origin) else { return nil }
 
+        if let pair = readTokens(account: account) {
+            return pair
+        }
+
+        // One-time migration: entries written before default-port elision were
+        // keyed under the legacy canonical form (e.g. "https://host:443").
+        // On a miss, look there once and re-file under the current key.
+        if let legacyAccount = ServerOrigin.legacyNormalize(origin),
+           legacyAccount != account,
+           let pair = readTokens(account: legacyAccount) {
+            setTokens(pair, for: origin)
+            SecItemDelete(baseQuery(account: legacyAccount) as CFDictionary)
+            return pair
+        }
+        return nil
+    }
+
+    private func readTokens(account: String) -> TokenPair? {
         var query = baseQuery(account: account)
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne

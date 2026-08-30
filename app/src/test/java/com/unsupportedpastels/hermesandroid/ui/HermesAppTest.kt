@@ -2703,6 +2703,34 @@ class HermesAppTest {
     }
 
     @Test
+    fun serverDialogUseTlsCheckboxPicksSchemeForBareHosts() {
+        var savedOrigin: ServerOrigin? = null
+        composeRule.setContent {
+            HermesAndroidTheme {
+                HermesApp(
+                    snapshot = HermesGatewaySnapshot(),
+                    serverSettingsState = ServerSettingsState.Ready(null),
+                    onSaveServerOrigin = { origin ->
+                        savedOrigin = origin
+                        Result.success(Unit)
+                    },
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Configure server").performClick()
+        composeRule.onNodeWithContentDescription("Open Servers settings").performClick()
+        composeRule.onNodeWithContentDescription("Server origin input")
+            .performTextInput("192.168.1.5:8080")
+        composeRule.onNodeWithContentDescription("Use HTTPS checkbox").performClick()
+
+        composeRule.onNodeWithText("Save").assertIsEnabled().performScrollTo().performClick()
+        composeRule.waitForIdle()
+
+        assertEquals("http://192.168.1.5:8080", savedOrigin?.value)
+    }
+
+    @Test
     fun settingsShowsCurrentProfileContextAndKeepsFutureReasoningDefaultSeparate() {
         val snapshot = HermesGatewaySnapshot(
             connectionState = ConnectionState.Connected,

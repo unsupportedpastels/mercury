@@ -80,6 +80,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -4081,14 +4082,15 @@ internal fun ServerSettingsScreen(
             onRefreshCronJobs()
         }
     }
-    val parsedOrigin = remember(value) {
-        runCatching { ServerOrigin.parse(value) }.getOrNull()
+    var useTls by rememberSaveable { mutableStateOf(true) }
+    val parsedOrigin = remember(value, useTls) {
+        runCatching { ServerOrigin.parse(value, useTls) }.getOrNull()
     }
-    val validationMessage = remember(value) {
+    val validationMessage = remember(value, useTls) {
         if (value.isBlank()) {
             null
         } else {
-            runCatching { ServerOrigin.parse(value) }
+            runCatching { ServerOrigin.parse(value, useTls) }
                 .exceptionOrNull()
                 ?.message
         }
@@ -4279,7 +4281,8 @@ internal fun ServerSettingsScreen(
                         style = MaterialTheme.typography.bodyLarge,
                     )
                     Text(
-                        "Enter the HTTP or HTTPS origin of your unchanged Hermes Serve instance.",
+                        "Enter the address of your unchanged Hermes Serve instance — " +
+                            "hermes.example.com or 192.168.1.20:8080 both work.",
                         style = MaterialTheme.typography.bodyLarge,
                     )
                     OutlinedTextField(
@@ -4292,7 +4295,7 @@ internal fun ServerSettingsScreen(
                         supportingText = {
                             Text(
                                 validationMessage
-                                    ?: "HTTP or HTTPS origin only — no path, credentials, query, or ticket.",
+                                    ?: "Server address only — no path, credentials, query, or ticket.",
                             )
                         },
                         isError = validationMessage != null,
@@ -4303,6 +4306,28 @@ internal fun ServerSettingsScreen(
                             .fillMaxWidth()
                             .semantics { contentDescription = "Server origin input" },
                     )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Checkbox(
+                            checked = useTls,
+                            onCheckedChange = {
+                                useTls = it
+                                saveError = null
+                            },
+                            enabled = !isSaving && editingOrigin == null,
+                            modifier = Modifier.semantics { contentDescription = "Use HTTPS checkbox" },
+                        )
+                        Column {
+                            Text("Use HTTPS", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "Connect securely — turn off only for plain-HTTP servers",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                     OutlinedTextField(
                         value = label,
                         onValueChange = {

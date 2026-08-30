@@ -47,6 +47,28 @@ final class ServerOriginTests: XCTestCase {
         XCTAssertEqual(ServerOrigin.normalize("http://localhost:8080"), "http://localhost:8080")
     }
 
+    func testElidesDefaultPorts() {
+        XCTAssertEqual(ServerOrigin.normalize("https://hermes.example.com:443"), "https://hermes.example.com")
+        XCTAssertEqual(ServerOrigin.normalize("http://10.1.2.3:80"), "http://10.1.2.3")
+        XCTAssertEqual(ServerOrigin.normalize("http://hermes.example.com:443"), "http://hermes.example.com:443")
+    }
+
+    func testUseTlsFlagPicksSchemeForBareHosts() {
+        XCTAssertEqual(ServerOrigin.normalize("192.168.1.5:8080", useTls: false), "http://192.168.1.5:8080")
+        XCTAssertEqual(ServerOrigin.normalize("hermes.example.com", useTls: false), "http://hermes.example.com")
+        // An explicit scheme always wins over the flag.
+        XCTAssertEqual(ServerOrigin.normalize("https://hermes.example.com", useTls: false), "https://hermes.example.com")
+    }
+
+    func testPunycodesUnicodeHosts() {
+        XCTAssertEqual(ServerOrigin.normalize("https://例え.テスト/"), "https://xn--r8jz45g.xn--zckzah")
+    }
+
+    func testLegacyNormalizePreservesDefaultPortForMigration() {
+        XCTAssertEqual(ServerOrigin.legacyNormalize("https://hermes.example.com:443"), "https://hermes.example.com:443")
+        XCTAssertEqual(ServerOrigin.legacyNormalize("hermes.example.com"), "https://hermes.example.com")
+    }
+
     // MARK: - isLoopbackOrPrivate
 
     func testLoopbackDetection() {
