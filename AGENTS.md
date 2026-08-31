@@ -41,3 +41,18 @@ For adaptive UI changes, also run the configured screenshot/UI test gates and te
 ## Official project-local skills
 
 The current Google-authored skills live under `.agents/skills/`. Consult matching skills before changes, especially `adaptive`, `navigation-3`, `edge-to-edge`, `testing-setup`, `android-intent-security`, and `android-cli`.
+
+## Learned User Preferences
+
+- Build and sideload locally compiled APKs only; do not keep, install, or trust pre-signed or prebuilt APKs.
+- Do not install onto an ADB device until the user confirms it is their phone.
+- Prefer real-device checks over reviewing screenshot goldens when both would work. When asking the user to test on hardware, give in-app steps and keep ADB connected for logs and screenshots.
+
+## Learned Workspace Facts
+
+- `docs/EXTERNAL_SSH_TUNNEL_QUESTIONS_ANSWERS.md` is the authoritative spec for external SSH tunnel session-auth. User setup is `docs/external-ssh-tunnel-setup.md`. Design is `docs/design/external-ssh-tunnel-session-auth.md`. Do not use cancelled continuation briefs.
+- Only HTTP 401 on a credential-bearing protected REST request is credential rejection. Handshake HTTP 403 must never invalidate the token or be mapped to close code 4401.
+- Tunnel-mode loopback hosts are only `127.0.0.1` and `[::1]`; reject `localhost` because of IPv4/IPv6 ambiguity. Direct mode is unchanged.
+- Tunnel and bootstrap reconnect belong in one platform-independent lifecycle reducer; do not add a parallel recovery machine.
+- Do not enable global cleartext HTTP traffic.
+- The application id is `com.unsupportedpastels.hermesandroid`.
