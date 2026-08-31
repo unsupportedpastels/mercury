@@ -42,7 +42,7 @@ For each row: do the steps, check the expected result, then record Pass / Fail /
 
 | Result | Observed |
 |---|---|
-| Pass / Fail / Skipped | |
+| Pass | Test tunnel handshake succeeded (owner, earlier session). |
 
 ### 2. Second SSH client (if you have one)
 
@@ -62,7 +62,7 @@ For each row: do the steps, check the expected result, then record Pass / Fail /
 
 | Result | Observed |
 |---|---|
-| Pass / Fail / Skipped | |
+| Pass | Chat over tunnel works, including images (owner, 2026-08-31). |
 
 ### 4. Background and foreground while the tunnel stays up
 
@@ -72,7 +72,7 @@ For each row: do the steps, check the expected result, then record Pass / Fail /
 
 | Result | Observed |
 |---|---|
-| Pass / Fail / Skipped | |
+| Pass | Background then reopen: cached → connected; reconnect works (owner, 2026-08-31). |
 
 ### 5. Kill and restart HAM (token reacquired)
 
@@ -82,7 +82,7 @@ For each row: do the steps, check the expected result, then record Pass / Fail /
 
 | Result | Observed |
 |---|---|
-| Pass / Fail / Skipped | |
+| Pass | Swipe from Recents then reopen: same as item 4. Settings Force stop then reopen: same (owner, 2026-08-31). |
 
 ### 6. Restart Hermes (token rotation)
 
@@ -236,3 +236,17 @@ There is no in-app logging of these fields. Do not add adb logcat dumps that mig
 - A rejected WebSocket **handshake** may be HTTP 403 rather than close code 4401. Report which you saw. Do not “fix” that by pasting a token.
 - Screenshot goldens are not approved until you say so.
 - This checklist is empty until you fill it. An agent run that never used this phone is not a device pass.
+
+---
+
+## Owner observed (2026-08-31)
+
+Owner-reported on a physical device. **Not agent-observed.** Partial coverage only — matrix **not complete**.
+
+- Test tunnel handshake succeeded (earlier session).
+- Chat over tunnel works, including images.
+- Background → reopen: cached → connected; reconnect works.
+- Swipe from Recents → reopen: same.
+- Settings Force stop → reopen: same.
+
+**Not reported / still open:** items 2, 6–12; adaptive layout on hardware; screenshot golden approval.
