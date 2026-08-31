@@ -15,6 +15,9 @@ import com.unsupportedpastels.hermesandroid.gateway.ResumedChatSession
 import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
 import com.unsupportedpastels.hermesandroid.gateway.SocketCloseClass
 import com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure
+import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
+import com.unsupportedpastels.hermesandroid.gateway.WsTicket
+import com.unsupportedpastels.hermesandroid.gateway.WsTicketClient
 import com.unsupportedpastels.hermesandroid.gateway.classifySocketClose
 import com.unsupportedpastels.hermesandroid.voice.PcmSpeechSink
 import com.unsupportedpastels.hermesandroid.voice.SpeechSocketFrame
@@ -275,11 +278,135 @@ class SocketCredentialRecoveryTest {
     }
 
     @Test
+    fun aSecondMetadataSocketRejectionPublishesTheTerminalStateWithoutLooping() = runTest(dispatcher) {
+        val projectConnector = ScriptedChatConnector(
+            listOf(
+                CronListSession(reject = true),
+                CronListSession(reject = true),
+                CronListSession(reject = false),
+            ),
+        )
+        val bootstrap = TokenSequenceBootstrap(
+            origin,
+            listOf("connect-token", "recovery-token", "must-not-be-used"),
+        )
+        val viewModel = viewModel(
+            connector = ScriptedChatConnector(emptyList()),
+            bootstrap = bootstrap,
+            projectConnector = projectConnector,
+        )
+        advanceUntilIdle()
+
+        viewModel.refreshCronJobs().join()
+        advanceUntilIdle()
+
+        assertEquals(2, bootstrap.calls)
+        assertEquals(
+            TunnelConnectionFailure.CredentialRejected,
+            viewModel.snapshots.value.tunnelConnectionFailure,
+        )
+
+        viewModel.refreshCronJobs().join()
+        advanceUntilIdle()
+        assertEquals(2, bootstrap.calls)
+        assertEquals(
+            TunnelConnectionFailure.CredentialRejected,
+            viewModel.snapshots.value.tunnelConnectionFailure,
+        )
+    }
+
+    @Test
+    fun aChatSocketRejectionClosesSiblingLocalSocketsWithoutClosingTheRemoteRuntime() =
+        runTest(dispatcher) {
+            val metadata = CronListSession(reject = false)
+            val rejected = PeerClosedChatSession(closeCode = 4401)
+            val replacement = ResumingChatSession(runtimeId = "runtime-1")
+            val speech = RecordingSpeechConnector()
+            val bootstrap = TokenSequenceBootstrap(origin, listOf("connect-token", "recovery-token"))
+            val viewModel = viewModel(
+                connector = ScriptedChatConnector(listOf(rejected, replacement)),
+                bootstrap = bootstrap,
+                client = VoiceCapableTunnelClient(),
+                speechConnector = speech,
+                projectConnector = ScriptedChatConnector(listOf(metadata)),
+            )
+            advanceUntilIdle()
+
+            viewModel.refreshCronJobs().join()
+            advanceUntilIdle()
+            viewModel.refreshVoiceCapabilities()
+            advanceUntilIdle()
+            val socket = viewModel.openSpeechStream()
+            assertTrue(socket != null)
+
+            viewModel.sendMessage(durableId, "Hello there")
+            advanceUntilIdle()
+
+            assertTrue("metadata socket must close", metadata.closeCalls >= 1)
+            assertTrue("speech socket must close", speech.sockets.single().closeCalls >= 1)
+            assertTrue("rejected chat socket must close", rejected.closeCalls >= 1)
+            assertEquals(0, rejected.interruptCalls + replacement.interruptCalls)
+            assertEquals(2, bootstrap.calls)
+            assertNull(viewModel.snapshots.value.tunnelConnectionFailure)
+        }
+
+    @Test
+    fun aStaleGenerationSocketRecoveryDoesNotPublish() = runTest(dispatcher) {
+        val settings = MutableStateFlow<ServerSettingsState>(tunnelSettings())
+        val rejected = PeerClosedChatSession(closeCode = 4401)
+        val replacement = ResumingChatSession(runtimeId = "runtime-stale")
+        val connector = ScriptedChatConnector(listOf(rejected, replacement))
+        val bootstrap = GatedRecoveryBootstrap(
+            origin,
+            listOf("connect-token", "recovery-token", "next-generation-token"),
+        )
+        val viewModel = viewModel(connector, bootstrap, settingsStates = settings)
+        advanceUntilIdle()
+
+        viewModel.sendMessage(durableId, "Hello there")
+        advanceUntilIdle()
+        assertTrue(bootstrap.recoveryStarted)
+
+        settings.value = ServerSettingsState.Loading
+        advanceUntilIdle()
+        bootstrap.release()
+        advanceUntilIdle()
+
+        assertNull(viewModel.snapshots.value.tunnelConnectionFailure)
+
+        settings.value = tunnelSettings()
+        advanceUntilIdle()
+        assertNull(viewModel.snapshots.value.tunnelConnectionFailure)
+        assertTrue(replacement.resumeCalls == 0)
+    }
+
+    @Test
+    fun aChatSocketRejectionDoesNotReplayControllerCommands() = runTest(dispatcher) {
+        val rejected = PeerClosedChatSession(closeCode = 4401)
+        val replacement = ResumingChatSession(runtimeId = "runtime-1")
+        val connector = ScriptedChatConnector(listOf(rejected, replacement))
+        val bootstrap = TokenSequenceBootstrap(origin, listOf("connect-token", "recovery-token"))
+        val viewModel = viewModel(connector, bootstrap)
+        advanceUntilIdle()
+
+        viewModel.sendMessage(durableId, "Hello there")
+        advanceUntilIdle()
+
+        assertEquals(1, replacement.resumeCalls)
+        assertTrue(replacement.submittedPrompts.isEmpty())
+        rejected.assertNoControllerReplay()
+        replacement.assertNoControllerReplay()
+        assertEquals(0, rejected.interruptCalls + replacement.interruptCalls)
+    }
+
+    @Test
     fun oauthSocketRejectionDoesNotCallTheLoopbackBootstrap() = runTest(dispatcher) {
         val oauthOrigin = ServerOrigin.parse("https://hermes.example")
         val bootstrap = TokenSequenceBootstrap(origin, listOf("must-not-be-used"))
+        val tickets = RecordingTicketClient()
         val replacement = ResumingChatSession(runtimeId = "runtime-oauth")
-        val connector = ScriptedChatConnector(
+        val connector = TicketMintingChatConnector(
+            tickets,
             listOf(PeerClosedChatSession(closeCode = 4401), replacement),
         )
         val viewModel = HermesConnectionViewModel(
@@ -296,10 +423,17 @@ class SocketCredentialRecoveryTest {
         advanceUntilIdle()
 
         assertEquals(0, bootstrap.calls)
+        assertEquals(2, tickets.calls)
         assertEquals(1, replacement.resumeCalls)
         assertTrue(replacement.submittedPrompts.isEmpty())
         assertNull(viewModel.snapshots.value.tunnelConnectionFailure)
     }
+
+    private fun tunnelSettings() = ServerSettingsState.Ready(
+        ServerCatalog.single(
+            ServerCatalogEntry(origin, connectionMode = ServerConnectionMode.ExternalSshTunnel),
+        ),
+    )
 
     private fun viewModel(
         connector: ScriptedChatConnector,
@@ -307,14 +441,9 @@ class SocketCredentialRecoveryTest {
         client: HermesConnectionClient = TunnelReadClient(),
         speechConnector: SpeechStreamConnector? = null,
         projectConnector: HermesChatConnector? = null,
+        settingsStates: MutableStateFlow<ServerSettingsState> = MutableStateFlow<ServerSettingsState>(tunnelSettings()),
     ) = HermesConnectionViewModel(
-        settingsStates = MutableStateFlow(
-            ServerSettingsState.Ready(
-                ServerCatalog.single(
-                    ServerCatalogEntry(origin, connectionMode = ServerConnectionMode.ExternalSshTunnel),
-                ),
-            ),
-        ),
+        settingsStates = settingsStates,
         client = client,
         chatConnector = connector,
         projectConnector = projectConnector,
@@ -341,6 +470,38 @@ private class ScriptedChatConnector(sessions: List<HermesChatSession>) : HermesC
     }
 }
 
+/** Mints a fresh OAuth ticket on every connect, matching production gateway routing. */
+private class TicketMintingChatConnector(
+    private val tickets: RecordingTicketClient,
+    sessions: List<HermesChatSession>,
+) : HermesChatConnector {
+    private val remaining = ArrayDeque(sessions)
+
+    override suspend fun connect(
+        origin: ServerOrigin,
+        credential: HermesCredential,
+    ): HermesChatSession {
+        if (credential is HermesCredential.NativeBearer) {
+            tickets.mintTicket(origin, credential)
+        }
+        return remaining.removeFirstOrNull()
+            ?: throw HermesChatSocketClosedException(SocketCloseClass.TransportFailure, null)
+    }
+}
+
+private class RecordingTicketClient : WsTicketClient {
+    var calls = 0
+        private set
+
+    override suspend fun mintTicket(
+        origin: ServerOrigin,
+        credential: HermesCredential.NativeBearer,
+    ): WsTicket {
+        calls += 1
+        return WsTicket(ticket = "ticket-$calls", ttlSeconds = 30)
+    }
+}
+
 /**
  * Accepts the prompt, then the peer closes the event stream. Recovery is the
  * event-loop path, not a failed resume before the turn is accepted.
@@ -349,6 +510,9 @@ private class PeerClosedChatSession(private val closeCode: Int?) : HermesChatSes
     private val channel = Channel<HermesChatEvent>(Channel.UNLIMITED)
     var interruptCalls = 0
         private set
+    var closeCalls = 0
+        private set
+    private val replay = ControllerReplayProbe()
 
     override val events: Flow<HermesChatEvent> = channel.receiveAsFlow()
 
@@ -382,7 +546,37 @@ private class PeerClosedChatSession(private val closeCode: Int?) : HermesChatSes
         throw AssertionError("must not interrupt the shared runtime")
     }
 
-    override suspend fun close() = Unit
+    override suspend fun respondToApproval(
+        runtimeSessionId: RuntimeSessionId,
+        choice: String,
+        all: Boolean,
+        requestId: String?,
+    ) = replay.approval()
+
+    override suspend fun respondToBlockingPrompt(
+        kind: UnsupportedBlockingKind,
+        requestId: String,
+        value: String,
+    ) = replay.blockingPrompt()
+
+    override suspend fun attachFile(
+        runtimeSessionId: RuntimeSessionId,
+        filename: String,
+        mimeType: String,
+        base64Content: String,
+    ) = replay.attachFile()
+
+    override suspend fun attachImage(
+        runtimeSessionId: RuntimeSessionId,
+        filename: String,
+        base64Content: String,
+    ) = replay.attachImage()
+
+    fun assertNoControllerReplay() = replay.assertUnused()
+
+    override suspend fun close() {
+        closeCalls += 1
+    }
 }
 
 /** Resume/create is refused with the given close code. */
@@ -422,6 +616,7 @@ private class ResumingChatSession(private val runtimeId: String) : HermesChatSes
     var interruptCalls = 0
         private set
     val submittedPrompts = mutableListOf<String>()
+    private val replay = ControllerReplayProbe()
 
     override val events: Flow<HermesChatEvent> = channel.receiveAsFlow()
 
@@ -455,8 +650,74 @@ private class ResumingChatSession(private val runtimeId: String) : HermesChatSes
         throw AssertionError("must not interrupt the shared runtime")
     }
 
+    override suspend fun respondToApproval(
+        runtimeSessionId: RuntimeSessionId,
+        choice: String,
+        all: Boolean,
+        requestId: String?,
+    ) = replay.approval()
+
+    override suspend fun respondToBlockingPrompt(
+        kind: UnsupportedBlockingKind,
+        requestId: String,
+        value: String,
+    ) = replay.blockingPrompt()
+
+    override suspend fun attachFile(
+        runtimeSessionId: RuntimeSessionId,
+        filename: String,
+        mimeType: String,
+        base64Content: String,
+    ) = replay.attachFile()
+
+    override suspend fun attachImage(
+        runtimeSessionId: RuntimeSessionId,
+        filename: String,
+        base64Content: String,
+    ) = replay.attachImage()
+
+    fun assertNoControllerReplay() = replay.assertUnused()
+
     override suspend fun close() {
         channel.close()
+    }
+}
+
+private class ControllerReplayProbe {
+    var approvalCalls = 0
+        private set
+    var blockingPromptCalls = 0
+        private set
+    var attachFileCalls = 0
+        private set
+    var attachImageCalls = 0
+        private set
+
+    fun approval(): Nothing {
+        approvalCalls += 1
+        throw AssertionError("must not replay approvals")
+    }
+
+    fun blockingPrompt(): Nothing {
+        blockingPromptCalls += 1
+        throw AssertionError("must not replay terminal or sudo input")
+    }
+
+    fun attachFile(): Nothing {
+        attachFileCalls += 1
+        throw AssertionError("must not replay file attachments")
+    }
+
+    fun attachImage() {
+        attachImageCalls += 1
+        throw AssertionError("must not replay image attachments")
+    }
+
+    fun assertUnused() {
+        assertEquals(0, approvalCalls)
+        assertEquals(0, blockingPromptCalls)
+        assertEquals(0, attachFileCalls)
+        assertEquals(0, attachImageCalls)
     }
 }
 
@@ -465,6 +726,8 @@ private class CronListSession(
     private val jobs: List<CronJob> = emptyList(),
 ) : HermesChatSession {
     private val channel = Channel<HermesChatEvent>(Channel.UNLIMITED)
+    var closeCalls = 0
+        private set
     override val events: Flow<HermesChatEvent> = channel.receiveAsFlow()
 
     override val closeClass: SocketCloseClass?
@@ -488,6 +751,7 @@ private class CronListSession(
     }
 
     override suspend fun close() {
+        closeCalls += 1
         channel.close()
     }
 }
@@ -667,6 +931,8 @@ private class CodedSpeechSocket : SpeechStreamSocket {
 
     @Volatile
     private var peerCloseCode: Int? = null
+    var closeCalls = 0
+        private set
 
     override suspend fun sendText(text: String) = Unit
 
@@ -675,6 +941,7 @@ private class CodedSpeechSocket : SpeechStreamSocket {
     override suspend fun closeCode(): Int? = peerCloseCode
 
     override suspend fun close() {
+        closeCalls += 1
         inbound.trySend(null)
     }
 

@@ -276,6 +276,7 @@ private class LoopbackRecoveryTerminal(
 private class ClassifiedCloseSpeechSocket(
     private val delegate: SpeechStreamSocket,
     private val onPeerClose: (Int?) -> Unit,
+    private val onClosed: (SpeechStreamSocket) -> Unit = {},
 ) : SpeechStreamSocket {
     private val reported = AtomicBoolean(false)
 
@@ -290,7 +291,13 @@ private class ClassifiedCloseSpeechSocket(
 
     override suspend fun closeCode(): Int? = delegate.closeCode()
 
-    override suspend fun close() = delegate.close()
+    override suspend fun close() {
+        try {
+            delegate.close()
+        } finally {
+            onClosed(this)
+        }
+    }
 }
 
 /** The scope an optimistic voice-config write belongs to. */
@@ -321,6 +328,12 @@ private data class ProjectMetadataSessionRecord(
     val generation: Long,
     val credential: HermesCredential,
     val session: HermesChatSession,
+)
+
+private data class TrackedSpeechSocket(
+    val origin: ServerOrigin,
+    val generation: Long,
+    val socket: SpeechStreamSocket,
 )
 
 private class ChatRecoveryState(
@@ -456,6 +469,8 @@ class HermesConnectionViewModel(
     private var nextProjectSessionGeneration = 0L
     private val projectMetadataLock = Any()
     private var activeProjectMetadataSession: ProjectMetadataSessionRecord? = null
+    private val speechSocketsLock = Any()
+    private val openSpeechSockets = mutableListOf<TrackedSpeechSocket>()
     private var signInJob: Job? = null
     private var nextChatOperationGeneration = 0L
     // The most recent Ready settings, kept so a transient connection failure can be
@@ -1331,14 +1346,21 @@ class HermesConnectionViewModel(
         // The pump owns the socket, so the close code is observed here rather
         // than handed to the voice loop: recovery stays in the connection layer,
         // and a refused speech stream never re-synthesizes over billable REST.
-        return ClassifiedCloseSpeechSocket(socket) { code ->
-            if (!classifySocketClose(code).allowsCredentialRecovery) return@ClassifiedCloseSpeechSocket
-            viewModelScope.launch {
-                runCatching {
-                    recoverRejectedSocketCredential(streamOrigin, streamGeneration, streamCredential)
+        val classified = ClassifiedCloseSpeechSocket(
+            delegate = socket,
+            onPeerClose = { code ->
+                if (classifySocketClose(code).allowsCredentialRecovery) {
+                    viewModelScope.launch {
+                        runCatching {
+                            recoverRejectedSocketCredential(streamOrigin, streamGeneration, streamCredential)
+                        }
+                    }
                 }
-            }
-        }
+            },
+            onClosed = ::unregisterSpeechSocket,
+        )
+        registerSpeechSocket(streamOrigin, streamGeneration, classified)
+        return classified
     }
 
     /** Synthesize [text] to speech via the server's TTS chain (read-aloud REST path). */
@@ -1498,7 +1520,18 @@ class HermesConnectionViewModel(
                     error.closeClass.allowsCredentialRecovery
                 invalidateProjectMetadataSession(session)
                 currentCoroutineContext().ensureActive()
-                if (healedOnce || !isCurrentProjectLoad(serverOrigin, originGeneration)) {
+                if (!isCurrentProjectLoad(serverOrigin, originGeneration)) {
+                    throw error
+                }
+                if (healedOnce) {
+                    if (rejected) {
+                        publishTunnelFailure(
+                            serverOrigin,
+                            originGeneration,
+                            TunnelConnectionFailure.CredentialRejected,
+                            CREDENTIAL_REJECTED_MESSAGE,
+                        )
+                    }
                     throw error
                 }
                 if (rejected) {
@@ -6284,6 +6317,8 @@ class HermesConnectionViewModel(
         expectedGeneration: Long,
         rejected: HermesCredential?,
     ): Boolean {
+        if (generation != expectedGeneration || activeOrigin != origin) return false
+        closeLocalSocketsForCredentialRecovery(origin, expectedGeneration)
         // OAuth mints a fresh single-use ticket on every connect, so a refused
         // socket there needs no credential work here — and must never be routed
         // into the loopback bootstrap.
@@ -6292,6 +6327,54 @@ class HermesConnectionViewModel(
             refreshLoopbackCredential(origin, expectedGeneration, rejected) != null
         } catch (_: HermesLoopbackBootstrapException) {
             false
+        }
+    }
+
+    /**
+     * Drops this client's metadata, chat, and speech sockets for [origin] after
+     * a `4401`. Local close only: the shared remote runtime is left running, and
+     * `close_on_disconnect` is never flipped on.
+     */
+    private suspend fun closeLocalSocketsForCredentialRecovery(
+        origin: ServerOrigin,
+        expectedGeneration: Long,
+    ) {
+        if (generation != expectedGeneration || activeOrigin != origin) return
+        closeChatSessionNonCancellably(detachProjectMetadataSession())
+        liveControllers.values.toList().forEach { controller ->
+            detachController(
+                durableSessionId = controller.durableSessionId,
+                expectedSession = controller.session,
+                closeSession = true,
+            )
+        }
+        val speech = synchronized(speechSocketsLock) {
+            val matching = openSpeechSockets.filter {
+                it.origin == origin && it.generation == expectedGeneration
+            }
+            openSpeechSockets.removeAll(matching)
+            matching.map { it.socket }
+        }
+        speech.forEach { socket ->
+            withContext(NonCancellable) {
+                runCatching { socket.close() }
+            }
+        }
+    }
+
+    private fun registerSpeechSocket(
+        origin: ServerOrigin,
+        generation: Long,
+        socket: SpeechStreamSocket,
+    ) {
+        synchronized(speechSocketsLock) {
+            openSpeechSockets += TrackedSpeechSocket(origin, generation, socket)
+        }
+    }
+
+    private fun unregisterSpeechSocket(socket: SpeechStreamSocket) {
+        synchronized(speechSocketsLock) {
+            openSpeechSockets.removeAll { it.socket === socket }
         }
     }
 
