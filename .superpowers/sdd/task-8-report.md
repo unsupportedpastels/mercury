@@ -19,7 +19,7 @@
 | `abd1791` | docs(sdd): independent security review for task-7 layout fix |
 | `eb91a92` | docs(sdd): PASS spec review for tunnel layout fix |
 
-Screenshot goldens were not updated and were not committed.
+Screenshot goldens owner-approved 2026-08-31 (approve all 12: 9 missing + 3 compact mismatches). Updated via `updateDebugScreenshotTest`; `validateDebugScreenshotTest` 27/27 pass.
 
 ## What this session did
 
@@ -50,7 +50,8 @@ Whole-feature spec review PASS (`.superpowers/sdd/task-8-feature-spec-review.md`
 | `lintDebug` | pass |
 | `assembleDebug` | pass |
 | Release merged manifest | no `usesCleartextTraffic="true"`; `networkSecurityConfig` present; no `src/release` overlay (pinned by `MergedManifestCleartextTest`) |
-| `validateDebugScreenshotTest` (at HEAD `eb91a92`, post `ad5d7de` layout fix, 2026-08-31) | **27 tests, 12 failed** (9 missing + 3 mismatched). Count unchanged vs pre-fix run. Goldens not updated |
+| `validateDebugScreenshotTest` (pre-update, 2026-08-31) | **27 tests, 12 failed** (9 missing + 3 mismatched) |
+| `updateDebugScreenshotTest` + `validateDebugScreenshotTest` (owner-approved goldens, 2026-08-31) | **27/27 pass** (JVM preview path; no emulator) |
 | Debug APK | `app/build/outputs/apk/debug/app-debug.apk` (refreshed 2026-08-31) |
 | Protocol smoke | ran at agent prep (see below) |
 | Device matrix | **partial owner only** — items 1, 3–7 reported pass; 2, 8–12 and adaptive hardware still open |
@@ -71,7 +72,7 @@ The two leftover tests were added **after** the 961-test `--rerun-tasks` run. Th
 
 ## Screenshot / human-review status
 
-**Owner visual-review blocker.** Goldens were not written or updated.
+**Owner-approved 2026-08-31 (approve all).** Twelve goldens recorded: 9 new tunnel/recovery previews + 3 compact replacements (active session, markdown table, server settings). `validateDebugScreenshotTest`: 27/27 pass.
 
 Report: `app/build/reports/screenshotTest/preview/debug/index.html`
 
@@ -113,9 +114,10 @@ Compact tunnel setup at 400×900 (post `99dcbb2`): warning, Test tunnel, and Sav
 
 ## Owner blockers (remaining)
 
-1. **Screenshot goldens** — 9 missing + 3 compact diffs. Owner visual review required. Do not ship the screenshot gate as green. Candidates at `.superpowers/sdd/screenshot-candidates/`.
-2. **Device matrix (incomplete)** — owner-reported pass on items 1, 3–7 only. Still open: item 2 (second SSH client), items 8–12 (network transitions, lock/battery, reboot, wrong service, two-port isolation), and adaptive layout on real compact/medium/expanded hardware. Checklist: `docs/external-ssh-tunnel-device-checklist.md`. An agent must not mark untested rows pass.
-3. **IPv6 `::1` NSC matching** — unverified on physical device (prefer `127.0.0.1` until confirmed).
+1. **Device matrix (incomplete)** — owner-reported pass on items 1, 3–7 only. Still open: item 2 (second SSH client), items 8–12 (network transitions, lock/battery, reboot, wrong service, two-port isolation), and adaptive layout on real compact/medium/expanded hardware. Checklist: `docs/external-ssh-tunnel-device-checklist.md`. An agent must not mark untested rows pass.
+2. **IPv6 `::1` NSC matching** — unverified on physical device (prefer `127.0.0.1` until confirmed).
+
+Screenshot goldens: **no longer a blocker** (owner-approved 2026-08-31).
 
 ## Residual risks (for a future PR)
 
@@ -124,7 +126,6 @@ Keep the pull request honest. These are structural, not cosmetic:
 - **HTML-scrape coupling.** The session token is adopted from `window.__HERMES_SESSION_TOKEN__` in the loopback root HTML. There is no first-class local-client adoption endpoint. If upstream Hermes publishes one, retire the scrape rather than maintain it. This is why the mode is Experimental.
 - **Shared-loopback exposure.** Any other app on the device can reach the forwarded port and obtain the same token. Android loopback is not app-private. Setup UI and user docs already warn; do not describe it as sandboxed.
 - **Handshake HTTP 403 vs 4401.** A rejected-token WebSocket *upgrade* on live `v0.20.4` is HTTP 403 with an empty body, not a WebSocket close `4401`. Credential recovery is proven for an already-open socket whose peer then closes `4401`, and for REST `401`. A Hermes restart that drops sockets and refuses the next upgrade with 403 may not enter the `4401` branch until a REST `401` also arrives. Distinguishing `4401` from `4403` is impossible from handshake 403 alone. Left as instructed; do not map HTTP 403 to credential refresh.
-- **Screenshot goldens are not approved.** Nine new tunnel/recovery previews have no references. Three compact existing goldens mismatch. Owner must review pixels before updating references.
 - **Device matrix is incomplete.** Owner reported pass on items 1, 3–7 (cold/test handshake, chat, background/reopen, kill/restart, Hermes restart, tunnel stop/start). Items 2, 8–12 and adaptive hardware remain untested. Agent partial screenshot corroborates item 7 chrome only. This report is not a full device pass.
 
 Also still true from earlier tasks: NativeOAuthTest environmental failures (7); IPv6 `::1` NSC matching unverified on device; no `src/release` overlay today, but a future overlay is what the new test is for.
@@ -143,9 +144,9 @@ Owner-reported on a physical device. **Not agent-observed.** Partial matrix only
 | Hermes restart (item 6) | Recovered without pasting a token |
 | Tunnel stop/start (item 7) | Stop Termius forward → tunnel unavailable (not stuck connected); restore forward + Retry |
 
-**Still untested by owner (as of this note):** second SSH client (item 2), network transitions (item 8), lock/battery (item 9), device reboot (item 10), wrong local service (item 11), two-port isolation (item 12), adaptive layout on hardware, screenshot golden approval.
+**Still untested by owner (as of this note):** second SSH client (item 2), network transitions (item 8), lock/battery (item 9), device reboot (item 10), wrong local service (item 11), two-port isolation (item 12), adaptive layout on hardware.
 
-Screenshot goldens remain **not approved**. Device matrix remains **not complete**.
+Screenshot goldens: **owner-approved 2026-08-31**. Device matrix remains **not complete**.
 
 ## Agent observed (2026-08-31 ~15:02)
 
@@ -159,17 +160,14 @@ Agent-captured device screenshot. **Not owner prose.** Partial only — matrix *
 | Body copy | This app cannot start the tunnel |
 | Owner follow-up | Restore forward + Retry confirmed (item 7 pass) |
 
-Screenshot goldens remain **not approved**. Device matrix remains **not complete**.
+Screenshot goldens: **owner-approved 2026-08-31**. Device matrix remains **not complete**.
 
-Screenshot goldens remain **not approved**. Device matrix remains **not complete**.
+## Screenshot golden update (2026-08-31, owner-approved)
 
-## Screenshot verify rerun (2026-08-31, post `ad5d7de`)
-
-Agent verify-only at HEAD `eb91a92`. No emulator required (Compose Preview screenshot JVM path). Command: `./gradlew --no-daemon validateDebugScreenshotTest`. **27 tests, 12 failed** — same breakdown as pre-fix: 9 missing goldens, 3 compact mismatches. `app/src/screenshotTestDebug/reference/` untouched. Refreshed durable candidates: medium tunnel setup and compact installation changed renders under `.superpowers/sdd/screenshot-candidates/rendered/`.
+Owner waived visual review and approved all 12 goldens (9 missing + 3 compact mismatches). Commands: `./gradlew --no-daemon updateDebugScreenshotTest` then `./gradlew --no-daemon validateDebugScreenshotTest`. JVM preview path; no emulator. Before: **27 tests, 12 failed**. After: **27/27 pass**. `git diff --check` clean on changed files. Full `testDebugUnitTest` not re-run this session.
 
 ## Out of scope
 
-- Updating screenshot reference images
 - Device/ADB/SSH E2E
 - Mapping handshake HTTP 403 to 4401
 - Push, merge, PR creation
