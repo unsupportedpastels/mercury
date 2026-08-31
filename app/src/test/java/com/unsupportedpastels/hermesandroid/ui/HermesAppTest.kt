@@ -85,6 +85,7 @@ import com.unsupportedpastels.hermesandroid.share.SharePayload
 import org.junit.Rule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -2633,7 +2634,7 @@ class HermesAppTest {
     }
 
     @Test
-    fun serverDialogAcceptsCleartextOriginForLocalServers() {
+    fun serverDialogRejectsCleartextOriginForLanServers() {
         var savedOrigin: ServerOrigin? = null
         composeRule.setContent {
             HermesAndroidTheme {
@@ -2656,7 +2657,8 @@ class HermesAppTest {
         composeRule.onNodeWithText("Save").assertIsEnabled().performScrollTo().performClick()
         composeRule.waitForIdle()
 
-        assertEquals("http://10.0.1.2", savedOrigin?.value)
+        assertNull(savedOrigin)
+        composeRule.onNodeWithText("Non-loopback origins require HTTPS", substring = true).assertIsDisplayed()
     }
 
     @Test

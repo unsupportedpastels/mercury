@@ -2,6 +2,7 @@ package com.unsupportedpastels.hermesandroid.connection
 
 import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
 import com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure
+import com.unsupportedpastels.hermesandroid.gateway.requiresManualRecovery
 
 /** Backoff for transport or bootstrap loss: 1s, 2s, 5s, 10s, then 30s capped. */
 val LIFECYCLE_RECOVERY_BACKOFF_MS: LongArray = longArrayOf(1_000L, 2_000L, 5_000L, 10_000L, 30_000L)
@@ -263,7 +264,7 @@ fun LifecycleRecoveryState.publishedConnectionState(): ConnectionState = when (t
     }
     is LifecycleRecoveryState.Ready -> ConnectionState.Connected
     is LifecycleRecoveryState.WaitingForTunnel ->
-        if (budgetExhausted || failure == TunnelConnectionFailure.CredentialRejected) {
+        if (budgetExhausted || failure.requiresManualRecovery()) {
             ConnectionState.Disconnected
         } else {
             ConnectionState.Recovering
@@ -610,38 +611,38 @@ private fun transportLost(
 ): LifecycleRecoveryDecision {
     if (state.isTerminalCredentialFailure()) return LifecycleRecoveryDecision(state)
     val scope = state.scopeOrNull() ?: return LifecycleRecoveryDecision(state)
-        if (event.hasActiveTurn) {
-            if (state is LifecycleRecoveryState.RecoveringTurn) {
-                return LifecycleRecoveryDecision(
-                    state.copy(
-                        sessionId = event.sessionId,
-                        jobs = RecoveryJobs(turnRecovery = true),
-                    ),
-                    listOf(
-                        LifecycleRecoveryEffect.CancelRetry(scope),
-                        LifecycleRecoveryEffect.RecoverTurn(scope, event.sessionId),
-                    ),
-                )
-            }
-            val nextRetry = event.nowEpochMs + lifecycleBackoffMs(1)
+    if (event.hasActiveTurn) {
+        if (state is LifecycleRecoveryState.RecoveringTurn) {
             return LifecycleRecoveryDecision(
-                LifecycleRecoveryState.RecoveringTurn(
-                    scope = scope,
+                state.copy(
                     sessionId = event.sessionId,
-                    attempt = 1,
-                    nextRetryAtEpochMs = nextRetry,
-                    recoveryStartedAtEpochMs = event.nowEpochMs,
-                    jobs = RecoveryJobs(retryTimer = true),
-                    authorization = authorizationOf(state) ?: AuthorizationKind.LoopbackSession,
-                    elapsedMs = lifecycleBackoffMs(1),
+                    jobs = RecoveryJobs(turnRecovery = true),
                 ),
-                cancelTimers(state) + LifecycleRecoveryEffect.ScheduleRetry(scope, nextRetry, lifecycleBackoffMs(1)),
+                listOf(
+                    LifecycleRecoveryEffect.CancelRetry(scope),
+                    LifecycleRecoveryEffect.RecoverTurn(scope, event.sessionId),
+                ),
             )
         }
-        if (state is LifecycleRecoveryState.Ready) {
-            return requestDebouncedProbe(state, event.nowEpochMs)
-        }
-        return waitForFailure(
+        val nextRetry = event.nowEpochMs + lifecycleBackoffMs(1)
+        return LifecycleRecoveryDecision(
+            LifecycleRecoveryState.RecoveringTurn(
+                scope = scope,
+                sessionId = event.sessionId,
+                attempt = 1,
+                nextRetryAtEpochMs = nextRetry,
+                recoveryStartedAtEpochMs = event.nowEpochMs,
+                jobs = RecoveryJobs(retryTimer = true),
+                authorization = authorizationOf(state) ?: AuthorizationKind.LoopbackSession,
+                elapsedMs = lifecycleBackoffMs(1),
+            ),
+            cancelTimers(state) + LifecycleRecoveryEffect.ScheduleRetry(scope, nextRetry, lifecycleBackoffMs(1)),
+        )
+    }
+    if (state is LifecycleRecoveryState.Ready) {
+        return requestDebouncedProbe(state, event.nowEpochMs)
+    }
+    return waitForFailure(
         scope = scope,
         failure = TunnelConnectionFailure.TunnelUnavailable,
         nowEpochMs = event.nowEpochMs,
@@ -694,15 +695,12 @@ private fun retryTimerFired(
     val scope = state.scopeOrNull() ?: return LifecycleRecoveryDecision(state)
     when (state) {
         is LifecycleRecoveryState.WaitingForTunnel -> {
-            if (state.failure == TunnelConnectionFailure.CredentialRejected ||
-                state.failure == TunnelConnectionFailure.BootstrapRejected ||
+            if (state.failure.requiresManualRecovery() ||
                 budgetElapsed(state.recoveryStartedAtEpochMs, event.nowEpochMs) ||
                 state.budgetExhausted ||
                 state.elapsedMs >= LIFECYCLE_RECOVERY_BUDGET_MS
             ) {
-                return if (state.failure == TunnelConnectionFailure.CredentialRejected ||
-                    state.failure == TunnelConnectionFailure.BootstrapRejected
-                ) {
+                return if (state.failure.requiresManualRecovery()) {
                     LifecycleRecoveryDecision(state, cancelTimers(state))
                 } else {
                     exhaust(state, event.nowEpochMs)
@@ -801,7 +799,7 @@ private fun waitForFailure(
     if (failure == TunnelConnectionFailure.CredentialRejected) {
         return terminalCredential(previous, nowEpochMs)
     }
-    if (failure == TunnelConnectionFailure.BootstrapRejected) {
+    if (failure.requiresManualRecovery()) {
         return waitForManual(previous, nowEpochMs, failure)
     }
     val attempt = previousAttempt + 1

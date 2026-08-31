@@ -252,6 +252,9 @@ import com.unsupportedpastels.hermesandroid.voice.DeviceSpeechInputButton
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
 import com.unsupportedpastels.hermesandroid.connection.ServerCatalog
 import com.unsupportedpastels.hermesandroid.connection.ServerCatalogEntry
+import com.unsupportedpastels.hermesandroid.connection.ServerConnectionMode
+import com.unsupportedpastels.hermesandroid.connection.OriginTransportDecision
+import com.unsupportedpastels.hermesandroid.connection.evaluateOriginTransport
 import com.unsupportedpastels.hermesandroid.connection.MAX_SERVER_LABEL_CHARS
 import com.unsupportedpastels.hermesandroid.connection.ModelPickerState
 import com.unsupportedpastels.hermesandroid.connection.ServerSettingsState
@@ -4238,7 +4241,7 @@ internal fun ServerSettingsScreen(
                         style = MaterialTheme.typography.bodyLarge,
                     )
                     Text(
-                        "Enter the HTTP or HTTPS origin of your unchanged Hermes Serve instance.",
+                        "Direct connections require HTTPS. HTTP is allowed only for 127.0.0.1 or [::1] in External SSH tunnel mode.",
                         style = MaterialTheme.typography.bodyLarge,
                     )
                     OutlinedTextField(
@@ -4251,7 +4254,7 @@ internal fun ServerSettingsScreen(
                         supportingText = {
                             Text(
                                 validationMessage
-                                    ?: "HTTP or HTTPS origin only — no path, credentials, query, or ticket.",
+                                    ?: "HTTPS origin required except 127.0.0.1 or [::1] HTTP in External SSH tunnel mode — no path, credentials, query, or ticket.",
                             )
                         },
                         isError = validationMessage != null,
@@ -4288,10 +4291,18 @@ internal fun ServerSettingsScreen(
                             enabled = parsedOrigin != null && !isSaving,
                             onClick = {
                                 val origin = editingOrigin ?: parsedOrigin ?: return@Button
+                                val transport = evaluateOriginTransport(
+                                    origin,
+                                    ServerConnectionMode.Direct,
+                                )
+                                if (transport is OriginTransportDecision.Rejected) {
+                                    saveError = transport.message
+                                    return@Button
+                                }
                                 val entry = runCatching {
                                     ServerCatalogEntry(origin = origin, label = label.trim())
                                 }.getOrElse {
-                                    saveError = "That server label is not valid."
+                                    saveError = it.message ?: "That server label is not valid."
                                     return@Button
                                 }
                                 coroutineScope.launch {

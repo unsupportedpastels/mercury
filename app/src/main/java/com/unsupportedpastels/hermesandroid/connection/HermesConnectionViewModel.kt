@@ -431,6 +431,7 @@ class HermesConnectionViewModel(
     private val sessionFilterRepository: SessionFilterRepository? = null,
     private val speechStreamConnector: SpeechStreamConnector? = null,
     private val loopbackSessionBootstrapClient: LoopbackSessionBootstrapClient? = null,
+    private val rememberInstallId: (suspend (ServerOrigin, String) -> Unit)? = null,
 ) : ViewModel() {
     private val mutableSnapshots = MutableStateFlow(HermesGatewaySnapshot())
     val snapshots: StateFlow<HermesGatewaySnapshot> = mutableSnapshots.asStateFlow()
@@ -452,6 +453,8 @@ class HermesConnectionViewModel(
     private var profileGeneration = 0L
     private var activeOrigin: ServerOrigin? = null
     private var activeConnectionMode: ServerConnectionMode? = null
+    private var lastSeenInstallId: String? = null
+    private var pendingObservedInstallId: String? = null
     private var activeTokens: ActiveTokenRecord? = null
     private var activeLoopbackCredential: ActiveLoopbackCredentialRecord? = null
     private var loopbackRecoveryEpoch: LoopbackRecoveryEpoch? = null
@@ -604,6 +607,7 @@ class HermesConnectionViewModel(
                 if (hasAppliedReadySettings && settingsState is ServerSettingsState.Ready &&
                     nextOrigin == activeOrigin && nextMode == activeConnectionMode
                 ) {
+                    lastSeenInstallId = settingsState.catalog.activeEntry?.lastSeenInstallId
                     return@collect
                 }
                 hasAppliedReadySettings = settingsState is ServerSettingsState.Ready
@@ -664,6 +668,9 @@ class HermesConnectionViewModel(
                 setSessionFilterScope(null, null)
                 activeOrigin = nextOrigin
                 activeConnectionMode = nextMode
+                lastSeenInstallId = (settingsState as? ServerSettingsState.Ready)
+                    ?.catalog?.activeEntry?.lastSeenInstallId
+                pendingObservedInstallId = null
                 lastReadySettings = settingsState as? ServerSettingsState.Ready
                 profileGeneration += 1
                 when (settingsState) {
@@ -738,6 +745,26 @@ class HermesConnectionViewModel(
         }
         dispatchRecovery(LifecycleRecoveryEvent.ManualRetry(nowEpochMs()))
         return connectionJob ?: viewModelScope.launch { }
+    }
+
+    fun acceptNewInstallation(): Job {
+        val origin = activeOrigin ?: return viewModelScope.launch { }
+        val observed = pendingObservedInstallId ?: return viewModelScope.launch { }
+        pendingObservedInstallId = null
+        lastSeenInstallId = observed
+        return viewModelScope.launch {
+            rememberInstallId?.invoke(origin, observed)
+            retryConnection().join()
+        }
+    }
+
+    fun cancelNewInstallation(): Job = viewModelScope.launch {
+        pendingObservedInstallId = null
+        loopbackCredentialMutex.withLock {
+            activeLoopbackCredential = null
+            loopbackRecoveryEpoch = null
+        }
+        activeTokens = null
     }
 
     private fun dispatchRecovery(event: LifecycleRecoveryEvent) {
@@ -862,8 +889,29 @@ class HermesConnectionViewModel(
             return
         }
         try {
+            val transport = evaluateOriginTransport(scope.origin, scope.mode)
+            if (transport is OriginTransportDecision.Rejected) {
+                dispatchRecovery(
+                    LifecycleRecoveryEvent.ProbeFailed(
+                        scope.origin,
+                        scope.generation,
+                        transport.failure,
+                        nowEpochMs(),
+                    ),
+                )
+                if (scope.generation == generation && activeOrigin == scope.origin) {
+                    mutableSnapshots.value = mutableSnapshots.value.copy(
+                        tunnelConnectionFailure = transport.failure,
+                        connectionError = transport.message,
+                        sessionMetadataSource = CacheSource.Cached,
+                    )
+                    applyRecoveryPresentation()
+                }
+                return
+            }
             if (scope.mode == ServerConnectionMode.ExternalSshTunnel) {
-                client.probeExternalTunnel(scope.origin)
+                val info = client.probeExternalTunnel(scope.origin)
+                if (publishInstallationChange(scope.origin, scope.generation, info.installId)) return
                 val credential = activeLoopbackCredential
                     ?.takeIf { it.origin == scope.origin && it.generation == scope.generation }
                     ?.credential
@@ -888,7 +936,8 @@ class HermesConnectionViewModel(
                     ),
                 )
             } else {
-                client.probe(scope.origin)
+                val info = client.probe(scope.origin)
+                if (publishInstallationChange(scope.origin, scope.generation, info.installId)) return
                 dispatchRecovery(
                     LifecycleRecoveryEvent.ProbeSucceeded(
                         scope.origin,
@@ -899,6 +948,23 @@ class HermesConnectionViewModel(
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (failed: HermesEndpointException) {
+            dispatchRecovery(
+                LifecycleRecoveryEvent.ProbeFailed(
+                    scope.origin,
+                    scope.generation,
+                    failed.failure,
+                    nowEpochMs(),
+                ),
+            )
+            if (scope.generation == generation && activeOrigin == scope.origin) {
+                mutableSnapshots.value = mutableSnapshots.value.copy(
+                    tunnelConnectionFailure = failed.failure,
+                    connectionError = failed.message ?: failed.failure.name,
+                    sessionMetadataSource = CacheSource.Cached,
+                )
+                applyRecoveryPresentation()
+            }
         } catch (_: Exception) {
             dispatchRecovery(
                 LifecycleRecoveryEvent.ProbeFailed(
@@ -1202,6 +1268,16 @@ class HermesConnectionViewModel(
         } else {
             HermesGatewaySnapshot(connectionState = ConnectionState.Connecting)
         }
+        val rejectedDirectTransport = rejectedOriginTransport(serverOrigin, connectionMode)
+        if (rejectedDirectTransport != null) {
+            publishTunnelFailure(
+                serverOrigin,
+                currentGeneration,
+                rejectedDirectTransport.failure,
+                rejectedDirectTransport.message,
+            )
+            return
+        }
         try {
             val store = tokenStore
             val startup = if (store != null) {
@@ -1217,6 +1293,7 @@ class HermesConnectionViewModel(
             val stored = startup.second
             currentCoroutineContext().ensureActive()
             if (generation != currentGeneration || activeOrigin != serverOrigin) return
+            if (publishInstallationChange(serverOrigin, currentGeneration, info.installId)) return
 
             if (!info.authRequired) {
                 mutableSnapshots.value = HermesGatewaySnapshot(
@@ -1229,6 +1306,7 @@ class HermesConnectionViewModel(
                     sessionMetadataSource = CacheSource.Live,
                 )
                 persistCachedMetadata(serverOrigin, "default", info.sessions, currentGeneration)
+                rememberObservedInstallId(serverOrigin, info.installId)
                 notifyBootstrapSucceeded(serverOrigin, currentGeneration, AuthorizationKind.None)
                 return
             }
@@ -1309,6 +1387,7 @@ class HermesConnectionViewModel(
                 )
                 refreshOperationalStatus(force = true)
                 notifyBootstrapSucceeded(serverOrigin, currentGeneration, AuthorizationKind.OAuth)
+                rememberObservedInstallId(serverOrigin, info.installId)
             } else {
                 mutableSnapshots.value = HermesGatewaySnapshot(
                     connectionState = ConnectionState.Connected,
@@ -1318,9 +1397,12 @@ class HermesConnectionViewModel(
                     authProviders = info.providers,
                 )
                 notifyBootstrapSucceeded(serverOrigin, currentGeneration, AuthorizationKind.OAuth)
+                rememberObservedInstallId(serverOrigin, info.installId)
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (failed: HermesEndpointException) {
+            publishTunnelFailure(serverOrigin, currentGeneration, failed.failure, failed.message ?: failed.failure.name)
         } catch (_: NativeRefreshExpiredException) {
             if (generation != currentGeneration || activeOrigin != serverOrigin) return
             tokenStore?.clear(serverOrigin)
@@ -1352,9 +1434,23 @@ class HermesConnectionViewModel(
             connectionError = null,
             tunnelConnectionFailure = null,
         )
+        val rejectedTunnelTransport = rejectedOriginTransport(
+            serverOrigin,
+            ServerConnectionMode.ExternalSshTunnel,
+        )
+        if (rejectedTunnelTransport != null) {
+            publishTunnelFailure(
+                serverOrigin,
+                currentGeneration,
+                rejectedTunnelTransport.failure,
+                rejectedTunnelTransport.message,
+            )
+            return
+        }
         try {
             val info = client.probeExternalTunnel(serverOrigin)
             ensureCurrentTunnel(serverOrigin, currentGeneration)
+            if (publishInstallationChange(serverOrigin, currentGeneration, info.installId)) return
             if (info.authRequired) {
                 publishTunnelFailure(
                     serverOrigin, currentGeneration, TunnelConnectionFailure.BootstrapRejected,
@@ -1397,9 +1493,12 @@ class HermesConnectionViewModel(
                 tunnelConnectionFailure = null,
             )
             persistCachedMetadata(serverOrigin, "default", sessions, currentGeneration)
+            rememberObservedInstallId(serverOrigin, info.installId)
             notifyBootstrapSucceeded(serverOrigin, currentGeneration, AuthorizationKind.LoopbackSession)
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (failed: HermesEndpointException) {
+            publishTunnelFailure(serverOrigin, currentGeneration, failed.failure, failed.message ?: failed.failure.name)
         } catch (_: HermesAuthenticationRejectedException) {
             publishTunnelFailure(
                 serverOrigin, currentGeneration, TunnelConnectionFailure.CredentialRejected,
@@ -1430,9 +1529,7 @@ class HermesConnectionViewModel(
         failure: TunnelConnectionFailure,
         message: String,
     ) {
-        if (generation != expectedGeneration || activeOrigin != origin ||
-            activeConnectionMode != ServerConnectionMode.ExternalSshTunnel
-        ) return
+        if (generation != expectedGeneration || activeOrigin != origin) return
         // Every read and write of the loopback credential record goes through this
         // lock, so the invariant is enforced rather than resting on dispatcher
         // confinement.
@@ -1468,6 +1565,46 @@ class HermesConnectionViewModel(
             sessionMetadataSource = CacheSource.Cached,
         )
         applyRecoveryPresentation()
+    }
+
+    private fun rejectedOriginTransport(
+        origin: ServerOrigin,
+        mode: ServerConnectionMode?,
+    ): OriginTransportDecision.Rejected? {
+        val decision = evaluateOriginTransport(origin, mode ?: ServerConnectionMode.Direct)
+        return decision as? OriginTransportDecision.Rejected
+    }
+
+    private suspend fun publishInstallationChange(
+        origin: ServerOrigin,
+        expectedGeneration: Long,
+        observedInstallId: String?,
+    ): Boolean {
+        val continuity = evaluateInstallationContinuity(lastSeenInstallId, observedInstallId)
+        if (continuity !is InstallationContinuity.Changed) return false
+        pendingObservedInstallId = continuity.observedInstallId
+        loopbackCredentialMutex.withLock {
+            activeLoopbackCredential = null
+            loopbackRecoveryEpoch = null
+        }
+        activeTokens = null
+        publishTunnelFailure(
+            origin,
+            expectedGeneration,
+            TunnelConnectionFailure.InstallationChanged,
+            INSTALLATION_CHANGED_MESSAGE,
+        )
+        return true
+    }
+
+    private fun rememberObservedInstallId(origin: ServerOrigin, observedInstallId: String?) {
+        val installId = observedInstallId?.takeIf { it.isNotBlank() }?.take(MAX_INSTALL_ID_CHARS) ?: return
+        lastSeenInstallId = lastSeenInstallId ?: installId
+        viewModelScope.launch {
+            if (lastSeenInstallId == installId) {
+                rememberInstallId?.invoke(origin, installId)
+            }
+        }
     }
 
     private fun startProjectTreeLoad(
@@ -7127,6 +7264,7 @@ class HermesConnectionViewModel(
                     ticketClient = KtorWsTicketClient(httpClient),
                     socketFactory = KtorSpeechWebSocketFactory(httpClient),
                 ),
+                rememberInstallId = DataStoreServerSettingsRepository(context)::rememberInstallId,
             ) as T
         }
     }

@@ -380,6 +380,26 @@ class LifecycleRecoveryReducerTest {
                 assertFalse(ignored.effects.any { it is LifecycleRecoveryEffect.Probe })
             },
             Case(
+                name = "wrong-service and protocol failures wait for manual retry",
+                initial = LifecycleRecoveryState.Probing(
+                    scope(),
+                    RecoveryJobs(bootstrap = true),
+                ),
+                event = LifecycleRecoveryEvent.BootstrapFailed(
+                    origin, 1L, TunnelConnectionFailure.NotHermesEndpoint, nowEpochMs = 10_000L,
+                ),
+            ) { decision ->
+                val waiting = decision.state as LifecycleRecoveryState.WaitingForTunnel
+                assertEquals(TunnelConnectionFailure.NotHermesEndpoint, waiting.failure)
+                assertTrue(waiting.budgetExhausted)
+                assertFalse(waiting.jobs.retryTimer)
+                val timer = reduceLifecycle(
+                    waiting,
+                    LifecycleRecoveryEvent.RetryTimerFired(origin, 1L, nowEpochMs = 11_000L),
+                )
+                assertFalse(timer.effects.any { it is LifecycleRecoveryEffect.Bootstrap })
+            },
+            Case(
                 name = "bootstrap rejected waits for manual retry",
                 initial = LifecycleRecoveryState.Probing(
                     scope(),

@@ -131,6 +131,144 @@ class HermesConnectionViewModelTest {
     }
 
     @Test
+    fun tunnelModeRejectsLocalhostBeforeAnyRequest() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://localhost:9119")
+        val client = TunnelConnectionClient()
+        val bootstrap = RecordingTunnelBootstrap(origin, listOf("session-token"))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+        advanceUntilIdle()
+
+        assertEquals(TunnelConnectionFailure.InvalidTunnelOrigin, viewModel.snapshots.value.tunnelConnectionFailure)
+        assertTrue(viewModel.snapshots.value.connectionError!!.contains("IPv4"))
+        assertTrue(viewModel.snapshots.value.connectionError!!.contains("IPv6"))
+        assertEquals(0, bootstrap.calls)
+        assertTrue(client.credentials.isEmpty())
+    }
+
+    @Test
+    fun tunnelWrongServiceFailsClosedWithoutTreatingItAsUnavailable() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = TunnelConnectionClient(
+                probeFailure = HermesEndpointException(
+                    TunnelConnectionFailure.NotHermesEndpoint,
+                    NOT_HERMES_ENDPOINT_MESSAGE,
+                ),
+            ),
+            loopbackSessionBootstrapClient = RecordingTunnelBootstrap(origin, listOf("unused")),
+        )
+        advanceUntilIdle()
+
+        assertEquals(TunnelConnectionFailure.NotHermesEndpoint, viewModel.snapshots.value.tunnelConnectionFailure)
+        assertFalse(viewModel.snapshots.value.connectionError!!.contains("unavailable", ignoreCase = true))
+        assertFalse(viewModel.snapshots.value.connectionError!!.contains("identity", ignoreCase = true))
+    }
+
+    @Test
+    fun changedInstallIdClearsCredentialAndRequiresAcceptance() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val client = TunnelConnectionClient(installId = "install-b")
+        val bootstrap = RecordingTunnelBootstrap(origin, listOf("session-token"))
+        val remembered = mutableListOf<Pair<ServerOrigin, String>>()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(
+                ServerSettingsState.Ready(
+                    ServerCatalog.single(
+                        ServerCatalogEntry(
+                            origin,
+                            connectionMode = ServerConnectionMode.ExternalSshTunnel,
+                            lastSeenInstallId = "install-a",
+                        ),
+                    ),
+                ),
+            ),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+            rememberInstallId = { serverOrigin, installId -> remembered += serverOrigin to installId },
+        )
+        advanceUntilIdle()
+
+        assertEquals(TunnelConnectionFailure.InstallationChanged, viewModel.snapshots.value.tunnelConnectionFailure)
+        assertTrue(viewModel.snapshots.value.connectionError!!.contains("different Hermes installation"))
+        assertFalse(viewModel.snapshots.value.connectionError!!.contains("identity", ignoreCase = true))
+        assertEquals(0, bootstrap.calls)
+        assertTrue(client.credentials.isEmpty())
+        assertTrue(remembered.isEmpty())
+
+        viewModel.acceptNewInstallation().join()
+        advanceUntilIdle()
+
+        assertTrue(remembered.isNotEmpty())
+        assertTrue(remembered.all { it == origin to "install-b" })
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+        assertEquals(1, bootstrap.calls)
+        assertEquals(1, client.credentials.size)
+    }
+
+    @Test
+    fun absentInstallIdDoesNotWarnEvenWhenLastSeenExists() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(
+                ServerSettingsState.Ready(
+                    ServerCatalog.single(
+                        ServerCatalogEntry(
+                            origin,
+                            connectionMode = ServerConnectionMode.ExternalSshTunnel,
+                            lastSeenInstallId = "install-a",
+                        ),
+                    ),
+                ),
+            ),
+            client = TunnelConnectionClient(installId = null),
+            loopbackSessionBootstrapClient = RecordingTunnelBootstrap(origin, listOf("session-token")),
+        )
+        advanceUntilIdle()
+
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+        assertEquals(null, viewModel.snapshots.value.tunnelConnectionFailure)
+    }
+
+    @Test
+    fun directLanCleartextIsRejectedBeforeProbe() = runTest(dispatcher) {
+        val client = FakeHermesConnectionClient()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(
+                ServerSettingsState.Ready(ServerOrigin.parse("http://10.0.1.2")),
+            ),
+            client = client,
+        )
+        client.response.complete(authRequiredInfo())
+        advanceUntilIdle()
+
+        assertEquals(TunnelConnectionFailure.CleartextPolicyBlocked, viewModel.snapshots.value.tunnelConnectionFailure)
+        assertTrue(client.probedOrigins.isEmpty())
+    }
+
+    @Test
+    fun twoLoopbackPortsKeepSeparateSessionRows() = runTest(dispatcher) {
+        val first = ServerOrigin.parse("http://127.0.0.1:9119")
+        val second = ServerOrigin.parse("http://127.0.0.1:9120")
+        val settings = MutableStateFlow(tunnelSettings(first))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = settings,
+            client = GatedSessionMutationClient(),
+            loopbackSessionBootstrapClient = SwitchableTunnelBootstrap(),
+        )
+        advanceUntilIdle()
+        assertEquals(listOf("127.0.0.1:9119 row"), viewModel.snapshots.value.durableSessions.map { it.title })
+
+        settings.value = tunnelSettings(second)
+        advanceUntilIdle()
+        assertEquals(listOf("127.0.0.1:9120 row"), viewModel.snapshots.value.durableSessions.map { it.title })
+    }
+
+    @Test
     fun externalTunnelPublishesSpecificUnavailableAndBootstrapErrors() = runTest(dispatcher) {
         val origin = ServerOrigin.parse("http://127.0.0.1:19119")
         val unavailable = HermesConnectionViewModel(
@@ -4968,6 +5106,7 @@ private class TunnelConnectionClient(
     private val probeFailure: Exception? = null,
     private val rejectSessionCalls: Set<Int> = emptySet(),
     private val rejectMutation: Boolean = false,
+    private val installId: String? = null,
 ) : HermesConnectionClient {
     val credentials = mutableListOf<HermesCredential>()
     var mutationCalls = 0
@@ -4977,7 +5116,7 @@ private class TunnelConnectionClient(
 
     override suspend fun probeExternalTunnel(serverOrigin: ServerOrigin): HermesConnectionInfo {
         probeFailure?.let { throw it }
-        return HermesConnectionInfo("0.20.4", false, false, emptyList())
+        return HermesConnectionInfo("0.20.4", false, false, emptyList(), installId = installId)
     }
 
     override suspend fun loadSessionsForProfile(

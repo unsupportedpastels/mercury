@@ -995,7 +995,12 @@ class HermesChatIntegrationTest {
         )
 
         runCurrent()
-        assertEquals(ConnectionState.Recovering, viewModel.snapshots.value.connectionState)
+        // Started in background: idle bootstrap is suspended, so the published
+        // state may stay Connecting rather than Recovering.
+        assertTrue(
+            viewModel.snapshots.value.connectionState == ConnectionState.Recovering ||
+                viewModel.snapshots.value.connectionState == ConnectionState.Connecting,
+        )
         val probesBeforeSettingsRemoval = client.probeAttempts
 
         settings.value = ServerSettingsState.Unavailable

@@ -77,7 +77,7 @@ class ServerCatalogRepositoryTest {
         val repository = DataStoreServerSettingsRepository(dataStore, nowEpochSeconds = { 42L })
         val direct = ServerCatalogEntry(ServerOrigin.parse("https://direct.example"), label = "Direct")
         val tunnel = ServerCatalogEntry(
-            ServerOrigin.parse("http://localhost:8080"),
+            ServerOrigin.parse("http://127.0.0.1:8080"),
             label = "Tunnel",
             connectionMode = ServerConnectionMode.ExternalSshTunnel,
         )
@@ -172,6 +172,45 @@ class ServerCatalogRepositoryTest {
         assertEquals(MAX_SERVER_CATALOG_ENTRIES, state.catalog.entries.size)
         assertEquals(newest, state.activeOrigin)
         assertFalse(state.catalog.entries.any { it.origin == ServerOrigin.parse("https://server-0.example") })
+    }
+
+    @Test
+    fun rememberInstallIdPersistsAsNonSecretCatalogMetadata() = runTest {
+        val dataStore = InMemoryCatalogDataStore(emptyPreferences())
+        val repository = DataStoreServerSettingsRepository(dataStore, nowEpochSeconds = { 1L })
+        val origin = ServerOrigin.parse("http://127.0.0.1:9119")
+        repository.save(
+            ServerCatalogEntry(origin, connectionMode = ServerConnectionMode.ExternalSshTunnel),
+        )
+
+        repository.rememberInstallId(origin, "install-a")
+
+        val state = DataStoreServerSettingsRepository(dataStore).states.firstReady()
+        assertEquals("install-a", state.catalog.activeEntry?.lastSeenInstallId)
+        assertTrue(
+            dataStore.current[stringPreferencesKey("server_catalog")]
+                .orEmpty()
+                .contains("\"last_seen_install_id\":\"install-a\""),
+        )
+    }
+
+    @Test
+    fun saveRejectsDirectLanCleartextAndTunnelLocalhost() = runTest {
+        val repository = DataStoreServerSettingsRepository(InMemoryCatalogDataStore(emptyPreferences()))
+        val lan = runCatching { repository.save(ServerOrigin.parse("http://10.0.1.2")) }.exceptionOrNull()
+        assertTrue(lan is IllegalArgumentException)
+        assertTrue(lan!!.message!!.contains("HTTPS"))
+
+        val localhost = runCatching {
+            repository.save(
+                ServerCatalogEntry(
+                    ServerOrigin.parse("http://localhost:9119"),
+                    connectionMode = ServerConnectionMode.ExternalSshTunnel,
+                ),
+            )
+        }.exceptionOrNull()
+        assertTrue(localhost is IllegalArgumentException)
+        assertTrue(localhost!!.message!!.contains("IPv4"))
     }
 }
 

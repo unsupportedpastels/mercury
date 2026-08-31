@@ -6,6 +6,9 @@ const val MAX_SERVER_CATALOG_ENTRIES = 8
 /** Maximum number of user-controlled display-label characters retained locally. */
 const val MAX_SERVER_LABEL_CHARS = 80
 
+/** Maximum number of non-secret installation-identifier characters retained locally. */
+const val MAX_INSTALL_ID_CHARS = 128
+
 enum class ServerConnectionMode {
     Direct,
     ExternalSshTunnel,
@@ -22,6 +25,7 @@ data class ServerCatalogEntry(
     val label: String = "",
     val lastUsedEpochSeconds: Long? = null,
     val connectionMode: ServerConnectionMode = ServerConnectionMode.Direct,
+    val lastSeenInstallId: String? = null,
 ) {
     init {
         require(label.length <= MAX_SERVER_LABEL_CHARS) { "Server label is too long" }
@@ -29,8 +33,11 @@ data class ServerCatalogEntry(
         require(lastUsedEpochSeconds == null || lastUsedEpochSeconds >= 0L) {
             "Server last-used time is invalid"
         }
-        require(connectionMode != ServerConnectionMode.ExternalSshTunnel || origin.isLoopback) {
-            "External SSH tunnel connections require a loopback server origin"
+        require(lastSeenInstallId == null || lastSeenInstallId.none(Char::isISOControl)) {
+            "Server installation identifier contains a control character"
+        }
+        require(lastSeenInstallId == null || lastSeenInstallId.length <= MAX_INSTALL_ID_CHARS) {
+            "Server installation identifier is too long"
         }
     }
 
