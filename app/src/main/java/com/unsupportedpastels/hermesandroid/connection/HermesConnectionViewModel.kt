@@ -747,6 +747,65 @@ class HermesConnectionViewModel(
         return connectionJob ?: viewModelScope.launch { }
     }
 
+    /**
+     * Non-mutating handshake against a loopback origin. Does not save the catalog,
+     * does not replace the active connection, and does not keep the session token.
+     */
+    suspend fun testTunnel(origin: ServerOrigin): TunnelTestResult {
+        val transport = evaluateOriginTransport(origin, ServerConnectionMode.ExternalSshTunnel)
+        if (transport is OriginTransportDecision.Rejected) {
+            return TunnelTestResult.Failure(transport.failure, transport.message)
+        }
+        return try {
+            val info = client.probeExternalTunnel(origin)
+            if (info.authRequired) {
+                return TunnelTestResult.Failure(
+                    TunnelConnectionFailure.BootstrapRejected,
+                    GATED_TUNNEL_TARGET_MESSAGE,
+                )
+            }
+            val bootstrap = loopbackSessionBootstrapClient?.bootstrap(origin)
+                ?: return TunnelTestResult.Failure(
+                    TunnelConnectionFailure.BootstrapRejected,
+                    BOOTSTRAP_REJECTED_USER_MESSAGE,
+                )
+            when (bootstrap) {
+                is LoopbackSessionBootstrapResult.Success -> {
+                    client.loadSessionsForProfile(
+                        origin,
+                        bootstrap.credential,
+                        "default",
+                        archivedOnly = false,
+                    )
+                    TunnelTestResult.Success
+                }
+                is LoopbackSessionBootstrapResult.Failure -> {
+                    val unavailable =
+                        bootstrap.reason == LoopbackSessionBootstrapFailure.TransportFailure
+                    TunnelTestResult.Failure(
+                        if (unavailable) TunnelConnectionFailure.TunnelUnavailable
+                        else TunnelConnectionFailure.BootstrapRejected,
+                        if (unavailable) TUNNEL_UNAVAILABLE_BODY else BOOTSTRAP_REJECTED_USER_MESSAGE,
+                    )
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failed: HermesEndpointException) {
+            TunnelTestResult.Failure(failed.failure, failed.message ?: failed.failure.name)
+        } catch (_: HermesAuthenticationRejectedException) {
+            TunnelTestResult.Failure(
+                TunnelConnectionFailure.CredentialRejected,
+                CREDENTIAL_REJECTED_USER_MESSAGE,
+            )
+        } catch (_: Exception) {
+            TunnelTestResult.Failure(
+                TunnelConnectionFailure.TunnelUnavailable,
+                TUNNEL_UNAVAILABLE_BODY,
+            )
+        }
+    }
+
     fun acceptNewInstallation(): Job {
         val origin = activeOrigin ?: return viewModelScope.launch { }
         val observed = pendingObservedInstallId ?: return viewModelScope.launch { }

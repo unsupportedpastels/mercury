@@ -2654,11 +2654,11 @@ class HermesAppTest {
         composeRule.onNodeWithContentDescription("Server origin input")
             .performTextInput("http://10.0.1.2")
 
-        composeRule.onNodeWithText("Save").assertIsEnabled().performScrollTo().performClick()
+        composeRule.onNodeWithText("Non-loopback origins require HTTPS", substring = true).assertIsDisplayed()
+        composeRule.onNodeWithText("Save").assertIsNotEnabled()
         composeRule.waitForIdle()
 
         assertNull(savedOrigin)
-        composeRule.onNodeWithText("Non-loopback origins require HTTPS", substring = true).assertIsDisplayed()
     }
 
     @Test

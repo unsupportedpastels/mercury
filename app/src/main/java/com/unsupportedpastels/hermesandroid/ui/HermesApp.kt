@@ -255,6 +255,9 @@ import com.unsupportedpastels.hermesandroid.connection.ServerCatalogEntry
 import com.unsupportedpastels.hermesandroid.connection.ServerConnectionMode
 import com.unsupportedpastels.hermesandroid.connection.OriginTransportDecision
 import com.unsupportedpastels.hermesandroid.connection.evaluateOriginTransport
+import com.unsupportedpastels.hermesandroid.connection.DEFAULT_TUNNEL_ORIGIN
+import com.unsupportedpastels.hermesandroid.connection.TUNNEL_UNAVAILABLE_BODY
+import com.unsupportedpastels.hermesandroid.connection.TunnelTestResult
 import com.unsupportedpastels.hermesandroid.connection.MAX_SERVER_LABEL_CHARS
 import com.unsupportedpastels.hermesandroid.connection.ModelPickerState
 import com.unsupportedpastels.hermesandroid.connection.ServerSettingsState
@@ -449,6 +452,14 @@ fun HermesApp(
     onLogout: suspend () -> Unit = {},
     onSignIn: () -> Unit = {},
     onRetryConnection: () -> Unit = {},
+    onAcceptNewInstallation: () -> Unit = {},
+    onCancelRecovery: () -> Unit = {},
+    onTestTunnel: suspend (ServerOrigin) -> TunnelTestResult = {
+        TunnelTestResult.Failure(
+            com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure.TunnelUnavailable,
+            TUNNEL_UNAVAILABLE_BODY,
+        )
+    },
     onOpenProject: (ProjectId) -> Unit = {},
     onOpenSession: (DurableSessionId) -> Unit = {},
     onLoadSessionInsights: (DurableSessionId) -> Unit = {},
@@ -866,6 +877,7 @@ fun HermesApp(
                     onCloudSignOut = onCloudSignOut,
                     onCloudSelectOrg = onCloudSelectOrg,
                     onCloudSelectAgent = onCloudSelectAgent,
+                    onTestTunnel = onTestTunnel,
                 )
             }
             Box(
@@ -903,6 +915,8 @@ fun HermesApp(
                     onRefreshDurableSessions = onRefreshDurableSessions,
                     onConfigureServer = openServerSettings,
                     onRetryConnection = onRetryConnection,
+                    onAcceptNewInstallation = onAcceptNewInstallation,
+                    onCancelRecovery = onCancelRecovery,
                     onSignIn = onSignIn,
                     onProjectSelected = navigateToProject,
                     onSessionSelected = navigateToSession,
@@ -1120,6 +1134,11 @@ fun HermesApp(
                         },
                         showBack = !supportsListDetail,
                         onBack = navigateBack,
+                        snapshot = snapshot,
+                        onRetryConnection = onRetryConnection,
+                        onConfigureServer = openServerSettings,
+                        onCancelRecovery = onCancelRecovery,
+                        onAcceptNewInstallation = onAcceptNewInstallation,
                         onLoadManagedImage = onLoadManagedImage,
                         onLoadHostFiles = onLoadHostFiles,
                         onLoadManagedFile = onLoadManagedFile,
@@ -2321,6 +2340,8 @@ private fun SessionListScreen(
     onRefreshDurableSessions: (Boolean) -> Unit = {},
     onConfigureServer: () -> Unit,
     onRetryConnection: () -> Unit = {},
+    onAcceptNewInstallation: () -> Unit = {},
+    onCancelRecovery: () -> Unit = {},
     onSignIn: () -> Unit,
     onProjectSelected: (ProjectId) -> Unit,
     onSessionSelected: (DurableSessionId) -> Unit,
@@ -2552,6 +2573,14 @@ private fun SessionListScreen(
                         style = MaterialTheme.typography.labelMedium,
                     )
                 }
+                ConnectionRecoveryBanner(
+                    snapshot = snapshot,
+                    onRetry = onRetryConnection,
+                    onConnectionSetup = onConfigureServer,
+                    onCancel = onCancelRecovery,
+                    onAcceptNewServer = onAcceptNewInstallation,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
                 if (searchOpen) {
                     Surface(
                         modifier = Modifier
@@ -2632,6 +2661,10 @@ private fun SessionListScreen(
                     "Connecting" to "Waiting for the Hermes server."
                 connectionState == ConnectionState.Connected ->
                     "No saved sessions" to "This server has no durable transcripts yet."
+                snapshot.tunnelConnectionFailure ==
+                    com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure.InstallationChanged ->
+                    "Hermes installation changed" to
+                        (snapshot.connectionError ?: "Accept the new server, or cancel.")
                 else ->
                     "Reconnecting" to "Reconciling sessions with the Hermes server."
             }
@@ -2652,12 +2685,14 @@ private fun SessionListScreen(
                             supportingText,
                             style = MaterialTheme.typography.bodyMedium,
                         )
-                        snapshot.connectionError?.let { connectionError ->
-                            Text(
-                                connectionError,
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
+                        if (snapshot.tunnelConnectionFailure == null) {
+                            snapshot.connectionError?.let { connectionError ->
+                                Text(
+                                    connectionError,
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                            }
                         }
                         if (
                             snapshot.authenticationState == AuthenticationState.SignInRequired &&
@@ -2669,7 +2704,8 @@ private fun SessionListScreen(
                             }
                         } else if (
                             connectionState == ConnectionState.Disconnected &&
-                            serverSettingsState is ServerSettingsState.Ready
+                            serverSettingsState is ServerSettingsState.Ready &&
+                            snapshot.tunnelConnectionFailure == null
                         ) {
                             if (serverOrigin != null) {
                                 Button(onClick = dropUnlessResumed { onRetryConnection() }) {
@@ -2678,6 +2714,14 @@ private fun SessionListScreen(
                             }
                             TextButton(onClick = dropUnlessResumed { onConfigureServer() }) {
                                 Text(if (serverOrigin == null) "Configure server" else "Edit server")
+                            }
+                        } else if (
+                            connectionState == ConnectionState.Disconnected &&
+                            serverSettingsState is ServerSettingsState.Ready &&
+                            serverOrigin == null
+                        ) {
+                            TextButton(onClick = dropUnlessResumed { onConfigureServer() }) {
+                                Text("Configure server")
                             }
                         }
                     }
@@ -3490,7 +3534,14 @@ private fun connectionContext(
         else -> "Connected"
     }
     ConnectionState.Connecting -> "Connecting"
-    ConnectionState.Recovering -> "Reconnecting"
+    ConnectionState.Recovering ->
+        if (snapshot.tunnelConnectionFailure ==
+            com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure.InstallationChanged
+        ) {
+            "Hermes installation changed"
+        } else {
+            "Reconnecting"
+        }
     ConnectionState.Disconnected -> if (serverOrigin == null) "Not configured" else "Offline"
 }
 
@@ -4011,6 +4062,12 @@ internal fun ServerSettingsScreen(
     onCloudSelectAgent: suspend (com.unsupportedpastels.hermesandroid.connection.CloudAgent) -> Result<Unit> = {
         Result.success(Unit)
     },
+    onTestTunnel: suspend (ServerOrigin) -> TunnelTestResult = {
+        TunnelTestResult.Failure(
+            com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure.TunnelUnavailable,
+            TUNNEL_UNAVAILABLE_BODY,
+        )
+    },
 ) {
     var value by rememberSaveable(serverOrigin?.value) {
         mutableStateOf(serverOrigin?.value.orEmpty())
@@ -4037,22 +4094,62 @@ internal fun ServerSettingsScreen(
         ),
     ) { mutableStateOf(emptyList<ModelSelection>()) }
     var expensiveMessage by remember { mutableStateOf<String?>(null) }
+    val cloudActive = cloudState != null &&
+        cloudState !is com.unsupportedpastels.hermesandroid.connection.CloudConnectState.SignedOut
+    val initialConnectMode = when {
+        serverCatalog.activeEntry?.connectionMode ==
+            ServerConnectionMode.ExternalSshTunnel -> ConnectMode.ExternalSshTunnel
+        cloudActive -> ConnectMode.Cloud
+        else -> ConnectMode.ServerUrl
+    }
+    var connectMode by rememberConnectMode(initial = initialConnectMode)
+    var serverUrlDraft by rememberSaveable(serverOrigin?.value) {
+        mutableStateOf(
+            if (serverCatalog.activeEntry?.connectionMode ==
+                ServerConnectionMode.ExternalSshTunnel
+            ) {
+                ""
+            } else {
+                serverOrigin?.value.orEmpty()
+            },
+        )
+    }
+    var tunnelOriginDraft by rememberSaveable(serverOrigin?.value) {
+        mutableStateOf(
+            if (serverCatalog.activeEntry?.connectionMode ==
+                ServerConnectionMode.ExternalSshTunnel
+            ) {
+                serverOrigin?.value ?: DEFAULT_TUNNEL_ORIGIN
+            } else {
+                DEFAULT_TUNNEL_ORIGIN
+            },
+        )
+    }
+    var showExperimentalReasons by rememberSaveable { mutableStateOf(false) }
+    var testingTunnel by remember { mutableStateOf(false) }
+    var tunnelTestResult by remember { mutableStateOf<TunnelTestResult?>(null) }
     LaunchedEffect(serverOrigin, snapshot.authenticationState) {
         if (serverOrigin != null && snapshot.authenticationState == AuthenticationState.Authenticated) {
             onLoadManagementSettings(snapshot.selectedProfile)
             onRefreshCronJobs()
         }
     }
+    val selectedConnectionMode = if (connectMode == ConnectMode.ExternalSshTunnel) {
+        ServerConnectionMode.ExternalSshTunnel
+    } else {
+        ServerConnectionMode.Direct
+    }
     val parsedOrigin = remember(value) {
         runCatching { ServerOrigin.parse(value) }.getOrNull()
     }
-    val validationMessage = remember(value) {
+    val validationMessage = remember(value, selectedConnectionMode) {
         if (value.isBlank()) {
             null
         } else {
-            runCatching { ServerOrigin.parse(value) }
-                .exceptionOrNull()
-                ?.message
+            val parsed = runCatching { ServerOrigin.parse(value) }
+            parsed.exceptionOrNull()?.message
+                ?: (evaluateOriginTransport(parsed.getOrThrow(), selectedConnectionMode)
+                    as? OriginTransportDecision.Rejected)?.message
         }
     }
 
@@ -4102,31 +4199,38 @@ internal fun ServerSettingsScreen(
             ) {
                 if (SettingsSection.Servers in visibleSections) {
                     Text("Servers", style = MaterialTheme.typography.titleMedium)
-                    // When a Cloud view-model is wired in, offer the two connect
-                    // modes: Hermes Cloud (sign in → pick agent) and Server URL
-                    // (manual origin entry). Selecting a Cloud agent saves its
-                    // dashboard origin, so the manual catalog stays authoritative
-                    // once connected.
-                    val cloudActive = cloudState != null &&
-                        cloudState !is com.unsupportedpastels.hermesandroid.connection.CloudConnectState.SignedOut
-                    var connectMode by rememberConnectMode(initialCloud = cloudActive)
-                    if (cloudState != null) {
-                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                            SegmentedButton(
-                                selected = connectMode == ConnectMode.Cloud,
-                                onClick = { connectMode = ConnectMode.Cloud },
-                                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-                            ) { Text("Hermes Cloud") }
-                            SegmentedButton(
-                                selected = connectMode == ConnectMode.ServerUrl,
-                                onClick = { connectMode = ConnectMode.ServerUrl },
-                                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
-                            ) { Text("Server URL") }
+                    // Three explicit connection types. Catalog save carries the
+                    // chosen mode so tunnel HTTP loopback is evaluated as tunnel,
+                    // not Direct.
+                    val windowAdaptiveInfo = currentWindowAdaptiveInfoV2()
+                    val compactSelector = !windowAdaptiveInfo.windowSizeClass.isWidthAtLeastBreakpoint(
+                        WIDTH_DP_MEDIUM_LOWER_BOUND,
+                    )
+                    val applyConnectMode: (ConnectMode) -> Unit = { next ->
+                        when (connectMode) {
+                            ConnectMode.ExternalSshTunnel -> tunnelOriginDraft = value.ifBlank {
+                                DEFAULT_TUNNEL_ORIGIN
+                            }
+                            ConnectMode.ServerUrl, ConnectMode.Cloud -> serverUrlDraft = value
                         }
+                        connectMode = next
+                        value = when (next) {
+                            ConnectMode.ExternalSshTunnel ->
+                                tunnelOriginDraft.ifBlank { DEFAULT_TUNNEL_ORIGIN }
+                            ConnectMode.ServerUrl, ConnectMode.Cloud -> serverUrlDraft
+                        }
+                        saveError = null
+                        tunnelTestResult = null
                     }
-                    if (cloudState != null && connectMode == ConnectMode.Cloud) {
+                    ConnectionTypeSelector(
+                        selected = connectMode,
+                        onSelect = applyConnectMode,
+                        compact = compactSelector,
+                    )
+                    if (connectMode == ConnectMode.Cloud) {
                         HermesCloudConnectPanel(
-                            state = cloudState,
+                            state = cloudState
+                                ?: com.unsupportedpastels.hermesandroid.connection.CloudConnectState.SignedOut,
                             onSignIn = onCloudSignIn,
                             onRefresh = onCloudRefresh,
                             onSignOut = onCloudSignOut,
@@ -4174,7 +4278,16 @@ internal fun ServerSettingsScreen(
                                                     editingOrigin = entry.origin
                                                     value = entry.origin.value
                                                     label = entry.label
+                                                    connectMode = if (
+                                                        entry.connectionMode ==
+                                                        ServerConnectionMode.ExternalSshTunnel
+                                                    ) {
+                                                        ConnectMode.ExternalSshTunnel
+                                                    } else {
+                                                        ConnectMode.ServerUrl
+                                                    }
                                                     saveError = null
+                                                    tunnelTestResult = null
                                                 },
                                                 modifier = Modifier.semantics {
                                                     contentDescription = "Edit ${entry.origin.value}"
@@ -4227,9 +4340,14 @@ internal fun ServerSettingsScreen(
                         TextButton(
                             onClick = {
                                 editingOrigin = null
-                                value = ""
+                                value = if (connectMode == ConnectMode.ExternalSshTunnel) {
+                                    DEFAULT_TUNNEL_ORIGIN
+                                } else {
+                                    ""
+                                }
                                 label = ""
                                 saveError = null
+                                tunnelTestResult = null
                             },
                             enabled = !isSaving,
                         ) {
@@ -4241,7 +4359,11 @@ internal fun ServerSettingsScreen(
                         style = MaterialTheme.typography.bodyLarge,
                     )
                     Text(
-                        "Direct connections require HTTPS. HTTP is allowed only for 127.0.0.1 or [::1] in External SSH tunnel mode.",
+                        if (connectMode == ConnectMode.ExternalSshTunnel) {
+                            "External SSH tunnel origins must be http://127.0.0.1 or http://[::1] with any local port."
+                        } else {
+                            "Direct connections require HTTPS. HTTP is allowed only for 127.0.0.1 or [::1] in External SSH tunnel mode."
+                        },
                         style = MaterialTheme.typography.bodyLarge,
                     )
                     OutlinedTextField(
@@ -4254,7 +4376,11 @@ internal fun ServerSettingsScreen(
                         supportingText = {
                             Text(
                                 validationMessage
-                                    ?: "HTTPS origin required except 127.0.0.1 or [::1] HTTP in External SSH tunnel mode — no path, credentials, query, or ticket.",
+                                    ?: if (connectMode == ConnectMode.ExternalSshTunnel) {
+                                        "Numeric loopback only — http://127.0.0.1:<port>. localhost is rejected."
+                                    } else {
+                                        "HTTPS origin required except 127.0.0.1 or [::1] HTTP in External SSH tunnel mode — no path, credentials, query, or ticket."
+                                    },
                             )
                         },
                         isError = validationMessage != null,
@@ -4279,6 +4405,26 @@ internal fun ServerSettingsScreen(
                             .fillMaxWidth()
                             .semantics { contentDescription = "Display label input" },
                     )
+                    if (connectMode == ConnectMode.ExternalSshTunnel) {
+                        ExternalSshTunnelSetup(
+                            testing = testingTunnel,
+                            testResult = tunnelTestResult,
+                            showExperimentalReasons = showExperimentalReasons,
+                            onToggleExperimentalReasons = {
+                                showExperimentalReasons = !showExperimentalReasons
+                            },
+                            onTestTunnel = {
+                                val origin = parsedOrigin ?: return@ExternalSshTunnelSetup
+                                coroutineScope.launch {
+                                    testingTunnel = true
+                                    tunnelTestResult = null
+                                    tunnelTestResult = onTestTunnel(origin)
+                                    testingTunnel = false
+                                }
+                            },
+                            enabled = !isSaving,
+                        )
+                    }
                     saveError?.let { message ->
                         Text(
                             message,
@@ -4288,19 +4434,23 @@ internal fun ServerSettingsScreen(
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
-                            enabled = parsedOrigin != null && !isSaving,
+                            enabled = parsedOrigin != null && validationMessage == null && !isSaving,
                             onClick = {
                                 val origin = editingOrigin ?: parsedOrigin ?: return@Button
                                 val transport = evaluateOriginTransport(
                                     origin,
-                                    ServerConnectionMode.Direct,
+                                    selectedConnectionMode,
                                 )
                                 if (transport is OriginTransportDecision.Rejected) {
                                     saveError = transport.message
                                     return@Button
                                 }
                                 val entry = runCatching {
-                                    ServerCatalogEntry(origin = origin, label = label.trim())
+                                    ServerCatalogEntry(
+                                        origin = origin,
+                                        label = label.trim(),
+                                        connectionMode = selectedConnectionMode,
+                                    )
                                 }.getOrElse {
                                     saveError = it.message ?: "That server label is not valid."
                                     return@Button
@@ -4910,6 +5060,11 @@ private fun SessionDetailScreen(
     onBranchSession: (Int?, String?) -> Unit,
     showBack: Boolean,
     onBack: () -> Unit,
+    snapshot: HermesGatewaySnapshot = HermesGatewaySnapshot(),
+    onRetryConnection: () -> Unit = {},
+    onConfigureServer: () -> Unit = {},
+    onCancelRecovery: () -> Unit = {},
+    onAcceptNewInstallation: () -> Unit = {},
     onLoadManagedImage: suspend (String) -> Result<ByteArray>,
     onLoadHostFiles: suspend (String?) -> Result<HostFileListing>,
     onLoadManagedFile: suspend (String) -> Result<HostFileContent>,
@@ -5111,6 +5266,13 @@ private fun SessionDetailScreen(
                     style = MaterialTheme.typography.labelMedium,
                 )
             }
+            ConnectionRecoveryBanner(
+                snapshot = snapshot,
+                onRetry = onRetryConnection,
+                onConnectionSetup = onConfigureServer,
+                onCancel = onCancelRecovery,
+                onAcceptNewServer = onAcceptNewInstallation,
+            )
             when {
                 chat.isLoading && chat.messages.isEmpty() -> {
                     Box(
@@ -5340,6 +5502,13 @@ private fun SessionDetailScreen(
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodyMedium,
                     )
+                    Button(
+                        onClick = { onSend(draft) },
+                        enabled = canSend && draft.isNotBlank(),
+                        modifier = Modifier.semantics { contentDescription = "Retry action" },
+                    ) {
+                        Text("Retry action")
+                    }
                 }
             chat.notice?.let { notice ->
                 Text(
