@@ -92,7 +92,7 @@ For each row: do the steps, check the expected result, then record Pass / Fail /
 
 | Result | Observed |
 |---|---|
-| Pass / Fail / Skipped | |
+| Pass | Hermes restart on server; HAM recovered without pasting a token (owner, 2026-08-31). |
 
 ### 7. Stop and restart the tunnel
 
@@ -102,7 +102,7 @@ For each row: do the steps, check the expected result, then record Pass / Fail /
 
 | Result | Observed |
 |---|---|
-| Pass / Fail / Skipped | |
+| Pass | Stop Termius forward → **SSH tunnel unavailable** (did not stay connected); restore forward + Retry (owner, 2026-08-31). Agent screenshot ~15:02 showed the same banner chrome. |
 
 ### 8. Network transitions while the SSH app heals
 
@@ -248,5 +248,16 @@ Owner-reported on a physical device. **Not agent-observed.** Partial coverage on
 - Background → reopen: cached → connected; reconnect works.
 - Swipe from Recents → reopen: same.
 - Settings Force stop → reopen: same.
+- Hermes restart on server: recovered without pasting a token.
+- Stop Termius forward → tunnel unavailable (not stuck connected); restore forward + Retry.
 
-**Not reported / still open:** items 2, 6–12; adaptive layout on hardware; screenshot golden approval.
+**Not reported / still open:** items 2, 8–12; adaptive layout on hardware; screenshot golden approval.
+
+## Agent observed (2026-08-31 ~15:02)
+
+Agent-captured device screenshot. **Not owner prose.** Corroborates item 7 unavailable chrome only — matrix **not complete**.
+
+- Session list with tunnel down: banner title **SSH tunnel unavailable**, **Retry** visible.
+- Cached session list still visible beneath the banner.
+- Body copy states this app cannot start the tunnel.
+- Owner later confirmed restore forward + Retry on the same device (item 7 pass).

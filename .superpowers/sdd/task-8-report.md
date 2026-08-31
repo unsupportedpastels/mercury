@@ -136,8 +136,24 @@ Owner-reported on a physical device. **Not agent-observed.** Partial matrix only
 | Background → reopen | Cached → connected; reconnect works |
 | Swipe from Recents → reopen | Same as background |
 | Settings Force stop → reopen | Same as background |
+| Hermes restart (item 6) | Recovered without pasting a token |
+| Tunnel stop/start (item 7) | Stop Termius forward → tunnel unavailable (not stuck connected); restore forward + Retry |
 
-**Still untested by owner (as of this note):** Hermes restart (item 6), tunnel stop/start (item 7), network transitions (item 8), lock/battery (item 9), device reboot (item 10), wrong local service (item 11), two-port isolation (item 12), second SSH client (item 2), adaptive layout on hardware, screenshot golden approval.
+**Still untested by owner (as of this note):** second SSH client (item 2), network transitions (item 8), lock/battery (item 9), device reboot (item 10), wrong local service (item 11), two-port isolation (item 12), adaptive layout on hardware, screenshot golden approval.
+
+Screenshot goldens remain **not approved**. Device matrix remains **not complete**.
+
+## Agent observed (2026-08-31 ~15:02)
+
+Agent-captured device screenshot. **Not owner prose.** Partial only — matrix **not complete**.
+
+| Observation | Detail |
+|---|---|
+| Surface | Session list with tunnel down |
+| Banner | **SSH tunnel unavailable** with **Retry** |
+| Cached list | Still visible |
+| Body copy | This app cannot start the tunnel |
+| Owner follow-up | Restore forward + Retry confirmed (item 7 pass) |
 
 Screenshot goldens remain **not approved**. Device matrix remains **not complete**.
 
