@@ -75,6 +75,7 @@ Compact tunnel setup (400×900) **now shows** the shared-loopback warning, Test 
 ## Owner visual review cheat-sheet
 
 **Reviewed:** 2026-08-31 (agent visual pass; no golden writes).  
+**Post-fix review:** 2026-08-31 — layout fixes for installation-changed duplication, recovery action wrapping, and expanded tunnel Save/actions above checklist. New candidates copied to `screenshot-candidates/rendered/` for expanded tunnel + medium/expanded installation changed. Goldens still not written.  
 **Verdict key:** looks correct = yes for that image; suspicious = inspect before yes; do not approve = no.
 
 ### Missing goldens (9) — approve as new references?
@@ -83,25 +84,25 @@ Compact tunnel setup (400×900) **now shows** the shared-loopback warning, Test 
 |---|---|---|
 | Compact | External SSH tunnel setup | **looks correct** — warning, Test tunnel, and Save visible above the fold; checklist may be partially cut off (expected). |
 | Medium | External SSH tunnel setup | **looks correct** — full tunnel form, experimental warning, and actions read cleanly. |
-| Expanded | External SSH tunnel setup | **suspicious** — top of form only; Test tunnel / Save / checklist not visible in frame. |
+| Expanded | External SSH tunnel setup | **looks correct** — Save, Cancel, Test tunnel, and loopback warning above the fold; checklist may trail below (expected on 900×675). |
 | Compact | Tunnel unavailable | **looks correct** — error banner, Retry, and reconnecting empty state. |
 | Medium | Tunnel unavailable | **looks correct** — list/detail split with same recovery copy. |
 | Expanded | Tunnel unavailable | **looks correct** — navigation rail plus error and placeholder pane. |
 | Compact | Installation changed | **looks correct** — warning, Accept new server, and Cancel on one screen. |
-| Medium | Installation changed | **do not approve** — Cancel label wraps vertically; duplicate warning blocks on the left. |
-| Expanded | Installation changed | **suspicious** — dialog plus a second duplicate message block and odd Cancel artifact. |
+| Medium | Installation changed | **looks correct** — single recovery banner; Cancel wraps cleanly; empty pane shows generic reconnecting copy (no duplicate installation block). |
+| Expanded | Installation changed | **looks correct** — same single-banner layout; Cancel on its own row when narrow; no duplicate installation message in the detail placeholder pane. |
 
 ### Compact mismatches (3) — replace existing goldens?
 
 | Window | Screen | Verdict |
 |---|---|---|
-| Compact | Server settings | **suspicious** — rendered UI is coherent, but diff shows layout shift and a moved/new operational-overview card vs the stored golden. |
+| Compact | Server settings | **left unchanged** — rendered UI is coherent; diff vs stored golden is the new Operational overview card from this feature branch (intentional product delta, not a regression). Owner may still choose to replace the golden after visual sign-off. |
 | Compact | Active session workspace | **looks correct** — rendered session workspace is complete; diff image shows no highlighted delta (likely renderer flake). |
 | Compact | Dark markdown table | **looks correct** — table, swipe hint, and composer render cleanly; diff shows no highlighted delta. |
 
 ### Owner one-liner
 
-**Approve some, not all.** Safe yes on compact/medium tunnel setup, all tunnel-unavailable sizes, compact installation changed, and the two compact flake mismatches (active session, markdown table). Hold expanded tunnel setup, both installation-changed adaptive sizes (especially medium), and compact server settings until layout issues or intentional UI deltas are confirmed.
+**Approve most missing goldens after spot-check.** Safe yes on all tunnel setup sizes, all tunnel-unavailable sizes, all installation-changed sizes, and the two compact flake mismatches (active session, markdown table). Compact server settings golden replacement is optional — diff is the expected Operational overview addition. Hold device matrix and `updateDebugScreenshotTest` until owner signs off.
 
 ## Not done
 

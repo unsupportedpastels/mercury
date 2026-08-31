@@ -181,6 +181,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -2661,10 +2662,6 @@ private fun SessionListScreen(
                     "Connecting" to "Waiting for the Hermes server."
                 connectionState == ConnectionState.Connected ->
                     "No saved sessions" to "This server has no durable transcripts yet."
-                snapshot.tunnelConnectionFailure ==
-                    com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure.InstallationChanged ->
-                    "Hermes installation changed" to
-                        (snapshot.connectionError ?: "Accept the new server, or cancel.")
                 else ->
                     "Reconnecting" to "Reconciling sessions with the Hermes server."
             }
@@ -4181,6 +4178,12 @@ internal fun ServerSettingsScreen(
             )
         },
     ) { innerPadding ->
+        val windowAdaptiveInfo = currentWindowAdaptiveInfoV2()
+        val compactSelector = !windowAdaptiveInfo.windowSizeClass.isWidthAtLeastBreakpoint(
+            WIDTH_DP_MEDIUM_LOWER_BOUND,
+        )
+        val shortViewport = LocalConfiguration.current.screenHeightDp < 800
+        val compactConnectionSelector = compactSelector || shortViewport
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -4194,20 +4197,19 @@ internal fun ServerSettingsScreen(
                     .align(Alignment.TopCenter)
                     .verticalScroll(rememberScrollState())
                     .imePadding()
-                    .padding(horizontal = 24.dp, vertical = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                    .padding(
+                        horizontal = 24.dp,
+                        vertical = if (shortViewport) 8.dp else 16.dp,
+                    ),
+                verticalArrangement = Arrangement.spacedBy(if (shortViewport) 8.dp else 16.dp),
             ) {
                 if (SettingsSection.Servers in visibleSections) {
                     Text("Servers", style = MaterialTheme.typography.titleMedium)
                     // Three explicit connection types. Catalog save carries the
                     // chosen mode so tunnel HTTP loopback is evaluated as tunnel,
                     // not Direct.
-                    val windowAdaptiveInfo = currentWindowAdaptiveInfoV2()
-                    val compactSelector = !windowAdaptiveInfo.windowSizeClass.isWidthAtLeastBreakpoint(
-                        WIDTH_DP_MEDIUM_LOWER_BOUND,
-                    )
-                    val compactTunnel =
-                        compactSelector && connectMode == ConnectMode.ExternalSshTunnel
+                    val compactTunnel = connectMode == ConnectMode.ExternalSshTunnel &&
+                        (compactSelector || shortViewport)
                     val applyConnectMode: (ConnectMode) -> Unit = { next ->
                         when (connectMode) {
                             ConnectMode.ExternalSshTunnel -> tunnelOriginDraft = value.ifBlank {
@@ -4227,7 +4229,7 @@ internal fun ServerSettingsScreen(
                     ConnectionTypeSelector(
                         selected = connectMode,
                         onSelect = applyConnectMode,
-                        compact = compactSelector,
+                        compact = compactConnectionSelector,
                     )
                     if (connectMode == ConnectMode.Cloud) {
                         HermesCloudConnectPanel(
@@ -4249,6 +4251,7 @@ internal fun ServerSettingsScreen(
                             },
                         )
                     } else {
+                    if (!(compactTunnel && shortViewport)) {
                     if (serverCatalog.entries.isEmpty()) {
                         Text(
                             "Add a Hermes server to get started.",
@@ -4356,6 +4359,7 @@ internal fun ServerSettingsScreen(
                             Text("Add server")
                         }
                     }
+                    }
                     if (!compactTunnel) {
                         Text(
                             if (editingOrigin == null) {
@@ -4427,7 +4431,7 @@ internal fun ServerSettingsScreen(
                                 }
                             },
                             enabled = !isSaving,
-                            compact = compactSelector,
+                            compact = compactConnectionSelector,
                         )
                     }
                     saveError?.let { message ->
@@ -4492,16 +4496,18 @@ internal fun ServerSettingsScreen(
                             Text("Cancel")
                         }
                     }
-                    if (compactTunnel) {
+                    if (connectMode == ConnectMode.ExternalSshTunnel) {
                         ExternalSshTunnelSetupGuide()
-                        ServerDisplayLabelField(
-                            value = label,
-                            onValueChange = {
-                                label = it
-                                saveError = null
-                            },
-                            enabled = !isSaving,
-                        )
+                        if (compactTunnel) {
+                            ServerDisplayLabelField(
+                                value = label,
+                                onValueChange = {
+                                    label = it
+                                    saveError = null
+                                },
+                                enabled = !isSaving,
+                            )
+                        }
                     }
                     }
                 }

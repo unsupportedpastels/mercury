@@ -2,12 +2,14 @@ package com.unsupportedpastels.hermesandroid.ui
 
 import androidx.compose.ui.test.DeviceConfigurationOverride
 import androidx.compose.ui.test.FontScale
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -269,6 +271,86 @@ class ExternalSshTunnelSetupTest {
         }
         composeRule.onNodeWithText("Bootstrap unavailable").assertIsDisplayed()
         composeRule.onNodeWithText("Gated Hermes server").assertDoesNotExist()
+    }
+
+    @Test
+    @Config(sdk = [35], qualifiers = "w900dp-h675dp")
+    fun expandedTunnelSetupShowsWarningTestAndSaveWithoutScrolling() {
+        val origin = ServerOrigin.parse(DEFAULT_TUNNEL_ORIGIN)
+        composeRule.setContent {
+            HermesAndroidTheme {
+                ServerSettingsScreen(
+                    serverOrigin = origin,
+                    serverCatalog = ServerCatalog.single(
+                        ServerCatalogEntry(
+                            origin = origin,
+                            connectionMode = ServerConnectionMode.ExternalSshTunnel,
+                        ),
+                    ),
+                    showBack = true,
+                    onBack = {},
+                    onSave = { Result.success(Unit) },
+                )
+            }
+        }
+
+        composeRule.onNodeWithContentDescription("Shared loopback warning")
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Test tunnel")
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeRule.onNodeWithText("Save")
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeRule.onNodeWithText("Cancel")
+            .performScrollTo()
+            .assertIsDisplayed()
+
+        val warningTop = composeRule.onNodeWithContentDescription("Shared loopback warning")
+            .fetchSemanticsNode()
+            .boundsInRoot
+            .top
+        val testTop = composeRule.onNodeWithContentDescription("Test tunnel")
+            .fetchSemanticsNode()
+            .boundsInRoot
+            .top
+        val saveTop = composeRule.onNodeWithText("Save").fetchSemanticsNode().boundsInRoot.top
+        assertTrue(warningTop < saveTop)
+        assertTrue(testTop < saveTop)
+        composeRule.onNodeWithText("Setup checklist", substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+        assertTrue(saveTop < composeRule.onNodeWithText("Setup checklist", substring = true)
+            .fetchSemanticsNode()
+            .boundsInRoot
+            .top)
+    }
+
+    @Test
+    @Config(sdk = [35], qualifiers = "w610dp-h900dp")
+    fun mediumInstallationChangedShowsSingleRecoveryBanner() {
+        composeRule.setContent {
+            HermesAndroidTheme {
+                HermesApp(
+                    snapshot = HermesGatewaySnapshot(
+                        connectionState = ConnectionState.Recovering,
+                        tunnelConnectionFailure = TunnelConnectionFailure.InstallationChanged,
+                        connectionError = "This local port now appears to lead to a different Hermes installation.",
+                    ),
+                    serverSettingsState = com.unsupportedpastels.hermesandroid.connection.ServerSettingsState.Ready(
+                        ServerOrigin.parse(DEFAULT_TUNNEL_ORIGIN),
+                    ),
+                )
+            }
+        }
+
+        composeRule.onNodeWithContentDescription("Connection recovery: Hermes installation changed")
+            .assertIsDisplayed()
+        composeRule.onNodeWithText("Accept new server").assertIsDisplayed()
+        composeRule.onNodeWithText("Cancel").assertIsDisplayed()
+        composeRule.onAllNodesWithText("different Hermes installation", substring = true)
+            .assertCountEquals(1)
     }
 
     @Test

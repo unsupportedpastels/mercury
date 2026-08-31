@@ -147,9 +147,6 @@ internal fun ExternalSshTunnelSetup(
             )
             null -> Unit
         }
-        if (!compact) {
-            ExternalSshTunnelSetupGuide()
-        }
     }
 }
 

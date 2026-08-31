@@ -2,7 +2,8 @@ package com.unsupportedpastels.hermesandroid.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
@@ -18,6 +19,7 @@ import com.unsupportedpastels.hermesandroid.connection.TunnelRecoveryAction
 import com.unsupportedpastels.hermesandroid.connection.tunnelRecoveryCopy
 import com.unsupportedpastels.hermesandroid.gateway.HermesGatewaySnapshot
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ConnectionRecoveryBanner(
     snapshot: HermesGatewaySnapshot,
@@ -44,9 +46,12 @@ internal fun ConnectionRecoveryBanner(
             color = MaterialTheme.colorScheme.error,
             style = MaterialTheme.typography.bodyMedium,
         )
-        Row(
+        FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(top = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp),
         ) {
             copy.actions.forEach { action ->
                 when (action) {
