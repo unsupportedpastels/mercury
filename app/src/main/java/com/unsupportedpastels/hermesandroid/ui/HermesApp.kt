@@ -4206,6 +4206,8 @@ internal fun ServerSettingsScreen(
                     val compactSelector = !windowAdaptiveInfo.windowSizeClass.isWidthAtLeastBreakpoint(
                         WIDTH_DP_MEDIUM_LOWER_BOUND,
                     )
+                    val compactTunnel =
+                        compactSelector && connectMode == ConnectMode.ExternalSshTunnel
                     val applyConnectMode: (ConnectMode) -> Unit = { next ->
                         when (connectMode) {
                             ConnectMode.ExternalSshTunnel -> tunnelOriginDraft = value.ifBlank {
@@ -4354,18 +4356,24 @@ internal fun ServerSettingsScreen(
                             Text("Add server")
                         }
                     }
-                    Text(
-                        if (editingOrigin == null) "Add a server or edit its local label." else "Edit server label",
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                    Text(
-                        if (connectMode == ConnectMode.ExternalSshTunnel) {
-                            "External SSH tunnel origins must be http://127.0.0.1 or http://[::1] with any local port."
-                        } else {
-                            "Direct connections require HTTPS. HTTP is allowed only for 127.0.0.1 or [::1] in External SSH tunnel mode."
-                        },
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
+                    if (!compactTunnel) {
+                        Text(
+                            if (editingOrigin == null) {
+                                "Add a server or edit its local label."
+                            } else {
+                                "Edit server label"
+                            },
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Text(
+                            if (connectMode == ConnectMode.ExternalSshTunnel) {
+                                "External SSH tunnel origins must be http://127.0.0.1 or http://[::1] with any local port."
+                            } else {
+                                "Direct connections require HTTPS. HTTP is allowed only for 127.0.0.1 or [::1] in External SSH tunnel mode."
+                            },
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    }
                     OutlinedTextField(
                         value = value,
                         onValueChange = {
@@ -4391,20 +4399,16 @@ internal fun ServerSettingsScreen(
                             .fillMaxWidth()
                             .semantics { contentDescription = "Server origin input" },
                     )
-                    OutlinedTextField(
-                        value = label,
-                        onValueChange = {
-                            label = it.take(MAX_SERVER_LABEL_CHARS)
-                            saveError = null
-                        },
-                        label = { Text("Display label (optional)") },
-                        supportingText = { Text("Stored only on this device") },
-                        enabled = !isSaving,
-                        singleLine = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .semantics { contentDescription = "Display label input" },
-                    )
+                    if (!compactTunnel) {
+                        ServerDisplayLabelField(
+                            value = label,
+                            onValueChange = {
+                                label = it
+                                saveError = null
+                            },
+                            enabled = !isSaving,
+                        )
+                    }
                     if (connectMode == ConnectMode.ExternalSshTunnel) {
                         ExternalSshTunnelSetup(
                             testing = testingTunnel,
@@ -4423,6 +4427,7 @@ internal fun ServerSettingsScreen(
                                 }
                             },
                             enabled = !isSaving,
+                            compact = compactSelector,
                         )
                     }
                     saveError?.let { message ->
@@ -4486,6 +4491,17 @@ internal fun ServerSettingsScreen(
                         ) {
                             Text("Cancel")
                         }
+                    }
+                    if (compactTunnel) {
+                        ExternalSshTunnelSetupGuide()
+                        ServerDisplayLabelField(
+                            value = label,
+                            onValueChange = {
+                                label = it
+                                saveError = null
+                            },
+                            enabled = !isSaving,
+                        )
                     }
                     }
                 }

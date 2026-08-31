@@ -18,6 +18,9 @@ import com.unsupportedpastels.hermesandroid.connection.CREDENTIAL_REJECTED_USER_
 import com.unsupportedpastels.hermesandroid.connection.DEFAULT_TUNNEL_ORIGIN
 import com.unsupportedpastels.hermesandroid.connection.LOOPBACK_SECURITY_WARNING
 import com.unsupportedpastels.hermesandroid.connection.LOCALHOST_TUNNEL_MESSAGE
+import com.unsupportedpastels.hermesandroid.connection.MINIMUM_HERMES_VERSION
+import com.unsupportedpastels.hermesandroid.connection.PROTOCOL_INCOMPATIBLE_MESSAGE
+import com.unsupportedpastels.hermesandroid.connection.ServerCatalog
 import com.unsupportedpastels.hermesandroid.connection.ServerCatalogEntry
 import com.unsupportedpastels.hermesandroid.connection.ServerConnectionMode
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
@@ -29,6 +32,7 @@ import com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure
 import com.unsupportedpastels.hermesandroid.theme.HermesAndroidTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -62,6 +66,50 @@ class ExternalSshTunnelSetupTest {
     @Config(sdk = [35], qualifiers = "w400dp-h900dp")
     fun largeTextSetupShowsInstructionsAndRejectsLocalhost() {
         assertSetupInstructionsAndLocalhostRejection(fontScale = 1.5f)
+    }
+
+    @Test
+    @Config(sdk = [35], qualifiers = "w400dp-h900dp")
+    fun compactTunnelSetupShowsWarningTestAndSaveWithoutScrolling() {
+        val origin = ServerOrigin.parse(DEFAULT_TUNNEL_ORIGIN)
+        composeRule.setContent {
+            HermesAndroidTheme {
+                ServerSettingsScreen(
+                    serverOrigin = origin,
+                    serverCatalog = ServerCatalog.single(
+                        ServerCatalogEntry(
+                            origin = origin,
+                            connectionMode = ServerConnectionMode.ExternalSshTunnel,
+                        ),
+                    ),
+                    showBack = true,
+                    onBack = {},
+                    onSave = { Result.success(Unit) },
+                )
+            }
+        }
+
+        composeRule.onNodeWithContentDescription("Connection type External SSH tunnel")
+            .assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Server origin input").assertIsDisplayed()
+        composeRule.onNodeWithText("Experimental").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Shared loopback warning").assertIsDisplayed()
+        composeRule.onNodeWithText(LOOPBACK_SECURITY_WARNING, substring = true).assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Test tunnel").assertIsDisplayed()
+        composeRule.onNodeWithText("Save").assertIsDisplayed()
+
+        val warningTop = composeRule.onNodeWithContentDescription("Shared loopback warning")
+            .fetchSemanticsNode()
+            .boundsInRoot
+            .top
+        val testTop = composeRule.onNodeWithContentDescription("Test tunnel")
+            .fetchSemanticsNode()
+            .boundsInRoot
+            .top
+        val saveTop = composeRule.onNodeWithText("Save").fetchSemanticsNode().boundsInRoot.top
+        assertTrue(warningTop < saveTop)
+        assertTrue(testTop < saveTop)
+        assertTrue(warningTop < testTop)
     }
 
     @Test
@@ -175,6 +223,32 @@ class ExternalSshTunnelSetupTest {
         }
         composeRule.onNodeWithText("Wrong service on this port").assertIsDisplayed()
         composeRule.onNodeWithText("another local port", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun protocolIncompatibleBannerShowsDistinctCopy() {
+        composeRule.setContent {
+            HermesAndroidTheme {
+                ConnectionRecoveryBanner(
+                    snapshot = HermesGatewaySnapshot(
+                        connectionState = ConnectionState.Disconnected,
+                        tunnelConnectionFailure = TunnelConnectionFailure.ProtocolIncompatible,
+                        connectionError = PROTOCOL_INCOMPATIBLE_MESSAGE,
+                    ),
+                    onRetry = {},
+                    onConnectionSetup = {},
+                    onCancel = {},
+                    onAcceptNewServer = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Protocol incompatible").assertIsDisplayed()
+        composeRule.onNodeWithText(PROTOCOL_INCOMPATIBLE_MESSAGE).assertIsDisplayed()
+        composeRule.onNodeWithText(MINIMUM_HERMES_VERSION, substring = true).assertIsDisplayed()
+        composeRule.onNodeWithText("Wrong service on this port").assertDoesNotExist()
+        composeRule.onNodeWithText("Bootstrap unavailable").assertDoesNotExist()
+        composeRule.onNodeWithText("Gated Hermes server").assertDoesNotExist()
     }
 
     @Test
