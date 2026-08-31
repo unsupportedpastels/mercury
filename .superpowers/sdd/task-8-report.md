@@ -2,7 +2,7 @@
 
 **Status:** DONE_WITH_CONCERNS  
 **Branch:** `docs/external-ssh-tunnel-session-auth`  
-**HEAD:** `754e844` — docs: record owner passes for Hermes restart and tunnel stop/start  
+**HEAD:** `eb91a92` — docs(sdd): record PASS spec review for tunnel layout fix (includes layout fix `ad5d7de`)  
 **Not pushed. Not merged.**  
 **Device matrix:** partial owner coverage only (items 1, 3–7). Never claim full device pass.
 
@@ -15,6 +15,9 @@
 | `53c2deb` | docs: record compact tunnel setup above-the-fold follow-up |
 | `983643c` | docs: record partial owner device observations for tunnel matrix |
 | `754e844` | docs: record owner passes for Hermes restart and tunnel stop/start |
+| `ad5d7de` | fix(ui): screenshot-review layout bugs for tunnel setup and installation changed |
+| `abd1791` | docs(sdd): independent security review for task-7 layout fix |
+| `eb91a92` | docs(sdd): PASS spec review for tunnel layout fix |
 
 Screenshot goldens were not updated and were not committed.
 
@@ -37,7 +40,7 @@ Whole-feature spec review PASS (`.superpowers/sdd/task-8-feature-spec-review.md`
 ```
 ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
 ./gradlew --no-daemon testDebugUnitTest --tests '*MergedManifestCleartextTest'
-./gradlew --no-daemon validateDebugScreenshotTest   # at 53c2deb; goldens not updated
+./gradlew --no-daemon validateDebugScreenshotTest   # at HEAD post ad5d7de; goldens not updated
 ```
 
 | Gate | Result |
@@ -47,7 +50,7 @@ Whole-feature spec review PASS (`.superpowers/sdd/task-8-feature-spec-review.md`
 | `lintDebug` | pass |
 | `assembleDebug` | pass |
 | Release merged manifest | no `usesCleartextTraffic="true"`; `networkSecurityConfig` present; no `src/release` overlay (pinned by `MergedManifestCleartextTest`) |
-| `validateDebugScreenshotTest` (at `53c2deb`, post compact-fold) | **27 tests, 12 failed** — see screenshot status. Goldens not updated |
+| `validateDebugScreenshotTest` (at HEAD `eb91a92`, post `ad5d7de` layout fix, 2026-08-31) | **27 tests, 12 failed** (9 missing + 3 mismatched). Count unchanged vs pre-fix run. Goldens not updated |
 | Debug APK | `app/build/outputs/apk/debug/app-debug.apk` (refreshed 2026-08-31) |
 | Protocol smoke | ran at agent prep (see below) |
 | Device matrix | **partial owner only** — items 1, 3–7 reported pass; 2, 8–12 and adaptive hardware still open |
@@ -157,6 +160,12 @@ Agent-captured device screenshot. **Not owner prose.** Partial only — matrix *
 | Owner follow-up | Restore forward + Retry confirmed (item 7 pass) |
 
 Screenshot goldens remain **not approved**. Device matrix remains **not complete**.
+
+Screenshot goldens remain **not approved**. Device matrix remains **not complete**.
+
+## Screenshot verify rerun (2026-08-31, post `ad5d7de`)
+
+Agent verify-only at HEAD `eb91a92`. No emulator required (Compose Preview screenshot JVM path). Command: `./gradlew --no-daemon validateDebugScreenshotTest`. **27 tests, 12 failed** — same breakdown as pre-fix: 9 missing goldens, 3 compact mismatches. `app/src/screenshotTestDebug/reference/` untouched. Refreshed durable candidates: medium tunnel setup and compact installation changed renders under `.superpowers/sdd/screenshot-candidates/rendered/`.
 
 ## Out of scope
 

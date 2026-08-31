@@ -3,7 +3,7 @@
 **Status:** candidates collected for owner visual review. Feature not complete. Device matrix not claimed.
 
 **Branch:** `docs/external-ssh-tunnel-session-auth`  
-**HEAD:** `53c2deb` (includes `99dcbb2` compact tunnel setup above the fold)  
+**HEAD:** `eb91a92` (includes layout fix `ad5d7de` for tunnel setup and installation changed)  
 **Not pushed.** Goldens were not updated and were not committed.
 
 ## Git
@@ -16,7 +16,7 @@ Working tree had no dirty screenshot goldens before or after the run. `app/src/s
 ./gradlew --no-daemon validateDebugScreenshotTest
 ```
 
-Result: **27 tests, 12 failed** (9 errors / 3 failures / 0 skipped). Success rate 55%. Duration 2.530s. BUILD FAILED.
+Result (post `ad5d7de`, HEAD `eb91a92`, 2026-08-31): **27 tests, 12 failed** (9 `ScreenshotImageNotFoundException` / 3 `ImageComparisonAssertionError` / 0 skipped). Success rate 55%. Duration ~13s. BUILD FAILED. Failure count unchanged vs pre-fix run; two rendered candidates refreshed (medium tunnel setup, compact installation changed).
 
 NativeOAuthTest was not run and was not chased.
 
@@ -75,7 +75,7 @@ Compact tunnel setup (400×900) **now shows** the shared-loopback warning, Test 
 ## Owner visual review cheat-sheet
 
 **Reviewed:** 2026-08-31 (agent visual pass; no golden writes).  
-**Post-fix review:** 2026-08-31 — layout fixes for installation-changed duplication, recovery action wrapping, and expanded tunnel Save/actions above checklist. New candidates copied to `screenshot-candidates/rendered/` for expanded tunnel + medium/expanded installation changed. Goldens still not written.  
+**Post-fix review:** 2026-08-31 — layout fixes in `ad5d7de` for installation-changed duplication, recovery action wrapping, and expanded tunnel Save/actions above checklist. Verify-only rerun at HEAD `eb91a92`: still 27/12 fail; refreshed rendered candidates for medium tunnel setup and compact installation changed. Goldens still not written.  
 **Verdict key:** looks correct = yes for that image; suspicious = inspect before yes; do not approve = no.
 
 ### Missing goldens (9) — approve as new references?
