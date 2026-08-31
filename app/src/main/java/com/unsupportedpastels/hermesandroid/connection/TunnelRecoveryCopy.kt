@@ -1,6 +1,5 @@
 package com.unsupportedpastels.hermesandroid.connection
 
-import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
 import com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure
 
 const val DEFAULT_TUNNEL_ORIGIN = "http://127.0.0.1:9119"
@@ -27,6 +26,8 @@ const val EXPERIMENTAL_FEATURE_REASONS =
         "HTML rather than a published API, depends on a third-party SSH app's lifecycle, uses a " +
         "shared device-wide loopback, and has no capability flag to negotiate against."
 
+const val INSTALLATION_CHANGED_TITLE = "Hermes installation changed"
+
 const val TUNNEL_UNAVAILABLE_TITLE = "SSH tunnel unavailable"
 
 const val TUNNEL_UNAVAILABLE_BODY =
@@ -49,12 +50,9 @@ data class TunnelRecoveryCopy(
 
 fun tunnelRecoveryCopy(
     failure: TunnelConnectionFailure?,
-    connectionState: ConnectionState,
     connectionError: String?,
 ): TunnelRecoveryCopy? {
     if (failure == null) return null
-    // Classified failures, including InstallationChanged, win over ConnectionState
-    // so Recovering + InstallationChanged still shows accept/cancel.
     return when (failure) {
         TunnelConnectionFailure.TunnelUnavailable -> TunnelRecoveryCopy(
             failure = failure,
@@ -86,7 +84,7 @@ fun tunnelRecoveryCopy(
         )
         TunnelConnectionFailure.InstallationChanged -> TunnelRecoveryCopy(
             failure = failure,
-            title = "Hermes installation changed",
+            title = INSTALLATION_CHANGED_TITLE,
             body = INSTALLATION_CHANGED_MESSAGE,
             actions = listOf(TunnelRecoveryAction.AcceptNewServer, TunnelRecoveryAction.Cancel),
         )

@@ -257,6 +257,7 @@ import com.unsupportedpastels.hermesandroid.connection.ServerConnectionMode
 import com.unsupportedpastels.hermesandroid.connection.OriginTransportDecision
 import com.unsupportedpastels.hermesandroid.connection.evaluateOriginTransport
 import com.unsupportedpastels.hermesandroid.connection.DEFAULT_TUNNEL_ORIGIN
+import com.unsupportedpastels.hermesandroid.connection.INSTALLATION_CHANGED_TITLE
 import com.unsupportedpastels.hermesandroid.connection.TUNNEL_UNAVAILABLE_BODY
 import com.unsupportedpastels.hermesandroid.connection.TunnelTestResult
 import com.unsupportedpastels.hermesandroid.connection.MAX_SERVER_LABEL_CHARS
@@ -3535,7 +3536,7 @@ private fun connectionContext(
         if (snapshot.tunnelConnectionFailure ==
             com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure.InstallationChanged
         ) {
-            "Hermes installation changed"
+            INSTALLATION_CHANGED_TITLE
         } else {
             "Reconnecting"
         }

@@ -485,7 +485,7 @@ class HermesConnectionViewModelTest {
         )
         advanceUntilIdle()
         assertEquals(TunnelConnectionFailure.TunnelUnavailable, unavailable.snapshots.value.tunnelConnectionFailure)
-        assertTrue(unavailable.snapshots.value.connectionError!!.startsWith("SSH tunnel unavailable"))
+        assertTrue(unavailable.snapshots.value.connectionError!!.startsWith(TUNNEL_UNAVAILABLE_BODY))
 
         val rejected = HermesConnectionViewModel(
             settingsStates = MutableStateFlow(tunnelSettings(origin)),

@@ -1,6 +1,5 @@
 package com.unsupportedpastels.hermesandroid.connection
 
-import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
 import com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -13,7 +12,6 @@ class TunnelRecoveryCopyTest {
     fun credentialRejectedUsesAnswersDocumentWordingAndTerminalActions() {
         val copy = tunnelRecoveryCopy(
             failure = TunnelConnectionFailure.CredentialRejected,
-            connectionState = ConnectionState.Disconnected,
             connectionError = CREDENTIAL_REJECTED_USER_MESSAGE,
         )
         assertNotNull(copy)
@@ -32,7 +30,6 @@ class TunnelRecoveryCopyTest {
     fun tunnelUnavailableDoesNotClaimThisAppCanRestoreTheTunnel() {
         val copy = tunnelRecoveryCopy(
             failure = TunnelConnectionFailure.TunnelUnavailable,
-            connectionState = ConnectionState.Recovering,
             connectionError = "SSH tunnel unavailable",
         )
         assertNotNull(copy)
@@ -47,7 +44,6 @@ class TunnelRecoveryCopyTest {
     fun wrongServiceSuggestsAnotherLocalPort() {
         val copy = tunnelRecoveryCopy(
             failure = TunnelConnectionFailure.NotHermesEndpoint,
-            connectionState = ConnectionState.Disconnected,
             connectionError = NOT_HERMES_ENDPOINT_MESSAGE,
         )
         assertNotNull(copy)
@@ -59,12 +55,10 @@ class TunnelRecoveryCopyTest {
     fun bootstrapUnavailableAndGatedServerAreDistinct() {
         val bootstrap = tunnelRecoveryCopy(
             failure = TunnelConnectionFailure.BootstrapRejected,
-            connectionState = ConnectionState.Disconnected,
             connectionError = BOOTSTRAP_REJECTED_USER_MESSAGE,
         )
         val gated = tunnelRecoveryCopy(
             failure = TunnelConnectionFailure.BootstrapRejected,
-            connectionState = ConnectionState.Disconnected,
             connectionError = GATED_TUNNEL_TARGET_MESSAGE,
         )
         assertNotNull(bootstrap)
@@ -76,7 +70,6 @@ class TunnelRecoveryCopyTest {
 
         val oauthMention = tunnelRecoveryCopy(
             failure = TunnelConnectionFailure.BootstrapRejected,
-            connectionState = ConnectionState.Disconnected,
             connectionError = "OAuth handshake failed during bootstrap",
         )
         assertNotNull(oauthMention)
@@ -90,7 +83,6 @@ class TunnelRecoveryCopyTest {
     fun protocolIncompatibleIsItsOwnCopy() {
         val copy = tunnelRecoveryCopy(
             failure = TunnelConnectionFailure.ProtocolIncompatible,
-            connectionState = ConnectionState.Disconnected,
             connectionError = PROTOCOL_INCOMPATIBLE_MESSAGE,
         )
         assertNotNull(copy)
@@ -102,7 +94,6 @@ class TunnelRecoveryCopyTest {
     fun recoveringSnapshotStillShowsInstallationChangedAcceptAndCancel() {
         val copy = tunnelRecoveryCopy(
             failure = TunnelConnectionFailure.InstallationChanged,
-            connectionState = ConnectionState.Recovering,
             connectionError = INSTALLATION_CHANGED_MESSAGE,
         )
         assertNotNull(copy)
@@ -119,7 +110,6 @@ class TunnelRecoveryCopyTest {
     fun recoveringWithoutAClassifiedFailureDoesNotInventTunnelCopy() {
         val copy = tunnelRecoveryCopy(
             failure = null,
-            connectionState = ConnectionState.Recovering,
             connectionError = null,
         )
         assertEquals(null, copy)

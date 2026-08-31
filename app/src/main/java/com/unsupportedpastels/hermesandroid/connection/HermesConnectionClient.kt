@@ -368,9 +368,12 @@ internal suspend fun HttpResponse.readBodyTextBounded(
  * trigger a rebootstrap, or be retried automatically. Public routes are called
  * without a credential and are therefore never classified here.
  */
-private fun HttpResponse.throwIfHermesCredentialRejected(credential: HermesCredential) {
+private fun HttpResponse.throwIfHermesCredentialRejected(
+    credential: HermesCredential,
+    message: String = "Hermes credential was rejected with HTTP 401",
+) {
     if (credential != HermesCredential.None && status.value == 401) {
-        throw HermesAuthenticationRejectedException("Hermes credential was rejected with HTTP 401")
+        throw HermesAuthenticationRejectedException(message)
     }
 }
 
@@ -1540,13 +1543,15 @@ class HttpHermesConnectionClient(
         val response = client.get("${serverOrigin.value}/api/auth/me") {
             applyHermesCredential(credential, serverOrigin)
         }
+        response.throwIfHermesCredentialRejected(
+            credential,
+            "Hermes authentication returned HTTP 401",
+        )
         if (!response.status.isSuccess()) {
             response.readBodyTextBounded()
-            val message = "Hermes authentication returned HTTP ${response.status.value}"
-            if (response.status.value == 401) {
-                throw HermesAuthenticationRejectedException(message)
-            }
-            throw HermesConnectionException(message)
+            throw HermesConnectionException(
+                "Hermes authentication returned HTTP ${response.status.value}",
+            )
         }
         val user = json.decodeFromString<HermesAuthenticatedUser>(
             response.readBodyTextBounded(),
@@ -1933,13 +1938,15 @@ class HttpHermesConnectionClient(
             parameter("archived", if (archivedOnly) "only" else "exclude")
             parameter("profile", boundedProfile)
         }
+        sessionsResponse.throwIfHermesCredentialRejected(
+            credential,
+            "Hermes session listing returned HTTP 401",
+        )
         if (!sessionsResponse.status.isSuccess()) {
             sessionsResponse.readBodyTextBounded()
-            val message = "Hermes session listing returned HTTP ${sessionsResponse.status.value}"
-            if (credential != HermesCredential.None && sessionsResponse.status.value == 401) {
-                throw HermesAuthenticationRejectedException(message)
-            }
-            throw HermesConnectionException(message)
+            throw HermesConnectionException(
+                "Hermes session listing returned HTTP ${sessionsResponse.status.value}",
+            )
         }
         val decoded = json.decodeFromString<HermesSessionsResponse>(
             sessionsResponse.readBodyTextBounded(),

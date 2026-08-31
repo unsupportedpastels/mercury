@@ -31,7 +31,6 @@ internal fun ConnectionRecoveryBanner(
 ) {
     val copy = tunnelRecoveryCopy(
         failure = snapshot.tunnelConnectionFailure,
-        connectionState = snapshot.connectionState,
         connectionError = snapshot.connectionError,
     ) ?: return
     Column(

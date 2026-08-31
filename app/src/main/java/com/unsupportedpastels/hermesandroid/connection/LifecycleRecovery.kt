@@ -986,11 +986,6 @@ private fun cancelTimers(state: LifecycleRecoveryState): List<LifecycleRecoveryE
     }
 }
 
-private fun withoutTimers(state: LifecycleRecoveryState): LifecycleRecoveryState {
-    val jobs = state.jobsOrNull() ?: return state
-    return withJobs(state, jobs.copy(retryTimer = false, debounce = false))
-}
-
 private fun withoutIdleWork(state: LifecycleRecoveryState): LifecycleRecoveryState {
     val jobs = state.jobsOrNull() ?: return state
     return withJobs(

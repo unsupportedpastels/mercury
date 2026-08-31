@@ -72,8 +72,6 @@ internal fun String?.toHermesCredential(): HermesCredential =
     this?.takeIf(String::isNotBlank)?.let(HermesCredential.NativeBearer::create)
         ?: HermesCredential.None
 
-internal fun HermesCredential.toHermesCredential(): HermesCredential = this
-
 internal fun HermesCredential.hasSameAuthorization(other: HermesCredential): Boolean = when {
     this === HermesCredential.None && other === HermesCredential.None -> true
     this is HermesCredential.NativeBearer && other is HermesCredential.NativeBearer ->
