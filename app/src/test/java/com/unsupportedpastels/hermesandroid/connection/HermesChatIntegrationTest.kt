@@ -875,7 +875,7 @@ class HermesChatIntegrationTest {
     }
 
     @Test
-    fun backgroundedStreamingDisconnectWaitsForForegroundBeforeReconnect() = runTest(dispatcher) {
+    fun backgroundedStreamingDisconnectKeepsBoundedReconnectWithAnActiveTurn() = runTest(dispatcher) {
         val foreground = MutableStateFlow(true)
         val first = ReconnectingChatSession(
             runtimeId = "runtime-backgrounded",
@@ -924,22 +924,13 @@ class HermesChatIntegrationTest {
         runCurrent()
         foreground.value = false
         advanceTimeBy(10_000)
-        runCurrent()
-
-        val backgrounded = viewModel.snapshots.value.chatSessions.getValue(durableId)
-        assertEquals(1, connections)
-        assertTrue(backgrounded.isSending)
-        assertEquals(null, backgrounded.error)
-        assertTrue(backgrounded.messages.last().isStreaming)
-
-        foreground.value = true
         advanceUntilIdle()
 
-        val foregrounded = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        val backgrounded = viewModel.snapshots.value.chatSessions.getValue(durableId)
         assertEquals(2, connections)
-        assertEquals("completed after foreground", foregrounded.messages.last().text)
-        assertFalse(foregrounded.isSending)
-        assertEquals(null, foregrounded.error)
+        assertEquals("completed after foreground", backgrounded.messages.last().text)
+        assertFalse(backgrounded.isSending)
+        assertEquals(null, backgrounded.error)
     }
 
     @Test
@@ -954,10 +945,10 @@ class HermesChatIntegrationTest {
             appForegroundStates = foreground,
         )
 
-        // The initial connect hits a transient failure and lands Disconnected —
-        // exactly the "Offline" state seen after resuming from background.
-        advanceUntilIdle()
-        assertEquals(ConnectionState.Disconnected, viewModel.snapshots.value.connectionState)
+        // The initial connect hits a transient failure and lands Recovering —
+        // the reducer owns backoff instead of a terminal offline state.
+        runCurrent()
+        assertEquals(ConnectionState.Recovering, viewModel.snapshots.value.connectionState)
         assertEquals(1, client.probeAttempts)
 
         // Toggling foreground off→on (returning from background) must self-heal.
@@ -980,8 +971,8 @@ class HermesChatIntegrationTest {
             tokenStore = MemoryTokenStore(tokens),
             nowEpochSeconds = { 1_900_000_000 },
         )
-        advanceUntilIdle()
-        assertEquals(ConnectionState.Disconnected, viewModel.snapshots.value.connectionState)
+        runCurrent()
+        assertEquals(ConnectionState.Recovering, viewModel.snapshots.value.connectionState)
 
         viewModel.retryConnection()
         advanceUntilIdle()
@@ -1003,8 +994,8 @@ class HermesChatIntegrationTest {
             appForegroundStates = foreground,
         )
 
-        advanceUntilIdle()
-        assertEquals(ConnectionState.Disconnected, viewModel.snapshots.value.connectionState)
+        runCurrent()
+        assertEquals(ConnectionState.Recovering, viewModel.snapshots.value.connectionState)
         val probesBeforeSettingsRemoval = client.probeAttempts
 
         settings.value = ServerSettingsState.Unavailable
@@ -1116,7 +1107,8 @@ class HermesChatIntegrationTest {
                 if (connections == 2) {
                     throw HermesChatTransportException("network not restored yet")
                 }
-                sessions.removeFirst()
+                sessions.removeFirstOrNull()
+                    ?: throw AssertionError("unexpected chat connect #$connections")
             },
             nowEpochSeconds = { 1_900_000_000 },
         )
@@ -2154,13 +2146,13 @@ class HermesChatIntegrationTest {
 
         viewModel.sendMessage(durableId, "First operation")
         runCurrent()
-        advanceTimeBy(500)
+        advanceTimeBy(1_000)
         runCurrent()
         assertTrue(staleRecovery.resumeStarted.isCompleted)
 
         viewModel.sendMessage(durableId, "Replacement operation")
         runCurrent()
-        advanceTimeBy(500)
+        advanceTimeBy(1_000)
         runCurrent()
         assertTrue(currentRecovery.resumeStarted.isCompleted)
         assertTrue(viewModel.snapshots.value.chatSessions.getValue(durableId).isSending)
@@ -2171,7 +2163,7 @@ class HermesChatIntegrationTest {
         assertTrue(viewModel.snapshots.value.chatSessions.getValue(durableId).isSending)
         replacementInitial.closeEvents()
         runCurrent()
-        advanceTimeBy(500)
+        advanceTimeBy(1_000)
         runCurrent()
 
         assertEquals(4, connections)

@@ -75,7 +75,7 @@ class LifecycleRecoveryReducerTest {
                 assertTrue(waiting.jobs.retryTimer)
                 assertEquals(ConnectionState.Recovering, waiting.publishedConnectionState())
                 assertEquals(
-                    listOf(LifecycleRecoveryEffect.ScheduleRetry(scope(), 11_000L)),
+                    listOf(LifecycleRecoveryEffect.ScheduleRetry(scope(), 11_000L, 1_000L)),
                     decision.effects,
                 )
             },
@@ -92,7 +92,7 @@ class LifecycleRecoveryReducerTest {
                 assertEquals(
                     listOf(
                         LifecycleRecoveryEffect.CancelRetry(scope()),
-                        LifecycleRecoveryEffect.ScheduleRetry(scope(), 13_000L),
+                        LifecycleRecoveryEffect.ScheduleRetry(scope(), 13_000L, 2_000L),
                     ),
                     decision.effects,
                 )
@@ -244,7 +244,7 @@ class LifecycleRecoveryReducerTest {
                 assertTrue(ready.jobs.debounce)
                 assertEquals(ConnectionState.Connected, ready.publishedConnectionState())
                 assertEquals(
-                    listOf(LifecycleRecoveryEffect.ScheduleDebounce(scope(), 1_300L)),
+                    listOf(LifecycleRecoveryEffect.ScheduleDebounce(scope(), 1_300L, 300L)),
                     decision.effects,
                 )
             },
@@ -316,7 +316,7 @@ class LifecycleRecoveryReducerTest {
                 assertEquals(ConnectionState.Connected, ready.publishedConnectionState())
                 assertFalse(decision.effects.any { it is LifecycleRecoveryEffect.Bootstrap })
                 assertEquals(
-                    listOf(LifecycleRecoveryEffect.ScheduleDebounce(scope(), 4_300L)),
+                    listOf(LifecycleRecoveryEffect.ScheduleDebounce(scope(), 4_300L, 300L)),
                     decision.effects,
                 )
             },
@@ -331,6 +331,21 @@ class LifecycleRecoveryReducerTest {
                 assertTrue(decision.effects.any { it is LifecycleRecoveryEffect.CancelRetry })
                 assertFalse(decision.effects.any { it is LifecycleRecoveryEffect.Probe })
                 assertFalse(decision.effects.any { it is LifecycleRecoveryEffect.Bootstrap })
+            },
+            Case(
+                name = "transport lost during turn recovery starts a replacement recover",
+                initial = recoveringTurn(attempt = 1, nextRetryAt = 11_000L, startedAt = 10_000L),
+                event = LifecycleRecoveryEvent.TransportLost(
+                    origin, 1L, nowEpochMs = 12_000L, hasActiveTurn = true, sessionId = "turn-2",
+                ),
+            ) { decision ->
+                val recovering = decision.state as LifecycleRecoveryState.RecoveringTurn
+                assertEquals("turn-2", recovering.sessionId)
+                assertTrue(recovering.jobs.turnRecovery)
+                assertTrue(
+                    decision.effects.contains(LifecycleRecoveryEffect.RecoverTurn(scope(), "turn-2")),
+                )
+                assertTrue(decision.effects.any { it is LifecycleRecoveryEffect.CancelRetry })
             },
             Case(
                 name = "background with an active turn keeps recovering",
