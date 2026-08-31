@@ -786,10 +786,14 @@ class HermesConnectionViewModel(
             is LifecycleRecoveryEffect.CancelRetry -> effect.scope
             is LifecycleRecoveryEffect.ScheduleDebounce -> effect.scope
             is LifecycleRecoveryEffect.CancelDebounce -> effect.scope
+            is LifecycleRecoveryEffect.CancelProbe -> effect.scope
+            is LifecycleRecoveryEffect.CancelBootstrap -> effect.scope
         }
         if (active != null && (scope.origin != active || scope.generation != generation) &&
             effect !is LifecycleRecoveryEffect.CancelRetry &&
-            effect !is LifecycleRecoveryEffect.CancelDebounce
+            effect !is LifecycleRecoveryEffect.CancelDebounce &&
+            effect !is LifecycleRecoveryEffect.CancelProbe &&
+            effect !is LifecycleRecoveryEffect.CancelBootstrap
         ) {
             return
         }
@@ -842,6 +846,8 @@ class HermesConnectionViewModel(
                 }
             }
             is LifecycleRecoveryEffect.CancelDebounce -> recoveryDebounceJob?.cancel()
+            is LifecycleRecoveryEffect.CancelProbe -> recoveryProbeJob?.cancel()
+            is LifecycleRecoveryEffect.CancelBootstrap -> connectionJob?.cancel()
         }
     }
 

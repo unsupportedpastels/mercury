@@ -258,10 +258,10 @@ class LifecycleRecoveryReducerTest {
                 event = LifecycleRecoveryEvent.DebounceFired(origin, 1L, nowEpochMs = 1_300L),
             ) { decision ->
                 val probing = decision.state as LifecycleRecoveryState.Probing
-                assertTrue(probing.keepReadyPresentation)
+                assertTrue(probing.preserveConnected)
                 assertTrue(probing.jobs.probe)
                 assertEquals(AuthorizationKind.LoopbackSession, probing.authorization)
-                assertEquals(ConnectionState.Recovering, probing.publishedConnectionState())
+                assertEquals(ConnectionState.Connected, probing.publishedConnectionState())
                 assertEquals(
                     listOf(
                         LifecycleRecoveryEffect.CancelDebounce(scope()),
@@ -331,6 +331,76 @@ class LifecycleRecoveryReducerTest {
                 assertTrue(decision.effects.any { it is LifecycleRecoveryEffect.CancelRetry })
                 assertFalse(decision.effects.any { it is LifecycleRecoveryEffect.Probe })
                 assertFalse(decision.effects.any { it is LifecycleRecoveryEffect.Bootstrap })
+            },
+            Case(
+                name = "background idle during in-flight bootstrap cancels it",
+                initial = LifecycleRecoveryState.Probing(
+                    scope(),
+                    RecoveryJobs(bootstrap = true),
+                ),
+                event = LifecycleRecoveryEvent.Background(hasActiveTurn = false),
+            ) { decision ->
+                val suspended = decision.state as LifecycleRecoveryState.Suspended
+                assertFalse(suspended.last.jobsOrNull()?.bootstrap == true)
+                assertFalse(suspended.last.jobsOrNull()?.probe == true)
+                assertTrue(decision.effects.any { it is LifecycleRecoveryEffect.CancelBootstrap })
+                assertFalse(decision.effects.any { it is LifecycleRecoveryEffect.Bootstrap })
+                assertFalse(decision.effects.any { it is LifecycleRecoveryEffect.ScheduleRetry })
+                val ignored = reduceLifecycle(
+                    suspended,
+                    LifecycleRecoveryEvent.BootstrapFailed(
+                        origin, 1L, TunnelConnectionFailure.TunnelUnavailable, nowEpochMs = 5_000L,
+                    ),
+                )
+                assertTrue(ignored.state is LifecycleRecoveryState.Suspended)
+                assertFalse(ignored.effects.any { it is LifecycleRecoveryEffect.ScheduleRetry })
+                assertFalse(ignored.effects.any { it is LifecycleRecoveryEffect.Bootstrap })
+            },
+            Case(
+                name = "background idle during in-flight probe cancels it",
+                initial = LifecycleRecoveryState.Probing(
+                    scope(),
+                    RecoveryJobs(probe = true),
+                    authorization = AuthorizationKind.LoopbackSession,
+                    preserveConnected = true,
+                ),
+                event = LifecycleRecoveryEvent.Background(hasActiveTurn = false),
+            ) { decision ->
+                val suspended = decision.state as LifecycleRecoveryState.Suspended
+                assertFalse(suspended.last.jobsOrNull()?.probe == true)
+                assertTrue(decision.effects.any { it is LifecycleRecoveryEffect.CancelProbe })
+                val ignored = reduceLifecycle(
+                    suspended,
+                    LifecycleRecoveryEvent.ProbeFailed(
+                        origin, 1L, TunnelConnectionFailure.TunnelUnavailable, nowEpochMs = 5_000L,
+                    ),
+                )
+                assertTrue(ignored.state is LifecycleRecoveryState.Suspended)
+                assertFalse(ignored.effects.any { it is LifecycleRecoveryEffect.ScheduleRetry })
+                assertFalse(ignored.effects.any { it is LifecycleRecoveryEffect.Probe })
+            },
+            Case(
+                name = "bootstrap rejected waits for manual retry",
+                initial = LifecycleRecoveryState.Probing(
+                    scope(),
+                    RecoveryJobs(bootstrap = true),
+                ),
+                event = LifecycleRecoveryEvent.BootstrapFailed(
+                    origin, 1L, TunnelConnectionFailure.BootstrapRejected, nowEpochMs = 10_000L,
+                ),
+            ) { decision ->
+                val waiting = decision.state as LifecycleRecoveryState.WaitingForTunnel
+                assertEquals(TunnelConnectionFailure.BootstrapRejected, waiting.failure)
+                assertTrue(waiting.budgetExhausted)
+                assertFalse(waiting.jobs.retryTimer)
+                assertEquals(ConnectionState.Disconnected, waiting.publishedConnectionState())
+                assertFalse(decision.effects.any { it is LifecycleRecoveryEffect.ScheduleRetry })
+                val timer = reduceLifecycle(
+                    waiting,
+                    LifecycleRecoveryEvent.RetryTimerFired(origin, 1L, nowEpochMs = 11_000L),
+                )
+                assertFalse(timer.effects.any { it is LifecycleRecoveryEffect.Bootstrap })
+                assertTrue(timer.state is LifecycleRecoveryState.WaitingForTunnel)
             },
             Case(
                 name = "transport lost during turn recovery starts a replacement recover",

@@ -46,6 +46,7 @@ sealed interface LifecycleRecoveryState {
         val jobs: RecoveryJobs,
         val authorization: AuthorizationKind? = null,
         val keepReadyPresentation: Boolean = false,
+        val preserveConnected: Boolean = false,
         val recoveryAttempt: Int = 0,
         val recoveryStartedAtEpochMs: Long? = null,
         val recoveryElapsedMs: Long = 0L,
@@ -220,6 +221,8 @@ sealed interface LifecycleRecoveryEffect {
         val waitMs: Long,
     ) : LifecycleRecoveryEffect
     data class CancelDebounce(val scope: RecoveryScope) : LifecycleRecoveryEffect
+    data class CancelProbe(val scope: RecoveryScope) : LifecycleRecoveryEffect
+    data class CancelBootstrap(val scope: RecoveryScope) : LifecycleRecoveryEffect
 }
 
 data class LifecycleRecoveryDecision(
@@ -253,8 +256,11 @@ fun LifecycleRecoveryState.isTerminalCredentialFailure(): Boolean =
 
 fun LifecycleRecoveryState.publishedConnectionState(): ConnectionState = when (this) {
     LifecycleRecoveryState.Unconfigured -> ConnectionState.Disconnected
-    is LifecycleRecoveryState.Probing ->
-        if (keepReadyPresentation) ConnectionState.Recovering else ConnectionState.Connecting
+    is LifecycleRecoveryState.Probing -> when {
+        preserveConnected -> ConnectionState.Connected
+        keepReadyPresentation -> ConnectionState.Recovering
+        else -> ConnectionState.Connecting
+    }
     is LifecycleRecoveryState.Ready -> ConnectionState.Connected
     is LifecycleRecoveryState.WaitingForTunnel ->
         if (budgetExhausted || failure == TunnelConnectionFailure.CredentialRejected) {
@@ -344,15 +350,36 @@ private fun reduceSuspended(
 ): LifecycleRecoveryDecision = when (event) {
     is LifecycleRecoveryEvent.Foreground -> reduceLifecycle(state.last, event)
     is LifecycleRecoveryEvent.ManualRetry -> reduceLifecycle(state.last, event)
-    is LifecycleRecoveryEvent.Background -> LifecycleRecoveryDecision(state)
-    is LifecycleRecoveryEvent.NetworkHint -> LifecycleRecoveryDecision(state)
-    else -> {
+    is LifecycleRecoveryEvent.CredentialRejected -> {
         val inner = reduceLifecycle(state.last, event)
         LifecycleRecoveryDecision(
             LifecycleRecoveryState.Suspended(state.scope, inner.state),
             inner.effects,
         )
     }
+    is LifecycleRecoveryEvent.CredentialRefreshSucceeded,
+    is LifecycleRecoveryEvent.CredentialRefreshFailed,
+    -> {
+        val inner = reduceLifecycle(state.last, event)
+        LifecycleRecoveryDecision(
+            LifecycleRecoveryState.Suspended(state.scope, inner.state),
+            inner.effects,
+        )
+    }
+    is LifecycleRecoveryEvent.Background,
+    is LifecycleRecoveryEvent.NetworkHint,
+    is LifecycleRecoveryEvent.ProbeSucceeded,
+    is LifecycleRecoveryEvent.ProbeFailed,
+    is LifecycleRecoveryEvent.BootstrapSucceeded,
+    is LifecycleRecoveryEvent.BootstrapFailed,
+    is LifecycleRecoveryEvent.RetryTimerFired,
+    is LifecycleRecoveryEvent.DebounceFired,
+    is LifecycleRecoveryEvent.TransportLost,
+    is LifecycleRecoveryEvent.TurnRecovered,
+    is LifecycleRecoveryEvent.TurnRecoveryFailed,
+    is LifecycleRecoveryEvent.Configured,
+    is LifecycleRecoveryEvent.Cleared,
+    -> LifecycleRecoveryDecision(state)
 }
 
 private fun foreground(
@@ -371,8 +398,8 @@ private fun background(
     if (event.hasActiveTurn) return LifecycleRecoveryDecision(state)
     val scope = state.scopeOrNull() ?: return LifecycleRecoveryDecision(state)
     return LifecycleRecoveryDecision(
-        LifecycleRecoveryState.Suspended(scope, last = withoutTimers(state)),
-        cancelTimers(state),
+        LifecycleRecoveryState.Suspended(scope, last = withoutIdleWork(state)),
+        cancelTimers(state) + cancelInFlightIdleWork(state),
     )
 }
 
@@ -423,7 +450,7 @@ private fun debounceFired(
                     scope = scope,
                     jobs = RecoveryJobs(probe = true),
                     authorization = state.authorization,
-                    keepReadyPresentation = true,
+                    preserveConnected = true,
                 ),
                 listOf(
                     LifecycleRecoveryEffect.CancelDebounce(scope),
@@ -665,11 +692,14 @@ private fun retryTimerFired(
     when (state) {
         is LifecycleRecoveryState.WaitingForTunnel -> {
             if (state.failure == TunnelConnectionFailure.CredentialRejected ||
+                state.failure == TunnelConnectionFailure.BootstrapRejected ||
                 budgetElapsed(state.recoveryStartedAtEpochMs, event.nowEpochMs) ||
                 state.budgetExhausted ||
                 state.elapsedMs >= LIFECYCLE_RECOVERY_BUDGET_MS
             ) {
-                return if (state.failure == TunnelConnectionFailure.CredentialRejected) {
+                return if (state.failure == TunnelConnectionFailure.CredentialRejected ||
+                    state.failure == TunnelConnectionFailure.BootstrapRejected
+                ) {
                     LifecycleRecoveryDecision(state, cancelTimers(state))
                 } else {
                     exhaust(state, event.nowEpochMs)
@@ -768,6 +798,9 @@ private fun waitForFailure(
     if (failure == TunnelConnectionFailure.CredentialRejected) {
         return terminalCredential(previous, nowEpochMs)
     }
+    if (failure == TunnelConnectionFailure.BootstrapRejected) {
+        return waitForManual(previous, nowEpochMs, failure)
+    }
     val attempt = previousAttempt + 1
     val recoveryStartedAt = startedAt ?: nowEpochMs
     val previousElapsed = when (previous) {
@@ -841,12 +874,22 @@ private fun scheduleTurnRetry(
 private fun terminalCredential(
     state: LifecycleRecoveryState,
     nowEpochMs: Long,
+): LifecycleRecoveryDecision = waitForManual(
+    state,
+    nowEpochMs,
+    TunnelConnectionFailure.CredentialRejected,
+)
+
+private fun waitForManual(
+    state: LifecycleRecoveryState,
+    nowEpochMs: Long,
+    failure: TunnelConnectionFailure,
 ): LifecycleRecoveryDecision {
     val scope = state.scopeOrNull() ?: return LifecycleRecoveryDecision(state)
     return LifecycleRecoveryDecision(
         LifecycleRecoveryState.WaitingForTunnel(
             scope = scope,
-            failure = TunnelConnectionFailure.CredentialRejected,
+            failure = failure,
             attempt = 1,
             nextRetryAtEpochMs = nowEpochMs,
             recoveryStartedAtEpochMs = nowEpochMs,
@@ -940,6 +983,28 @@ private fun cancelTimers(state: LifecycleRecoveryState): List<LifecycleRecoveryE
 private fun withoutTimers(state: LifecycleRecoveryState): LifecycleRecoveryState {
     val jobs = state.jobsOrNull() ?: return state
     return withJobs(state, jobs.copy(retryTimer = false, debounce = false))
+}
+
+private fun withoutIdleWork(state: LifecycleRecoveryState): LifecycleRecoveryState {
+    val jobs = state.jobsOrNull() ?: return state
+    return withJobs(
+        state,
+        jobs.copy(
+            probe = false,
+            bootstrap = false,
+            retryTimer = false,
+            debounce = false,
+        ),
+    )
+}
+
+private fun cancelInFlightIdleWork(state: LifecycleRecoveryState): List<LifecycleRecoveryEffect> {
+    val scope = state.scopeOrNull() ?: return emptyList()
+    val jobs = state.jobsOrNull() ?: return emptyList()
+    return buildList {
+        if (jobs.probe) add(LifecycleRecoveryEffect.CancelProbe(scope))
+        if (jobs.bootstrap) add(LifecycleRecoveryEffect.CancelBootstrap(scope))
+    }
 }
 
 private fun withJobs(
