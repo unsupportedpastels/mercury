@@ -45,7 +45,8 @@ Whole-feature spec review PASS (`.superpowers/sdd/task-8-feature-spec-review.md`
 
 | Gate | Result |
 |---|---|
-| `testDebugUnitTest` (full, HEAD `754e844`, 2026-08-31) | **965 tests, 7 failed** — all `NativeOAuthTest` (environmental socket bind / assertion; not chased) |
+| `testDebugUnitTest` (full, HEAD `3e9a3df`, 2026-08-31) | **967 tests, 7 failed** — all `NativeOAuthTest` (environmental socket bind / assertion; not chased) |
+| `testDebugUnitTest` (full, HEAD `754e844`, 2026-08-31, prior) | **965 tests, 7 failed** — all `NativeOAuthTest` (environmental socket bind / assertion; not chased) |
 | `MergedManifestCleartextTest` | 5/5 |
 | `lintDebug` | pass |
 | `assembleDebug` | pass |
@@ -161,6 +162,10 @@ Agent-captured device screenshot. **Not owner prose.** Partial only — matrix *
 | Owner follow-up | Restore forward + Retry confirmed (item 7 pass) |
 
 Screenshot goldens: **owner-approved 2026-08-31**. Device matrix remains **not complete**.
+
+## Gate refresh (2026-08-31, HEAD `3e9a3df`)
+
+`./gradlew testDebugUnitTest lintDebug assembleDebug` — **lint pass, assemble pass, unit 967/7 failed** (all `NativeOAuthTest`, environmental; not chased). Screenshot goldens owner-approved; `validateDebugScreenshotTest` 27/27 at this commit (not re-run this dispatch).
 
 ## Screenshot golden update (2026-08-31, owner-approved)
 
