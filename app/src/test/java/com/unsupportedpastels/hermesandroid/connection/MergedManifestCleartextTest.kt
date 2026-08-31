@@ -51,6 +51,42 @@ class MergedManifestCleartextTest {
     }
 
     @Test
+    fun noReleaseSourceOverlayRestoresGlobalCleartext() {
+        assertFalse(File("src/release/AndroidManifest.xml").isFile)
+        assertFalse(File("src/release/res/xml/network_security_config.xml").isFile)
+    }
+
+    @Test
+    fun allPresentMergedManifestsRejectGlobalCleartext() {
+        val mergedRoots = listOf(
+            File("build/intermediates/merged_manifests"),
+            File("build/intermediates/merged_manifest"),
+        )
+        val merged = mergedRoots
+            .filter { it.isDirectory }
+            .flatMap { root ->
+                root.walkTopDown()
+                    .filter { it.isFile && it.name == "AndroidManifest.xml" }
+                    .toList()
+            }
+        assertTrue(
+            "expected at least one merged AndroidManifest.xml under build/intermediates",
+            merged.isNotEmpty(),
+        )
+        merged.forEach { file ->
+            val text = file.readText()
+            assertFalse(
+                "${file.path} must not restore global cleartext",
+                text.contains("usesCleartextTraffic=\"true\""),
+            )
+            assertTrue(
+                "${file.path} must keep the shared network security config",
+                text.contains("android:networkSecurityConfig=\"@xml/network_security_config\""),
+            )
+        }
+    }
+
+    @Test
     fun mergedManifestStillExportsOnlyTheLauncherActivityFromThisApp() {
         val packageInfo = context.packageManager.getPackageInfo(
             context.packageName,
