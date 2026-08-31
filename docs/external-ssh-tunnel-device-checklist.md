@@ -234,7 +234,7 @@ There is no in-app logging of these fields. Do not add adb logcat dumps that mig
 - Feature ships **Experimental**. Token comes from dashboard HTML, not a published API.
 - Android loopback is shared: any app on the device can reach the forwarded port.
 - A rejected WebSocket **handshake** may be HTTP 403 rather than close code 4401. Report which you saw. Do not “fix” that by pasting a token.
-- Screenshot goldens are not approved until you say so.
+- Screenshot goldens: owner-approved 2026-08-31.
 - This checklist is empty until you fill it. An agent run that never used this phone is not a device pass.
 
 ---
@@ -251,7 +251,11 @@ Owner-reported on a physical device. **Not agent-observed.** Partial coverage on
 - Hermes restart on server: recovered without pasting a token.
 - Stop Termius forward → tunnel unavailable (not stuck connected); restore forward + Retry.
 
-**Not reported / still open:** items 2, 8–12; adaptive layout on hardware; screenshot golden approval.
+**Deferred by owner (2026-08-31, not blockers — not tested, do not claim pass):** items 2, 8–12; adaptive layout on hardware; IPv6 `::1` NSC matching on device.
+
+## Owner close (2026-08-31)
+
+Owner explicitly closed the External SSH tunnel goal: **connection/setup works.** Items 2, 8–12, adaptive layout on real hardware, and IPv6 `::1` verification are **deferred as unrelated follow-up, not blockers.** Do not invent a device pass or claim those rows were tested.
 
 ## Agent observed (2026-08-31 ~15:02)
 

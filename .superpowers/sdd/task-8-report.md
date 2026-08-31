@@ -1,10 +1,10 @@
 # Task 8 report — Release verification (agent preparation only)
 
-**Status:** DONE_WITH_CONCERNS  
+**Status:** CLOSED (owner 2026-08-31) — connection/setup verified; deferred follow-ups not blockers  
 **Branch:** `docs/external-ssh-tunnel-session-auth`  
 **HEAD:** `eb91a92` — docs(sdd): record PASS spec review for tunnel layout fix (includes layout fix `ad5d7de`)  
 **Not pushed. Not merged.**  
-**Device matrix:** partial owner coverage only (items 1, 3–7). Never claim full device pass.
+**Device matrix:** partial owner coverage only (items 1, 3–7). Owner closed the goal 2026-08-31. Never claim full device pass. Do not claim items 2, 8–12, adaptive hardware, or IPv6 `::1` were tested.
 
 ## Commits
 
@@ -55,7 +55,7 @@ Whole-feature spec review PASS (`.superpowers/sdd/task-8-feature-spec-review.md`
 | `updateDebugScreenshotTest` + `validateDebugScreenshotTest` (owner-approved goldens, 2026-08-31) | **27/27 pass** (JVM preview path; no emulator) |
 | Debug APK | `app/build/outputs/apk/debug/app-debug.apk` (refreshed 2026-08-31) |
 | Protocol smoke | ran at agent prep (see below) |
-| Device matrix | **partial owner only** — items 1, 3–7 reported pass; 2, 8–12 and adaptive hardware still open |
+| Device matrix | **partial owner only** — items 1, 3–7 reported pass; owner closed goal 2026-08-31; items 2, 8–12, adaptive hardware, IPv6 `::1` deferred (not blockers) |
 
 NativeOAuthTest failures (7):
 
@@ -113,10 +113,16 @@ Compact tunnel setup at 400×900 (post `99dcbb2`): warning, Test tunnel, and Sav
 | WS rejected token (pre-accept) | **HTTP 403**, empty body — still not close `4401` |
 | WS valid token | HTTP 101 |
 
-## Owner blockers (remaining)
+## Owner close (2026-08-31)
 
-1. **Device matrix (incomplete)** — owner-reported pass on items 1, 3–7 only. Still open: item 2 (second SSH client), items 8–12 (network transitions, lock/battery, reboot, wrong service, two-port isolation), and adaptive layout on real compact/medium/expanded hardware. Checklist: `docs/external-ssh-tunnel-device-checklist.md`. An agent must not mark untested rows pass.
-2. **IPv6 `::1` NSC matching** — unverified on physical device (prefer `127.0.0.1` until confirmed).
+Owner explicitly closed the External SSH tunnel goal: **connection/setup works.** Remaining matrix rows are **deferred as unrelated follow-up, not blockers:**
+
+- Item 2 (second SSH client)
+- Items 8–12 (network transitions, lock/battery, reboot, wrong service, two-port isolation)
+- Adaptive layout on real compact/medium/expanded hardware
+- IPv6 `::1` NSC matching on physical device (prefer `127.0.0.1` until confirmed)
+
+An agent must not invent a device pass or claim those deferred rows were tested. Checklist: `docs/external-ssh-tunnel-device-checklist.md`.
 
 Screenshot goldens: **no longer a blocker** (owner-approved 2026-08-31).
 
@@ -127,7 +133,7 @@ Keep the pull request honest. These are structural, not cosmetic:
 - **HTML-scrape coupling.** The session token is adopted from `window.__HERMES_SESSION_TOKEN__` in the loopback root HTML. There is no first-class local-client adoption endpoint. If upstream Hermes publishes one, retire the scrape rather than maintain it. This is why the mode is Experimental.
 - **Shared-loopback exposure.** Any other app on the device can reach the forwarded port and obtain the same token. Android loopback is not app-private. Setup UI and user docs already warn; do not describe it as sandboxed.
 - **Handshake HTTP 403 vs 4401.** A rejected-token WebSocket *upgrade* on live `v0.20.4` is HTTP 403 with an empty body, not a WebSocket close `4401`. Credential recovery is proven for an already-open socket whose peer then closes `4401`, and for REST `401`. A Hermes restart that drops sockets and refuses the next upgrade with 403 may not enter the `4401` branch until a REST `401` also arrives. Distinguishing `4401` from `4403` is impossible from handshake 403 alone. Left as instructed; do not map HTTP 403 to credential refresh.
-- **Device matrix is incomplete.** Owner reported pass on items 1, 3–7 (cold/test handshake, chat, background/reopen, kill/restart, Hermes restart, tunnel stop/start). Items 2, 8–12 and adaptive hardware remain untested. Agent partial screenshot corroborates item 7 chrome only. This report is not a full device pass.
+- **Device matrix is partial, not complete.** Owner reported pass on items 1, 3–7 (cold/test handshake, chat, background/reopen, kill/restart, Hermes restart, tunnel stop/start). Owner closed the goal 2026-08-31; items 2, 8–12, adaptive hardware, and IPv6 `::1` are deferred follow-ups, not blockers. Agent partial screenshot corroborates item 7 chrome only. This report is not a full device pass.
 
 Also still true from earlier tasks: NativeOAuthTest environmental failures (7); IPv6 `::1` NSC matching unverified on device; no `src/release` overlay today, but a future overlay is what the new test is for.
 
@@ -145,9 +151,9 @@ Owner-reported on a physical device. **Not agent-observed.** Partial matrix only
 | Hermes restart (item 6) | Recovered without pasting a token |
 | Tunnel stop/start (item 7) | Stop Termius forward → tunnel unavailable (not stuck connected); restore forward + Retry |
 
-**Still untested by owner (as of this note):** second SSH client (item 2), network transitions (item 8), lock/battery (item 9), device reboot (item 10), wrong local service (item 11), two-port isolation (item 12), adaptive layout on hardware.
+**Deferred by owner (2026-08-31, not blockers):** second SSH client (item 2), network transitions (item 8), lock/battery (item 9), device reboot (item 10), wrong local service (item 11), two-port isolation (item 12), adaptive layout on hardware, IPv6 `::1` NSC matching. **Not tested — do not claim pass.**
 
-Screenshot goldens: **owner-approved 2026-08-31**. Device matrix remains **not complete**.
+Owner closed the External SSH tunnel goal 2026-08-31: connection/setup works. Screenshot goldens: **owner-approved 2026-08-31**. Device matrix remains **not complete**.
 
 ## Agent observed (2026-08-31 ~15:02)
 
