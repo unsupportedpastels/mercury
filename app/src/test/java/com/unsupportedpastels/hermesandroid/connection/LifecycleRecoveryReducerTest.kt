@@ -403,6 +403,21 @@ class LifecycleRecoveryReducerTest {
                 assertTrue(timer.state is LifecycleRecoveryState.WaitingForTunnel)
             },
             Case(
+                name = "transport lost from ready without a turn probes first",
+                initial = LifecycleRecoveryState.Ready(scope(), AuthorizationKind.LoopbackSession),
+                event = LifecycleRecoveryEvent.TransportLost(
+                    origin, 1L, nowEpochMs = 8_000L, hasActiveTurn = false,
+                ),
+            ) { decision ->
+                val ready = decision.state as LifecycleRecoveryState.Ready
+                assertTrue(ready.jobs.debounce)
+                assertEquals(ConnectionState.Connected, ready.publishedConnectionState())
+                assertEquals(
+                    listOf(LifecycleRecoveryEffect.ScheduleDebounce(scope(), 8_300L, 300L)),
+                    decision.effects,
+                )
+            },
+            Case(
                 name = "transport lost during turn recovery starts a replacement recover",
                 initial = recoveringTurn(attempt = 1, nextRetryAt = 11_000L, startedAt = 10_000L),
                 event = LifecycleRecoveryEvent.TransportLost(

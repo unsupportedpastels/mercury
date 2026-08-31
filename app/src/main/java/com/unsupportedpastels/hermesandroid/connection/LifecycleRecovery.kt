@@ -610,35 +610,38 @@ private fun transportLost(
 ): LifecycleRecoveryDecision {
     if (state.isTerminalCredentialFailure()) return LifecycleRecoveryDecision(state)
     val scope = state.scopeOrNull() ?: return LifecycleRecoveryDecision(state)
-    if (event.hasActiveTurn) {
-        if (state is LifecycleRecoveryState.RecoveringTurn) {
+        if (event.hasActiveTurn) {
+            if (state is LifecycleRecoveryState.RecoveringTurn) {
+                return LifecycleRecoveryDecision(
+                    state.copy(
+                        sessionId = event.sessionId,
+                        jobs = RecoveryJobs(turnRecovery = true),
+                    ),
+                    listOf(
+                        LifecycleRecoveryEffect.CancelRetry(scope),
+                        LifecycleRecoveryEffect.RecoverTurn(scope, event.sessionId),
+                    ),
+                )
+            }
+            val nextRetry = event.nowEpochMs + lifecycleBackoffMs(1)
             return LifecycleRecoveryDecision(
-                state.copy(
+                LifecycleRecoveryState.RecoveringTurn(
+                    scope = scope,
                     sessionId = event.sessionId,
-                    jobs = RecoveryJobs(turnRecovery = true),
+                    attempt = 1,
+                    nextRetryAtEpochMs = nextRetry,
+                    recoveryStartedAtEpochMs = event.nowEpochMs,
+                    jobs = RecoveryJobs(retryTimer = true),
+                    authorization = authorizationOf(state) ?: AuthorizationKind.LoopbackSession,
+                    elapsedMs = lifecycleBackoffMs(1),
                 ),
-                listOf(
-                    LifecycleRecoveryEffect.CancelRetry(scope),
-                    LifecycleRecoveryEffect.RecoverTurn(scope, event.sessionId),
-                ),
+                cancelTimers(state) + LifecycleRecoveryEffect.ScheduleRetry(scope, nextRetry, lifecycleBackoffMs(1)),
             )
         }
-        val nextRetry = event.nowEpochMs + lifecycleBackoffMs(1)
-        return LifecycleRecoveryDecision(
-            LifecycleRecoveryState.RecoveringTurn(
-                scope = scope,
-                sessionId = event.sessionId,
-                attempt = 1,
-                nextRetryAtEpochMs = nextRetry,
-                recoveryStartedAtEpochMs = event.nowEpochMs,
-                jobs = RecoveryJobs(retryTimer = true),
-                authorization = authorizationOf(state) ?: AuthorizationKind.LoopbackSession,
-                elapsedMs = lifecycleBackoffMs(1),
-            ),
-            cancelTimers(state) + LifecycleRecoveryEffect.ScheduleRetry(scope, nextRetry, lifecycleBackoffMs(1)),
-        )
-    }
-    return waitForFailure(
+        if (state is LifecycleRecoveryState.Ready) {
+            return requestDebouncedProbe(state, event.nowEpochMs)
+        }
+        return waitForFailure(
         scope = scope,
         failure = TunnelConnectionFailure.TunnelUnavailable,
         nowEpochMs = event.nowEpochMs,

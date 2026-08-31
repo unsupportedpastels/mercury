@@ -146,7 +146,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 private const val TOKEN_REFRESH_SKEW_SECONDS = 30L
-private const val MAX_CHAT_RECOVERIES_PER_OPERATION = 2
 private const val MAX_SESSION_TITLE_CHARS = 256
 private const val SLASH_COMPLETION_DEBOUNCE_MS = 60L
 private const val OPERATIONAL_STATUS_POLL_INTERVAL_MILLIS = 60_000L
@@ -344,7 +343,6 @@ private data class TrackedSpeechSocket(
 
 private class ChatRecoveryState(
     val operationGeneration: Long,
-    var remaining: Int = MAX_CHAT_RECOVERIES_PER_OPERATION,
     var activeAttempt: ChatRecoveryAttempt? = null,
 )
 
@@ -873,20 +871,13 @@ class HermesConnectionViewModel(
                     try {
                         client.loadSessionsForProfile(scope.origin, credential, "default", false)
                     } catch (_: HermesAuthenticationRejectedException) {
-                        dispatchRecovery(
-                            LifecycleRecoveryEvent.CredentialRejected(
-                                origin = scope.origin,
-                                generation = scope.generation,
-                                nowEpochMs = nowEpochMs(),
-                                alreadyRefreshed = isTerminalLoopbackScope(scope.origin, scope.generation) ||
-                                    loopbackRecoveryEpoch != null,
-                            ),
-                        )
-                        mutableSnapshots.value = mutableSnapshots.value.copy(
-                            sessionMetadataSource = CacheSource.Cached,
-                        )
-                        applyRecoveryPresentation()
-                        return
+                        if (!probeAfterLoopbackRefresh(scope, credential)) {
+                            mutableSnapshots.value = mutableSnapshots.value.copy(
+                                sessionMetadataSource = CacheSource.Cached,
+                            )
+                            applyRecoveryPresentation()
+                            return
+                        }
                     }
                 }
                 dispatchRecovery(
@@ -925,6 +916,51 @@ class HermesConnectionViewModel(
                 )
                 applyRecoveryPresentation()
             }
+        }
+    }
+
+    /**
+     * A probe `401` while a 4A epoch is in flight must join that refresh, not treat
+     * "refresh running" as a second rejection. Returns false when the probe should
+     * stop without publishing success.
+     */
+    private suspend fun probeAfterLoopbackRefresh(
+        scope: RecoveryScope,
+        rejected: HermesCredential,
+    ): Boolean {
+        val terminal = isTerminalLoopbackScope(scope.origin, scope.generation)
+        if (terminal || rejected !is HermesCredential.LoopbackSession) {
+            dispatchRecovery(
+                LifecycleRecoveryEvent.CredentialRejected(
+                    origin = scope.origin,
+                    generation = scope.generation,
+                    nowEpochMs = nowEpochMs(),
+                    alreadyRefreshed = true,
+                ),
+            )
+            return false
+        }
+        val recovered = try {
+            refreshLoopbackCredential(scope.origin, scope.generation, rejected)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
+        if (recovered == null) return false
+        return try {
+            client.loadSessionsForProfile(scope.origin, recovered, "default", false)
+            true
+        } catch (_: HermesAuthenticationRejectedException) {
+            dispatchRecovery(
+                LifecycleRecoveryEvent.CredentialRejected(
+                    origin = scope.origin,
+                    generation = scope.generation,
+                    nowEpochMs = nowEpochMs(),
+                    alreadyRefreshed = true,
+                ),
+            )
+            false
         }
     }
 
@@ -1846,6 +1882,7 @@ class HermesConnectionViewModel(
     ): T {
         var currentCredential = credential
         var credentialRecovered = false
+        var transportRetried = false
         while (true) {
             val session = acquireProjectMetadataSession(
                 serverOrigin = serverOrigin,
@@ -1889,17 +1926,17 @@ class HermesConnectionViewModel(
                     credentialRecovered = true
                     continue
                 }
-                if (activeConnectionMode == ServerConnectionMode.ExternalSshTunnel) {
-                    dispatchRecovery(
-                        LifecycleRecoveryEvent.TransportLost(
-                            origin = serverOrigin,
-                            generation = originGeneration,
-                            nowEpochMs = nowEpochMs(),
-                            hasActiveTurn = activeTurnIds.isNotEmpty(),
-                        ),
-                    )
-                }
-                throw error
+                dispatchRecovery(
+                    LifecycleRecoveryEvent.TransportLost(
+                        origin = serverOrigin,
+                        generation = originGeneration,
+                        nowEpochMs = nowEpochMs(),
+                        hasActiveTurn = activeTurnIds.isNotEmpty(),
+                    ),
+                )
+                if (transportRetried) throw error
+                transportRetried = true
+                continue
             }
         }
     }

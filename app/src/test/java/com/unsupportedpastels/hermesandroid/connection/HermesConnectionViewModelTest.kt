@@ -761,6 +761,130 @@ class HermesConnectionViewModelTest {
     }
 
     @Test
+    fun backgroundIdleDuringInFlightBootstrapDoesNotRetry() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val foreground = MutableStateFlow(true)
+        val gate = CompletableDeferred<Unit>()
+        val bootstrap = GatedFirstBootstrap(origin, gate)
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = TunnelConnectionClient(),
+            loopbackSessionBootstrapClient = bootstrap,
+            appForegroundStates = foreground,
+            nowEpochMs = { dispatcher.scheduler.currentTime },
+        )
+        runCurrent()
+        assertEquals(1, bootstrap.calls)
+        assertEquals(ConnectionState.Connecting, viewModel.snapshots.value.connectionState)
+
+        foreground.value = false
+        runCurrent()
+        gate.complete(Unit)
+        advanceTimeBy(60_000L)
+        advanceUntilIdle()
+        assertEquals(1, bootstrap.calls)
+    }
+
+    @Test
+    fun foregroundHealthProbeLeavesConnectedUnchanged() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val foreground = MutableStateFlow(true)
+        val healthGate = CompletableDeferred<Unit>()
+        val client = GatedHealthProbeTunnelClient(healthGate)
+        val bootstrap = RecordingTunnelBootstrap(origin, listOf("session-token"))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+            appForegroundStates = foreground,
+            nowEpochMs = { dispatcher.scheduler.currentTime },
+        )
+        advanceUntilIdle()
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+
+        foreground.value = false
+        runCurrent()
+        foreground.value = true
+        advanceTimeBy(LIFECYCLE_PROBE_DEBOUNCE_MS)
+        runCurrent()
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+        assertTrue(client.probeCalls > 1)
+
+        healthGate.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+        assertEquals(1, bootstrap.calls)
+    }
+
+    @Test
+    fun bootstrapRejectedDoesNotHammerThePort() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val bootstrap = object : LoopbackSessionBootstrapClient {
+            var calls = 0
+            override suspend fun bootstrap(origin: ServerOrigin) = LoopbackSessionBootstrapResult.Failure(
+                LoopbackSessionBootstrapFailure.TokenAbsent,
+            ).also { calls += 1 }
+        }
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = TunnelConnectionClient(),
+            loopbackSessionBootstrapClient = bootstrap,
+            nowEpochMs = { dispatcher.scheduler.currentTime },
+        )
+        advanceUntilIdle()
+        assertEquals(1, bootstrap.calls)
+        assertEquals(
+            TunnelConnectionFailure.BootstrapRejected,
+            viewModel.snapshots.value.tunnelConnectionFailure,
+        )
+
+        advanceTimeBy(60_000L)
+        advanceUntilIdle()
+        assertEquals(1, bootstrap.calls)
+        assertEquals(ConnectionState.Disconnected, viewModel.snapshots.value.connectionState)
+    }
+
+    @Test
+    fun probe401DuringInFlightRefreshJoinsTheEpoch() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val hints = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+        val recoveryGate = CompletableDeferred<Unit>()
+        val client = ConnectThenRejectUntilReplacedClient()
+        val bootstrap = GatedRecoveryScrapeBootstrap(origin, listOf("connect-token", "recovery-token"), recoveryGate)
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(tunnelSettings(origin)),
+            client = client,
+            loopbackSessionBootstrapClient = bootstrap,
+            networkHints = hints,
+            nowEpochMs = { dispatcher.scheduler.currentTime },
+        )
+        advanceUntilIdle()
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+
+        val read = async { runCatching { viewModel.loadHostFiles("/workspace") } }
+        advanceUntilIdle()
+        assertEquals(2, bootstrap.calls)
+        assertTrue(bootstrap.recoveryStarted)
+
+        hints.tryEmit(Unit)
+        advanceTimeBy(LIFECYCLE_PROBE_DEBOUNCE_MS)
+        runCurrent()
+
+        assertNotEquals(
+            TunnelConnectionFailure.CredentialRejected,
+            viewModel.snapshots.value.tunnelConnectionFailure,
+        )
+
+        recoveryGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+        assertEquals(null, viewModel.snapshots.value.tunnelConnectionFailure)
+        assertTrue(read.await().isSuccess)
+        assertEquals(2, bootstrap.calls)
+    }
+
+    @Test
     fun concurrentForegroundAndNetworkHintStartOnlyOneProbe() = runTest(dispatcher) {
         val origin = ServerOrigin.parse("http://127.0.0.1:19119")
         val foreground = MutableStateFlow(true)
@@ -2897,12 +3021,11 @@ class HermesConnectionViewModelTest {
 
         viewModel.openProject(projectId).join()
 
-        // Metadata socket death is not retried in-place; the reducer owns
-        // reconnect, and this RPC surfaces a transient error immediately.
-        assertEquals(1, connections)
+        assertEquals(2, connections)
         assertEquals(true, staleSession.closed)
-        val failed = viewModel.snapshots.value.projectSessionStates.getValue(projectId)
-        assertTrue(failed is ProjectSessionLoadState.TransientError)
+        val loaded = viewModel.snapshots.value.projectSessionStates.getValue(projectId)
+            as ProjectSessionLoadState.Loaded
+        assertEquals("Session", loaded.sessions.single().title)
     }
 
     @Test
@@ -2934,9 +3057,7 @@ class HermesConnectionViewModelTest {
 
         viewModel.openProject(projectId).join()
 
-        // The one-shot metadata heal was absorbed: a dead socket surfaces once
-        // without spinning reconnect attempts from this RPC.
-        assertEquals(1, connections)
+        assertEquals(2, connections)
         val state = viewModel.snapshots.value.projectSessionStates.getValue(projectId)
         assertEquals(true, state is ProjectSessionLoadState.TransientError)
     }
@@ -4268,6 +4389,115 @@ private class ConcurrentHostReadTunnelClient(
         protectedRead(credential)
         return ByteArray(1)
     }
+}
+
+/** Holds the first scrape open so background can land while bootstrap is in flight. */
+private class GatedFirstBootstrap(
+    private val origin: ServerOrigin,
+    private val gate: CompletableDeferred<Unit>,
+) : LoopbackSessionBootstrapClient {
+    var calls = 0
+        private set
+
+    override suspend fun bootstrap(origin: ServerOrigin): LoopbackSessionBootstrapResult {
+        assertEquals(this.origin, origin)
+        calls += 1
+        gate.await()
+        return LoopbackSessionBootstrapResult.Failure(LoopbackSessionBootstrapFailure.TransportFailure)
+    }
+}
+
+/**
+ * Connect bootstrap completes immediately. The first recovery scrape is held
+ * open so a concurrent probe can join the same epoch.
+ */
+private class GatedRecoveryScrapeBootstrap(
+    private val origin: ServerOrigin,
+    tokens: List<String>,
+    private val recoveryGate: CompletableDeferred<Unit>,
+) : LoopbackSessionBootstrapClient {
+    private val remaining = ArrayDeque(tokens)
+    var calls = 0
+        private set
+    var recoveryStarted = false
+        private set
+
+    override suspend fun bootstrap(origin: ServerOrigin): LoopbackSessionBootstrapResult {
+        assertEquals(this.origin, origin)
+        calls += 1
+        val token = remaining.removeFirstOrNull()
+            ?: return LoopbackSessionBootstrapResult.Failure(LoopbackSessionBootstrapFailure.TokenAbsent)
+        if (calls > 1) {
+            recoveryStarted = true
+            recoveryGate.await()
+        }
+        return LoopbackSessionBootstrapResult.Success(
+            HermesCredential.LoopbackSession.create(origin, token),
+        )
+    }
+}
+
+/**
+ * Accepts the connect credential once, then 401s every later use of that same
+ * object so a foreground probe cannot look healthy while a refresh is in flight.
+ */
+private class ConnectThenRejectUntilReplacedClient : HermesConnectionClient {
+    private var connectCredential: HermesCredential? = null
+
+    override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo =
+        throw AssertionError("Tunnel connection must use the public-only probe")
+
+    override suspend fun probeExternalTunnel(serverOrigin: ServerOrigin) =
+        HermesConnectionInfo("0.20.4", false, false, emptyList())
+
+    override suspend fun loadSessionsForProfile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        archivedOnly: Boolean,
+    ): List<SessionSummary> {
+        if (connectCredential == null) {
+            connectCredential = credential
+            return listOf(SessionSummary(DurableSessionId("tunnel-1"), "Tunnel session"))
+        }
+        if (credential === connectCredential) {
+            throw HermesAuthenticationRejectedException("Hermes sessions returned HTTP 401")
+        }
+        return listOf(SessionSummary(DurableSessionId("tunnel-1"), "Tunnel session"))
+    }
+
+    override suspend fun loadHostFiles(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        path: String?,
+    ): HostFileListing {
+        if (credential === connectCredential) {
+            throw HermesAuthenticationRejectedException("Hermes host listing returned HTTP 401")
+        }
+        return HostFileListing(path = path ?: "/workspace", entries = emptyList())
+    }
+}
+
+private class GatedHealthProbeTunnelClient(
+    private val healthProbeGate: CompletableDeferred<Unit>,
+) : HermesConnectionClient {
+    var probeCalls = 0
+
+    override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo =
+        throw AssertionError("Tunnel connection must use the public-only probe")
+
+    override suspend fun probeExternalTunnel(serverOrigin: ServerOrigin): HermesConnectionInfo {
+        probeCalls += 1
+        if (probeCalls > 1) healthProbeGate.await()
+        return HermesConnectionInfo("0.20.4", false, false, emptyList())
+    }
+
+    override suspend fun loadSessionsForProfile(
+        serverOrigin: ServerOrigin,
+        credential: HermesCredential,
+        profile: String,
+        archivedOnly: Boolean,
+    ): List<SessionSummary> = listOf(SessionSummary(DurableSessionId("tunnel-1"), "Tunnel session"))
 }
 
 /** Bootstrap whose outcomes are scripted; a null entry is a transport failure. */

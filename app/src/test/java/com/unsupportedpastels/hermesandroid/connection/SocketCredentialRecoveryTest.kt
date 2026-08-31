@@ -3,6 +3,7 @@ package com.unsupportedpastels.hermesandroid.connection
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.files.HostFileListing
+import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
 import com.unsupportedpastels.hermesandroid.gateway.CronJob
 import com.unsupportedpastels.hermesandroid.gateway.CronJobsState
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnector
@@ -35,6 +36,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -429,6 +431,29 @@ class SocketCredentialRecoveryTest {
         assertNull(viewModel.snapshots.value.tunnelConnectionFailure)
     }
 
+    @Test
+    fun fiveMinuteActiveTurnGiveUpDoesNotReplayThePrompt() = runTest(dispatcher) {
+        val first = PeerClosedChatSession(closeCode = 1006)
+        val connector = ScriptedChatConnector(listOf(first))
+        val bootstrap = TokenSequenceBootstrap(origin, listOf("connect-token"))
+        val viewModel = viewModel(
+            connector,
+            bootstrap,
+            nowEpochMs = { dispatcher.scheduler.currentTime },
+        )
+        advanceUntilIdle()
+
+        viewModel.sendMessage(durableId, "Hello there")
+        advanceUntilIdle()
+
+        advanceTimeBy(LIFECYCLE_RECOVERY_BUDGET_MS + 30_000L)
+        advanceUntilIdle()
+
+        assertEquals(ConnectionState.Disconnected, viewModel.snapshots.value.connectionState)
+        assertEquals(false, viewModel.snapshots.value.chatSessions[durableId]?.isSending)
+        assertEquals(1, first.submitCalls)
+    }
+
     private fun tunnelSettings() = ServerSettingsState.Ready(
         ServerCatalog.single(
             ServerCatalogEntry(origin, connectionMode = ServerConnectionMode.ExternalSshTunnel),
@@ -442,6 +467,7 @@ class SocketCredentialRecoveryTest {
         speechConnector: SpeechStreamConnector? = null,
         projectConnector: HermesChatConnector? = null,
         settingsStates: MutableStateFlow<ServerSettingsState> = MutableStateFlow<ServerSettingsState>(tunnelSettings()),
+        nowEpochMs: () -> Long = { System.currentTimeMillis() },
     ) = HermesConnectionViewModel(
         settingsStates = settingsStates,
         client = client,
@@ -449,6 +475,7 @@ class SocketCredentialRecoveryTest {
         projectConnector = projectConnector,
         speechStreamConnector = speechConnector,
         loopbackSessionBootstrapClient = bootstrap,
+        nowEpochMs = nowEpochMs,
     )
 }
 
@@ -512,6 +539,8 @@ private class PeerClosedChatSession(private val closeCode: Int?) : HermesChatSes
         private set
     var closeCalls = 0
         private set
+    var submitCalls = 0
+        private set
     private val replay = ControllerReplayProbe()
 
     override val events: Flow<HermesChatEvent> = channel.receiveAsFlow()
@@ -535,6 +564,7 @@ private class PeerClosedChatSession(private val closeCode: Int?) : HermesChatSes
         runtimeSessionId: RuntimeSessionId,
         text: String,
     ): PromptSubmission {
+        submitCalls += 1
         channel.close()
         return PromptSubmission("streaming")
     }
