@@ -30,6 +30,7 @@ import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
 import com.unsupportedpastels.hermesandroid.gateway.ModelProviderOption
 import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
 import com.unsupportedpastels.hermesandroid.gateway.CronJobScope
+import com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure
 
 class HermesConnectionClientTest {
     @Test
@@ -508,7 +509,7 @@ class HermesConnectionClientTest {
     fun probeRejectsStatusMissingRequiredAuthRequiredField() = runTest {
         val engine = MockEngine {
             respond(
-                content = """{"version":"0.20.0"}""",
+                content = """{"version":"0.20.4"}""",
                 headers = headersOf(HttpHeaders.ContentType, "application/json"),
             )
         }
@@ -518,7 +519,71 @@ class HermesConnectionClientTest {
             client.probe(ServerOrigin.parse("https://hermes.example"))
         }.exceptionOrNull()
 
-        assertTrue(failure is HermesConnectionException)
+        assertTrue(failure is HermesEndpointException)
+        assertEquals(
+            TunnelConnectionFailure.NotHermesEndpoint,
+            (failure as HermesEndpointException).failure,
+        )
+    }
+
+    @Test
+    fun probeExternalTunnelRejectsForeignServiceAsNotHermes() = runTest {
+        val engine = MockEngine {
+            respond(
+                content = "<html>nginx</html>",
+                headers = headersOf(HttpHeaders.ContentType, "text/html"),
+            )
+        }
+        val failure = runCatching {
+            HttpHermesConnectionClient(HttpClient(engine))
+                .probeExternalTunnel(ServerOrigin.parse("http://127.0.0.1:9119"))
+        }.exceptionOrNull()
+
+        assertTrue(failure is HermesEndpointException)
+        assertEquals(TunnelConnectionFailure.NotHermesEndpoint, (failure as HermesEndpointException).failure)
+        assertFalse(failure.message!!.contains("unavailable", ignoreCase = true))
+        assertFalse(failure.message!!.contains("identity", ignoreCase = true))
+    }
+
+    @Test
+    fun probeRejectsUnknownOlderVersionAsProtocolIncompatible() = runTest {
+        val engine = MockEngine {
+            respond(
+                content = """{"version":"0.20.0","auth_required":false}""",
+                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+        val failure = runCatching {
+            HttpHermesConnectionClient(HttpClient(engine)).probe(ServerOrigin.parse("https://hermes.example"))
+        }.exceptionOrNull()
+
+        assertTrue(failure is HermesEndpointException)
+        assertEquals(
+            TunnelConnectionFailure.ProtocolIncompatible,
+            (failure as HermesEndpointException).failure,
+        )
+    }
+
+    @Test
+    fun probeParsesInstallIdAndReleaseDate() = runTest {
+        val engine = MockEngine { request ->
+            when (request.url.encodedPath) {
+                "/api/status" -> respond(
+                    content = """{"version":"0.20.4","release_date":"2026.8.18","auth_required":false,"install_id":"install-a"}""",
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                "/api/profiles/sessions" -> respond(
+                    content = """{"sessions":[]}""",
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                else -> error("Unexpected request: ${request.url}")
+            }
+        }
+        val result = HttpHermesConnectionClient(HttpClient(engine))
+            .probe(ServerOrigin.parse("https://hermes.example"))
+
+        assertEquals("install-a", result.installId)
+        assertEquals("2026.8.18", result.releaseDate)
     }
 
     @Test
@@ -526,7 +591,7 @@ class HermesConnectionClientTest {
         val engine = MockEngine { request ->
             when (request.url.encodedPath) {
                 "/api/status" -> respond(
-                    content = """{"version":"0.20.0","auth_required":true}""",
+                    content = """{"version":"0.20.4","auth_required":true}""",
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
                 "/api/auth/providers" -> respond(
@@ -571,7 +636,7 @@ class HermesConnectionClientTest {
             assertFalse(request.headers.contains(HttpHeaders.Authorization))
             when (request.url.encodedPath) {
                 "/api/status" -> respond(
-                    content = """{"version":"0.20.0","auth_required":false}""",
+                    content = """{"version":"0.20.4","auth_required":false}""",
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
                 "/api/profiles/sessions" -> respond(
@@ -595,7 +660,7 @@ class HermesConnectionClientTest {
         val engine = MockEngine { request ->
             when (request.url.encodedPath) {
                 "/api/status" -> respond(
-                    content = """{"version":"0.20.0","auth_required":false}""",
+                    content = """{"version":"0.20.4","auth_required":false}""",
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
                 "/api/profiles/sessions" -> respond(
@@ -704,7 +769,7 @@ class HermesConnectionClientTest {
             when (request.url.encodedPath) {
                 "/api/status" -> respond(
                     content = """{
-                        "version":"0.20.0",
+                        "version":"0.20.4",
                         "auth_required":true,
                         "auth_flows":["native_pkce"],
                         "future_field":{"ignored":true}
@@ -730,7 +795,7 @@ class HermesConnectionClientTest {
         val result = client.probe(ServerOrigin.parse("https://hermes.example"))
 
         assertEquals(listOf("/api/status", "/api/auth/providers"), requestedPaths)
-        assertEquals("0.20.0", result.version)
+        assertEquals("0.20.4", result.version)
         assertTrue(result.authRequired)
         assertTrue(result.nativeOAuthSupported)
         assertEquals(listOf("nous"), result.providers.map { it.name })
@@ -741,7 +806,7 @@ class HermesConnectionClientTest {
         val engine = MockEngine { request ->
             when (request.url.encodedPath) {
                 "/api/status" -> respond(
-                    content = """{"version":"0.20.0","auth_required":true}""",
+                    content = """{"version":"0.20.4","auth_required":true}""",
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
                 "/api/auth/providers" -> respondError(HttpStatusCode.ServiceUnavailable)

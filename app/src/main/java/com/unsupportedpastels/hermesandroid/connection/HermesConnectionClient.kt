@@ -23,6 +23,7 @@ import com.unsupportedpastels.hermesandroid.gateway.parseExplicitModelCapabiliti
 import com.unsupportedpastels.hermesandroid.gateway.parseModelCapabilities
 import com.unsupportedpastels.hermesandroid.gateway.OperationalStatus
 import com.unsupportedpastels.hermesandroid.gateway.parseOperationalStatus
+import com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure
 import com.unsupportedpastels.hermesandroid.files.HostFileContent
 import com.unsupportedpastels.hermesandroid.files.HostFileEntry
 import com.unsupportedpastels.hermesandroid.files.HostFileListing
@@ -78,13 +79,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.util.Base64
-
-@Serializable
-private data class HermesStatusResponse(
-    val version: String? = null,
-    @SerialName("auth_required") val authRequired: Boolean,
-    @SerialName("auth_flows") val authFlows: List<String> = emptyList(),
-)
 
 @Serializable
 data class HermesAuthProvider(
@@ -247,6 +241,8 @@ data class HermesConnectionInfo(
     val nativeOAuthSupported: Boolean,
     val providers: List<HermesAuthProvider>,
     val sessions: List<SessionSummary> = emptyList(),
+    val installId: String? = null,
+    val releaseDate: String? = null,
 )
 
 data class AuthenticatedHermesConnection(
@@ -1413,16 +1409,7 @@ class HttpHermesConnectionClient(
     }
 
     override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo = try {
-        val statusResponse = client.get("${serverOrigin.value}/api/status")
-        if (!statusResponse.status.isSuccess()) {
-            statusResponse.readBodyTextBounded()
-            throw HermesConnectionException(
-                "Hermes status returned HTTP ${statusResponse.status.value}",
-            )
-        }
-        val status = json.decodeFromString<HermesStatusResponse>(
-            statusResponse.readBodyTextBounded(),
-        )
+        val status = readHermesStatus(serverOrigin)
         val providers = if (status.authRequired) {
             val providersResponse = client.get("${serverOrigin.value}/api/auth/providers")
             if (!providersResponse.status.isSuccess()) {
@@ -1448,6 +1435,8 @@ class HttpHermesConnectionClient(
             nativeOAuthSupported = "native_pkce" in status.authFlows,
             providers = providers,
             sessions = sessions,
+            installId = status.installId,
+            releaseDate = status.releaseDate,
         )
     } catch (cancelled: CancellationException) {
         throw cancelled
@@ -1458,17 +1447,14 @@ class HttpHermesConnectionClient(
     }
 
     override suspend fun probeExternalTunnel(serverOrigin: ServerOrigin): HermesConnectionInfo = try {
-        val response = client.get("${serverOrigin.value}/api/status")
-        if (!response.status.isSuccess()) {
-            response.readBodyTextBounded()
-            throw HermesConnectionException("Hermes status returned HTTP ${response.status.value}")
-        }
-        val status = json.decodeFromString<HermesStatusResponse>(response.readBodyTextBounded())
+        val status = readHermesStatus(serverOrigin)
         HermesConnectionInfo(
             version = status.version,
             authRequired = status.authRequired,
             nativeOAuthSupported = "native_pkce" in status.authFlows,
             providers = emptyList(),
+            installId = status.installId,
+            releaseDate = status.releaseDate,
         )
     } catch (cancelled: CancellationException) {
         throw cancelled
@@ -1476,6 +1462,28 @@ class HttpHermesConnectionClient(
         throw error
     } catch (error: Exception) {
         throw HermesConnectionException("Could not connect to Hermes Serve", error)
+    }
+
+    private suspend fun readHermesStatus(serverOrigin: ServerOrigin): HermesStatusSnapshot {
+        val response = try {
+            client.get("${serverOrigin.value}/api/status")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            throw HermesConnectionException("Could not connect to Hermes Serve", error)
+        }
+        val body = response.readBodyTextBounded()
+        val probe = parseHermesStatusBody(body)
+        if (!response.status.isSuccess()) {
+            when (probe) {
+                is HermesStatusProbe.Rejected -> throw HermesEndpointException(probe.failure, probe.message)
+                is HermesStatusProbe.Accepted -> throw HermesEndpointException(
+                    TunnelConnectionFailure.NotHermesEndpoint,
+                    NOT_HERMES_ENDPOINT_MESSAGE,
+                )
+            }
+        }
+        return probe.requireAccepted()
     }
 
     override suspend fun authenticate(
