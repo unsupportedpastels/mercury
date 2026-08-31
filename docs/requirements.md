@@ -35,6 +35,7 @@ The version catalog is authoritative for resolved library versions. `local.prope
 - Never send `session.close` as generic connection or lifecycle cleanup.
 - Controller-only operations include prompt submission, approvals, clarification, secret/sudo/terminal input, steering, and interruption.
 - Reconnect through status, active-session, inflight, and durable-transcript reconciliation rather than blind replay.
+- Offer an explicit **External SSH tunnel** connection mode for a phone-local SSH port forward managed outside HAM. Persist only the mode and loopback origin. Never persist the dashboard session token or SSH credentials. Mark the mode Experimental in the first release.
 
 ## Foldable and adaptive UI
 

@@ -52,10 +52,11 @@ HAM uses the available window and posture — not a device name or orientation �
 
 HAM is a client, not an agent host. Install and configure Hermes Agent on a machine you control (or deploy an always-on **Hermes Cloud** instance from the [Nous Portal](https://portal.nousresearch.com/cloud)), then keep a compatible Hermes backend running before connecting from Android. The host remains authoritative for your agent, tools, files, sessions, and data.
 
-Both paths authenticate the same way — **Sign in with Nous**. HAM's Connect screen has two modes:
+Both paths authenticate the same way — **Sign in with Nous**. HAM's Connect screen has three modes:
 
 - **Hermes Cloud** — sign in once to Nous Portal and pick from the agents on your account; no URL to paste. HAM discovers your deployed [Hermes Cloud](https://portal.nousresearch.com/cloud) agents automatically and connects to the one you choose. Multi-org accounts get an org picker.
-- **Server URL** — enter the HTTP/HTTPS origin of a Hermes host you run yourself. Use this for self-hosting (below) or to connect to a known instance by hand.
+- **Server URL** — enter the HTTPS origin of a Hermes host you run yourself. Use this for self-hosting (below) or to connect to a known instance by hand.
+- **External SSH tunnel** (Experimental) — connect through a local port forward that you already configured in Termius or another SSH app. HAM talks only to `http://127.0.0.1:<port>` on this device. See [External SSH tunnel setup](docs/external-ssh-tunnel-setup.md).
 
 The rest of this section covers self-hosting.
 
@@ -96,6 +97,16 @@ Cloudflare terminates public TLS while the tunnel carries traffic back to the lo
 If the phone and Hermes host belong to the same Tailnet, [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) is a private alternative to publishing a public hostname. Keep Hermes authentication enabled, expose it with Tailscale Serve, and enter the exact HTTPS `.ts.net` address reported by `tailscale serve status` in HAM. Install and sign in to Tailscale on the phone before connecting.
 
 Tailscale is appropriate for private Tailnet-only access; use the Cloudflare plus OAuth path when the host must be reachable outside the Tailnet. Do not use plain HTTP or expose port 9119 directly to the internet.
+
+### External SSH tunnel (Experimental)
+
+When the phone cannot reach a public HTTPS hostname, keep Hermes on the remote loopback and open a **local port forward** in an SSH app (Termius is an example; any SSH client with local forwarding works). HAM never runs SSH, never stores SSH credentials, and never stores the dashboard session token.
+
+1. In the SSH app, create a local forward: bind `127.0.0.1` on an unused local port (9119 if free), remote destination `127.0.0.1:9119`.
+2. Confirm the forward is active, then in a phone browser open `http://127.0.0.1:<port>/api/status` and check that it returns Hermes JSON.
+3. In HAM choose **External SSH tunnel**, keep `http://127.0.0.1:<port>` (numeric loopback only — not `localhost`), read the shared-loopback warning, and tap **Test tunnel** before saving.
+
+Any other app on the phone can reach that forwarded port and obtain the same token. Android loopback is not exclusive to HAM. Full setup, recovery, and battery caveats: [External SSH tunnel setup](docs/external-ssh-tunnel-setup.md).
 
 ### Already running the dashboard for the desktop app?
 
