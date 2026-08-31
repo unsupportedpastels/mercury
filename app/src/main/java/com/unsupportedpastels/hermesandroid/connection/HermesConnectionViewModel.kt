@@ -49,7 +49,10 @@ import com.unsupportedpastels.hermesandroid.gateway.HermesChatProtocolException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatResponseStatus
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatGateway
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatSession
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatSocketClosedException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatTransportException
+import com.unsupportedpastels.hermesandroid.gateway.allowsCredentialRecovery
+import com.unsupportedpastels.hermesandroid.gateway.classifySocketClose
 import com.unsupportedpastels.hermesandroid.gateway.HermesGatewaySnapshot
 import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryListing
 import com.unsupportedpastels.hermesandroid.gateway.RecentSessionsState
@@ -70,6 +73,7 @@ import com.unsupportedpastels.hermesandroid.gateway.OperationalStatusState
 import com.unsupportedpastels.hermesandroid.voice.ElevenLabsVoice
 import com.unsupportedpastels.hermesandroid.voice.KtorSpeechWebSocketFactory
 import com.unsupportedpastels.hermesandroid.voice.SpeechAudio
+import com.unsupportedpastels.hermesandroid.voice.SpeechSocketFrame
 import com.unsupportedpastels.hermesandroid.voice.SpeechStreamConnector
 import com.unsupportedpastels.hermesandroid.voice.SpeechStreamSocket
 import com.unsupportedpastels.hermesandroid.voice.StreamingSpeechTransport
@@ -127,6 +131,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -263,6 +268,31 @@ private class LoopbackRecoveryTerminal(
     val generation: Long,
 )
 
+/**
+ * Reports the peer's close code once, when the pump first sees the socket end.
+ * Keeps socket credential recovery inside the connection layer: the voice loop
+ * only learns that the stream ended, never how to re-authenticate.
+ */
+private class ClassifiedCloseSpeechSocket(
+    private val delegate: SpeechStreamSocket,
+    private val onPeerClose: (Int?) -> Unit,
+) : SpeechStreamSocket {
+    private val reported = AtomicBoolean(false)
+
+    override suspend fun sendText(text: String) = delegate.sendText(text)
+
+    override suspend fun receiveFrame(): SpeechSocketFrame? =
+        delegate.receiveFrame().also { frame ->
+            if (frame == null && reported.compareAndSet(false, true)) {
+                onPeerClose(runCatching { delegate.closeCode() }.getOrNull())
+            }
+        }
+
+    override suspend fun closeCode(): Int? = delegate.closeCode()
+
+    override suspend fun close() = delegate.close()
+}
+
 /** The scope an optimistic voice-config write belongs to. */
 private class VoiceConfigScope(
     val origin: ServerOrigin?,
@@ -307,6 +337,7 @@ private data class LiveChatController(
     val durableSessionId: DurableSessionId,
     val session: HermesChatSession,
     val runtimeSessionId: RuntimeSessionId,
+    val credential: HermesCredential,
     var operationGeneration: Long,
     var eventJob: Job? = null,
     var recoveryState: ChatRecoveryState? = null,
@@ -1290,8 +1321,23 @@ class HermesConnectionViewModel(
     suspend fun openSpeechStream(): SpeechStreamSocket? {
         val connector = speechStreamConnector ?: return null
         if (!mutableVoiceCapabilities.value.canStreamSpeech) return null
-        return withHermesRestMutation { origin, token ->
-            connector.connect(origin, token.toHermesCredential(), mutableSnapshots.value.selectedProfile)
+        val streamOrigin = activeOrigin ?: return null
+        val streamGeneration = generation
+        var streamCredential: HermesCredential = HermesCredential.None
+        val socket = withHermesRestMutation { origin, token ->
+            streamCredential = token.toHermesCredential()
+            connector.connect(origin, streamCredential, mutableSnapshots.value.selectedProfile)
+        }
+        // The pump owns the socket, so the close code is observed here rather
+        // than handed to the voice loop: recovery stays in the connection layer,
+        // and a refused speech stream never re-synthesizes over billable REST.
+        return ClassifiedCloseSpeechSocket(socket) { code ->
+            if (!classifySocketClose(code).allowsCredentialRecovery) return@ClassifiedCloseSpeechSocket
+            viewModelScope.launch {
+                runCatching {
+                    recoverRejectedSocketCredential(streamOrigin, streamGeneration, streamCredential)
+                }
+            }
         }
     }
 
@@ -1433,11 +1479,12 @@ class HermesConnectionViewModel(
         // error. A second failure surfaces — a genuinely unreachable host must not
         // spin reconnect attempts.
         var healedOnce = false
+        var currentCredential = credential
         while (true) {
             val session = acquireProjectMetadataSession(
                 serverOrigin = serverOrigin,
                 originGeneration = originGeneration,
-                credential = credential,
+                credential = currentCredential,
             )
             try {
                 val result = block(session)
@@ -1447,10 +1494,23 @@ class HermesConnectionViewModel(
                 }
                 return result
             } catch (error: HermesChatTransportException) {
+                val rejected = error is HermesChatSocketClosedException &&
+                    error.closeClass.allowsCredentialRecovery
                 invalidateProjectMetadataSession(session)
                 currentCoroutineContext().ensureActive()
                 if (healedOnce || !isCurrentProjectLoad(serverOrigin, originGeneration)) {
                     throw error
+                }
+                if (rejected) {
+                    if (!recoverRejectedSocketCredential(
+                            serverOrigin,
+                            originGeneration,
+                            currentCredential,
+                        )
+                    ) {
+                        throw error
+                    }
+                    currentCredential = credentialForRequest(serverOrigin, originGeneration)
                 }
                 healedOnce = true
             }
@@ -4409,6 +4469,7 @@ class HermesConnectionViewModel(
                 durableSessionId = durableSessionId,
                 session = session,
                 runtimeSessionId = resumed.runtimeSessionId,
+                credential = credential,
                 operationGeneration = operationGeneration,
                 recoveryState = ChatRecoveryState(operationGeneration),
             )
@@ -4830,9 +4891,21 @@ class HermesConnectionViewModel(
         if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
         val connector = chatConnector ?: return
         val previous = liveControllers[durableSessionId]
+        val rejectedClose = previous?.session?.closeClass?.allowsCredentialRecovery == true
+        val rejectedCredential = previous?.credential
         closeChatSessionNonCancellably(previous?.session)
         liveControllers.remove(durableSessionId)
         clearProcessRows(durableSessionId)
+
+        // Reconnecting with a credential the server has just refused only burns
+        // the attempt budget, so recover it first — once. Everything else the
+        // close taxonomy reports is a transport-level problem that a plain
+        // reconnect can heal, and must leave the credential untouched.
+        var credentialRecoveryUsed = false
+        if (rejectedClose) {
+            credentialRecoveryUsed = true
+            if (!recoverRejectedSocketCredential(origin, originGeneration, rejectedCredential)) return
+        }
 
         for (backoffMillis in listOf(500L, 1_000L, 2_000L)) {
             appForegroundStates.first { it }
@@ -4841,8 +4914,10 @@ class HermesConnectionViewModel(
             appForegroundStates.first { it }
             if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
             var candidate: HermesChatSession? = null
+            var connectCredential: HermesCredential? = null
             try {
                 val credential = requiredCredentialForRequest(origin, originGeneration)
+                connectCredential = credential
                 if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
                 candidate = connector.connect(origin, credential)
                 if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
@@ -4869,6 +4944,7 @@ class HermesConnectionViewModel(
                         durableSessionId = durableSessionId,
                         session = candidate,
                         runtimeSessionId = resumed.runtimeSessionId,
+                        credential = credential,
                         operationGeneration = operationGeneration,
                         recoveryState = recoveryAttempt.state,
                     )
@@ -4916,6 +4992,24 @@ class HermesConnectionViewModel(
                     publishSignInRequired()
                 }
                 return
+            } catch (closed: HermesChatSocketClosedException) {
+                closeChatSessionNonCancellably(candidate)
+                if (closed.closeClass.allowsCredentialRecovery) {
+                    if (credentialRecoveryUsed) {
+                        // The replacement credential was refused too. Surface the
+                        // specific error and stop; a further attempt would only
+                        // restart the recovery budget §17 forbids restarting.
+                        publishTunnelFailure(
+                            origin,
+                            originGeneration,
+                            TunnelConnectionFailure.CredentialRejected,
+                            CREDENTIAL_REJECTED_MESSAGE,
+                        )
+                        return
+                    }
+                    credentialRecoveryUsed = true
+                    if (!recoverRejectedSocketCredential(origin, originGeneration, connectCredential)) return
+                }
             } catch (_: Exception) {
                 closeChatSessionNonCancellably(candidate)
             }
@@ -6170,6 +6264,35 @@ class HermesConnectionViewModel(
                 ?: startLoopbackRecoveryEpoch(origin, expectedGeneration, rejected)
         }
         return epoch.bootstrap.await()
+    }
+
+    /**
+     * One credential recovery for a socket the peer closed with `4401`.
+     *
+     * This deliberately routes through [refreshLoopbackCredential] rather than
+     * running its own recovery: a socket rejection and a REST `401` carrying the
+     * same credential are one staleness, so they join the same epoch and share a
+     * single bootstrap, and the terminal-outcome marker suppresses automatic
+     * socket recovery for a scope exactly as it does for reads.
+     *
+     * Returns false when the caller must stop rather than reconnect: the
+     * bootstrap failed (its own terminal state is already published) or the
+     * scope had already gone terminal.
+     */
+    private suspend fun recoverRejectedSocketCredential(
+        origin: ServerOrigin,
+        expectedGeneration: Long,
+        rejected: HermesCredential?,
+    ): Boolean {
+        // OAuth mints a fresh single-use ticket on every connect, so a refused
+        // socket there needs no credential work here — and must never be routed
+        // into the loopback bootstrap.
+        if (rejected !is HermesCredential.LoopbackSession) return true
+        return try {
+            refreshLoopbackCredential(origin, expectedGeneration, rejected) != null
+        } catch (_: HermesLoopbackBootstrapException) {
+            false
+        }
     }
 
     private fun isTerminalLoopbackScope(origin: ServerOrigin, expectedGeneration: Long): Boolean =
