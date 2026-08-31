@@ -93,3 +93,7 @@ adb shell am start -W --user 0 \
 ```
 
 Use `adb shell cmd device_state state 1|2|3` for closed, half-open, and open posture signals. If the image does not switch to the hardware profile's cover region, exercise the exact cover width in place with `adb shell wm size 884x2208`, then restore it with `adb shell wm size reset`.
+
+## Cleartext and local Hermes
+
+Debug and release share the same fail-closed network security config. Direct connections require HTTPS. HTTP is allowed only for `127.0.0.1` or `[::1]` in External SSH tunnel mode. There is no debug exception for private, LAN, or Tailscale HTTP. Use `http://127.0.0.1:9119` (not `localhost`) when pointing HAM at a phone-local SSH forward.

@@ -72,6 +72,17 @@ class OfflineCacheRepositoryTest {
     }
 
     @Test
+    fun twoLoopbackPortsDoNotShareCachedSessions() = runTest {
+        val first = CacheScope(ServerOrigin.parse("http://127.0.0.1:9119"), "default")
+        val second = CacheScope(ServerOrigin.parse("http://127.0.0.1:9120"), "default")
+        repository.writeMetadata(first, listOf(summary("port-9119")), nowEpochSeconds = 10)
+        repository.writeMetadata(second, listOf(summary("port-9120")), nowEpochSeconds = 10)
+
+        assertEquals(listOf("port-9119"), repository.read(first, 11).sessions.map { it.summary.id.value })
+        assertEquals(listOf("port-9120"), repository.read(second, 11).sessions.map { it.summary.id.value })
+    }
+
+    @Test
     fun corruptRowsAreIgnoredAndExpiredRowsArePruned() = runTest {
         val scope = CacheScope(ServerOrigin.parse("https://one.example"), "default")
         repository.writeMetadata(scope, listOf(summary("expired")), nowEpochSeconds = 1)

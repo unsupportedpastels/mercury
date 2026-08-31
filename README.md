@@ -127,7 +127,7 @@ HAM connects only to the server origin you configure. It does not include a host
 
 - Credentials, cookies, connection state, and cached transcripts are scoped to the normalized server origin and stored with Android Keystore-backed encryption.
 - WebSocket tickets are fresh, single-use, and held in memory only.
-- Production connections should use HTTPS. Cleartext traffic is disabled in the manifest.
+- Production connections require HTTPS for Direct origins. Cleartext HTTP is allowed only for `127.0.0.1` or `[::1]` in External SSH tunnel mode. The merged release (and debug) manifest does not permit global cleartext; there is no private, LAN, or Tailscale HTTP exception.
 - Your prompts, attachments, and transcript data are processed by the Hermes server you choose — not by a HAM-operated service. No telemetry, no analytics, no third-party servers.
 
 See [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md) for details.

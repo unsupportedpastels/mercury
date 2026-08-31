@@ -54,5 +54,6 @@ Primary physical target: standard/non-Ultra Samsung Galaxy Z Fold 8.
 - Never persist authorization codes, PKCE verifiers, WebSocket tickets, or credential-bearing URLs.
 - Disable backup for secret-bearing state unless a reviewed encrypted backup design is introduced.
 - Export only the launcher activity.
-- Production network security must reject cleartext by default.
+- Production network security rejects cleartext by default. Direct non-loopback origins require HTTPS. Explicit External SSH tunnel mode permits HTTP only for `127.0.0.1` and `[::1]`. There is no private, LAN, or Tailscale cleartext exception in debug or release.
+- Debug builds share the same network security config as release. Local HTTP loopback still works in tunnel mode; a non-loopback LAN Hermes must use HTTPS.
 - Debug-only development trust exceptions, if needed, must remain in debug resources and never contain a private server address.

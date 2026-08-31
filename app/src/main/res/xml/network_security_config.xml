@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Fail-closed cleartext. Debug and release share this file: there is no LAN, private,
+  or Tailscale HTTP exception. Application-level origin+mode checks still reject
+  non-loopback cleartext before any request. localhost is not listed here; tunnel
+  mode also rejects that hostname in app code because of IPv4/IPv6 ambiguity.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">::1</domain>
+    </domain-config>
+</network-security-config>
