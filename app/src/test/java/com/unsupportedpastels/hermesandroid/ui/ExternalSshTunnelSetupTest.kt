@@ -1,5 +1,7 @@
 package com.unsupportedpastels.hermesandroid.ui
 
+import androidx.compose.ui.test.DeviceConfigurationOverride
+import androidx.compose.ui.test.FontScale
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.hasSetTextAction
@@ -12,6 +14,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.unsupportedpastels.hermesandroid.connection.CREDENTIAL_REJECTED_USER_MESSAGE
 import com.unsupportedpastels.hermesandroid.connection.DEFAULT_TUNNEL_ORIGIN
 import com.unsupportedpastels.hermesandroid.connection.LOOPBACK_SECURITY_WARNING
 import com.unsupportedpastels.hermesandroid.connection.LOCALHOST_TUNNEL_MESSAGE
@@ -26,7 +29,6 @@ import com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure
 import com.unsupportedpastels.hermesandroid.theme.HermesAndroidTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -59,8 +61,7 @@ class ExternalSshTunnelSetupTest {
     @Test
     @Config(sdk = [35], qualifiers = "w400dp-h900dp")
     fun largeTextSetupShowsInstructionsAndRejectsLocalhost() {
-        composeRule.mainClock.autoAdvance = true
-        assertSetupInstructionsAndLocalhostRejection()
+        assertSetupInstructionsAndLocalhostRejection(fontScale = 1.5f)
     }
 
     @Test
@@ -125,6 +126,35 @@ class ExternalSshTunnelSetupTest {
         composeRule.onNodeWithText("Retry reconnects this app only", substring = true).assertIsDisplayed()
         composeRule.onNodeWithText("Retry").performClick()
         assertEquals(1, retries)
+    }
+
+    @Test
+    fun credentialRejectedBannerShowsRetrySetupAndCancelAndFiresCallbacks() {
+        var retries = 0
+        var setups = 0
+        var cancels = 0
+        composeRule.setContent {
+            HermesAndroidTheme {
+                ConnectionRecoveryBanner(
+                    snapshot = HermesGatewaySnapshot(
+                        connectionState = ConnectionState.Disconnected,
+                        tunnelConnectionFailure = TunnelConnectionFailure.CredentialRejected,
+                        connectionError = CREDENTIAL_REJECTED_USER_MESSAGE,
+                    ),
+                    onRetry = { retries += 1 },
+                    onConnectionSetup = { setups += 1 },
+                    onCancel = { cancels += 1 },
+                    onAcceptNewServer = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Retry").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("Connection setup").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("Cancel").assertIsDisplayed().performClick()
+        assertEquals(1, retries)
+        assertEquals(1, setups)
+        assertEquals(1, cancels)
     }
 
     @Test
@@ -306,20 +336,22 @@ class ExternalSshTunnelSetupTest {
         assertEquals("retry me", retried)
     }
 
-    private fun assertSetupInstructionsAndLocalhostRejection() {
+    private fun assertSetupInstructionsAndLocalhostRejection(fontScale: Float = 1f) {
         var saved: ServerCatalogEntry? = null
         composeRule.setContent {
-            HermesAndroidTheme {
-                ServerSettingsScreen(
-                    serverOrigin = null,
-                    showBack = true,
-                    onBack = {},
-                    onSave = { Result.success(Unit) },
-                    onSaveEntry = {
-                        saved = it
-                        Result.success(Unit)
-                    },
-                )
+            DeviceConfigurationOverride(DeviceConfigurationOverride.FontScale(fontScale)) {
+                HermesAndroidTheme {
+                    ServerSettingsScreen(
+                        serverOrigin = null,
+                        showBack = true,
+                        onBack = {},
+                        onSave = { Result.success(Unit) },
+                        onSaveEntry = {
+                            saved = it
+                            Result.success(Unit)
+                        },
+                    )
+                }
             }
         }
 
@@ -342,6 +374,5 @@ class ExternalSshTunnelSetupTest {
         composeRule.waitForIdle()
         assertNull(saved)
         composeRule.onNodeWithText("paste a token", substring = true, ignoreCase = true).assertDoesNotExist()
-        assertTrue(true)
     }
 }
