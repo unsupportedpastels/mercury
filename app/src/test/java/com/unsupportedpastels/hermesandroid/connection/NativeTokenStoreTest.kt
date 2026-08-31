@@ -103,6 +103,23 @@ class NativeTokenStoreTest {
     }
 
     @Test
+    fun twoLoopbackPortsDoNotShareCredentials() = runTest {
+        val store = EncryptedNativeTokenStore(context, preferencesName)
+        val firstOrigin = ServerOrigin.parse("http://127.0.0.1:9119")
+        val secondOrigin = ServerOrigin.parse("http://127.0.0.1:9120")
+        val first = tokenSet("port-9119-access", "port-9119-refresh")
+        val second = tokenSet("port-9120-access", "port-9120-refresh")
+        store.save(firstOrigin, first)
+        store.save(secondOrigin, second)
+
+        assertEquals(first, store.load(firstOrigin))
+        assertEquals(second, store.load(secondOrigin))
+        store.clear(firstOrigin)
+        assertNull(store.load(firstOrigin))
+        assertEquals(second, store.load(secondOrigin))
+    }
+
+    @Test
     fun preferencesDoNotContainPlaintextTokenValues() = runTest {
         val store = EncryptedNativeTokenStore(context, preferencesName)
         val tokens = tokenSet("access-token-that-must-stay-encrypted", "refresh-token-that-must-stay-encrypted")

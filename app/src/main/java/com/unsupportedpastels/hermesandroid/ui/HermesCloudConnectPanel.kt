@@ -204,17 +204,22 @@ internal fun HermesCloudConnectPanel(
     }
 }
 
-/** The two connect modes surfaced at the top of the Servers settings section. */
-internal enum class ConnectMode { Cloud, ServerUrl }
+/** The three connect modes surfaced at the top of the Servers settings section. */
+internal enum class ConnectMode { Cloud, ServerUrl, ExternalSshTunnel }
 
 /**
- * Remembers which connect mode is showing. Defaults to Cloud when a Cloud
- * session or roster is already present, otherwise Server URL so existing manual
- * users land where they expect.
+ * Remembers which connect mode is showing. Survives process recreation. Callers
+ * supply the initial mode from saved catalog metadata or an active Cloud session.
  */
 @Composable
-internal fun rememberConnectMode(initialCloud: Boolean): androidx.compose.runtime.MutableState<ConnectMode> {
-    return remember {
-        mutableStateOf(if (initialCloud) ConnectMode.Cloud else ConnectMode.ServerUrl)
-    }
+internal fun rememberConnectMode(
+    initial: ConnectMode,
+): androidx.compose.runtime.MutableState<ConnectMode> {
+    return androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(initial) }
 }
+
+internal val CONNECTION_TYPE_OPTIONS = listOf(
+    ConnectMode.Cloud to "Hermes Cloud",
+    ConnectMode.ServerUrl to "Server URL",
+    ConnectMode.ExternalSshTunnel to "External SSH tunnel",
+)

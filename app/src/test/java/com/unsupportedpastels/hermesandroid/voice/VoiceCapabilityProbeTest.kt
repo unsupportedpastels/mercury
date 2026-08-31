@@ -2,6 +2,7 @@ package com.unsupportedpastels.hermesandroid.voice
 
 import com.unsupportedpastels.hermesandroid.connection.HttpHermesConnectionClient
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.hermesandroid.connection.toHermesCredential
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -27,7 +28,7 @@ class VoiceCapabilityProbeTest {
         }
 
         val caps = HttpHermesConnectionClient(HttpClient(engine))
-            .probeVoiceCapabilities(origin, accessToken = "t", profile = "work")
+            .probeVoiceCapabilities(origin, credential = "t".toHermesCredential(), profile = "work")
 
         assertTrue(caps.audioRoutesPresent)
         assertTrue(caps.canPickElevenLabsVoice)
@@ -40,7 +41,7 @@ class VoiceCapabilityProbeTest {
         }
 
         val caps = HttpHermesConnectionClient(HttpClient(engine))
-            .probeVoiceCapabilities(origin, accessToken = "t", profile = "default")
+            .probeVoiceCapabilities(origin, credential = "t".toHermesCredential(), profile = "default")
 
         assertTrue(caps.audioRoutesPresent)
         assertFalse(caps.canPickElevenLabsVoice)
@@ -53,7 +54,7 @@ class VoiceCapabilityProbeTest {
         }
 
         val caps = HttpHermesConnectionClient(HttpClient(engine))
-            .probeVoiceCapabilities(origin, accessToken = "t", profile = "default")
+            .probeVoiceCapabilities(origin, credential = "t".toHermesCredential(), profile = "default")
 
         assertEquals(VoiceCapabilities.NONE, caps)
     }
@@ -70,7 +71,7 @@ class VoiceCapabilityProbeTest {
         }
 
         val config = HttpHermesConnectionClient(HttpClient(engine))
-            .loadVoiceServerConfig(origin, accessToken = "t", profile = "work")
+            .loadVoiceServerConfig(origin, credential = "t".toHermesCredential(), profile = "work")
 
         assertEquals(VoiceSubmitMode.Draft, config.submitMode)
         assertTrue(config.autoTts)
@@ -84,7 +85,7 @@ class VoiceCapabilityProbeTest {
         }
 
         val config = HttpHermesConnectionClient(HttpClient(engine))
-            .loadVoiceServerConfig(origin, accessToken = "t", profile = "default")
+            .loadVoiceServerConfig(origin, credential = "t".toHermesCredential(), profile = "default")
 
         assertEquals(VoiceServerConfig.DEFAULT, config)
     }

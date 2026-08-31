@@ -52,10 +52,11 @@ HAM uses the available window and posture — not a device name or orientation �
 
 HAM is a client, not an agent host. Install and configure Hermes Agent on a machine you control (or deploy an always-on **Hermes Cloud** instance from the [Nous Portal](https://portal.nousresearch.com/cloud)), then keep a compatible Hermes backend running before connecting from Android. The host remains authoritative for your agent, tools, files, sessions, and data.
 
-Both paths authenticate the same way — **Sign in with Nous**. HAM's Connect screen has two modes:
+**Hermes Cloud** and **Server URL** authenticate with **Sign in with Nous**. **External SSH tunnel** does not — it scrapes a dashboard session token from the local forward and keeps that token in memory only. HAM's Connect screen has three modes:
 
 - **Hermes Cloud** — sign in once to Nous Portal and pick from the agents on your account; no URL to paste. HAM discovers your deployed [Hermes Cloud](https://portal.nousresearch.com/cloud) agents automatically and connects to the one you choose. Multi-org accounts get an org picker.
-- **Server URL** — enter the HTTP/HTTPS origin of a Hermes host you run yourself. Use this for self-hosting (below) or to connect to a known instance by hand.
+- **Server URL** — enter the HTTPS origin of a Hermes host you run yourself. Use this for self-hosting (below) or to connect to a known instance by hand.
+- **External SSH tunnel** (Experimental) — connect through a local port forward you already configured in Termius or another SSH app. HAM talks only to `http://127.0.0.1:<port>` on this device. It does not start or restore the tunnel. See [External SSH tunnel setup](docs/external-ssh-tunnel-setup.md) for the scrape and in-memory token story, the shared-loopback warning, and recovery.
 
 The rest of this section covers self-hosting.
 
@@ -97,6 +98,16 @@ If the phone and Hermes host belong to the same Tailnet, [Tailscale Serve](https
 
 Tailscale is appropriate for private Tailnet-only access; use the Cloudflare plus OAuth path when the host must be reachable outside the Tailnet. Do not use plain HTTP or expose port 9119 directly to the internet.
 
+### External SSH tunnel (Experimental)
+
+When the phone cannot reach a public HTTPS hostname, keep Hermes on the remote loopback and open a **local port forward** in an SSH app (Termius is an example; any SSH client with local forwarding works). HAM never runs SSH, never stores SSH credentials, and never stores the dashboard session token.
+
+1. In the SSH app, create a local forward: bind `127.0.0.1` on an unused local port (9119 if free), remote destination `127.0.0.1:9119`.
+2. Confirm the forward is active, then in a phone browser open `http://127.0.0.1:<port>/api/status` and check that it returns Hermes JSON.
+3. In HAM choose **External SSH tunnel**, keep `http://127.0.0.1:<port>` (numeric loopback only — not `localhost`), read the shared-loopback warning, and tap **Test tunnel** before saving.
+
+Any other app on the phone can reach that forwarded port and obtain the same token. Android loopback is not exclusive to HAM. Full setup, recovery, and battery caveats: [External SSH tunnel setup](docs/external-ssh-tunnel-setup.md).
+
 ### Already running the dashboard for the desktop app?
 
 If you've already run `hermes dashboard` with Nous Portal auth for the Hermes desktop app, you're set — just make sure it's bound to an address your phone can reach (not `127.0.0.1`) and go straight to HAM's Connect screen. Verify the surface HAM needs with `GET /api/status`: it should report `auth_required: true` and list `native_pkce` in `auth_flows`.
@@ -117,7 +128,7 @@ These are connection examples, not a server provisioner: HAM does not create or 
 
 1. Download the [latest signed APK](https://github.com/unsupportedpastels/Hermes-Agent-Mobile-HAM/releases/latest) (Android 10+ / API 29).
 2. Tap the file and allow installs from your browser when Android asks.
-3. On first launch, enter your server origin and **Sign in with Nous**.
+3. On first launch, choose a connection mode. Hermes Cloud and Server URL complete **Sign in with Nous**. External SSH tunnel uses the in-memory dashboard token from the local forward — see [External SSH tunnel setup](docs/external-ssh-tunnel-setup.md).
 
 Releases are built and signed in CI. Verify the signature with `apksigner verify --verbose` before installing if you like. A Play Store listing is in progress; until then the signed APK on GitHub Releases is the official build. The sideload APK and a future Play install are signed differently and won't upgrade over each other.
 
@@ -127,7 +138,7 @@ HAM connects only to the server origin you configure. It does not include a host
 
 - Credentials, cookies, connection state, and cached transcripts are scoped to the normalized server origin and stored with Android Keystore-backed encryption.
 - WebSocket tickets are fresh, single-use, and held in memory only.
-- Production connections should use HTTPS. Cleartext traffic is disabled in the manifest.
+- Production connections require HTTPS for Direct origins. Cleartext HTTP is allowed only for `127.0.0.1` or `[::1]` in External SSH tunnel mode. The merged release (and debug) manifest does not permit global cleartext; there is no private, LAN, or Tailscale HTTP exception.
 - Your prompts, attachments, and transcript data are processed by the Hermes server you choose — not by a HAM-operated service. No telemetry, no analytics, no third-party servers.
 
 See [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md) for details.

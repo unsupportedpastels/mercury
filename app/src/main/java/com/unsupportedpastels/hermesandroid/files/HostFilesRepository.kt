@@ -1,6 +1,7 @@
 package com.unsupportedpastels.hermesandroid.files
 
 import com.unsupportedpastels.hermesandroid.connection.HermesConnectionClient
+import com.unsupportedpastels.hermesandroid.connection.toHermesCredential
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,13 +20,13 @@ class HermesConnectionHostFilesTransport(
     private val accessTokenProvider: suspend (HostFileScope) -> String?,
 ) : HostFilesTransport {
     override suspend fun list(scope: HostFileScope, path: String?): HostFileListing =
-        client.loadHostFiles(scope.origin, accessTokenProvider(scope), path)
+        client.loadHostFiles(scope.origin, accessTokenProvider(scope).toHermesCredential(), path)
 
     override suspend fun read(scope: HostFileScope, entry: HostFileEntry): HostFileContent =
-        client.readManagedFile(scope.origin, accessTokenProvider(scope), entry.path)
+        client.readManagedFile(scope.origin, accessTokenProvider(scope).toHermesCredential(), entry.path)
 
     override suspend fun download(scope: HostFileScope, entry: HostFileEntry): HostFileContent =
-        client.downloadManagedFile(scope.origin, accessTokenProvider(scope), entry.path)
+        client.downloadManagedFile(scope.origin, accessTokenProvider(scope).toHermesCredential(), entry.path)
 }
 
 /**

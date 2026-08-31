@@ -2,6 +2,7 @@ package com.unsupportedpastels.hermesandroid.gateway
 
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.ProjectSummary
+import com.unsupportedpastels.hermesandroid.connection.HermesCredential
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
@@ -41,7 +42,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -74,7 +75,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -103,7 +104,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -137,7 +138,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -189,7 +190,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -229,7 +230,7 @@ class HermesChatGatewayTest {
 
         val gateway = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = ticketClient,
             socketFactory = socketFactory,
             parentScope = backgroundScope,
@@ -240,7 +241,7 @@ class HermesChatGatewayTest {
             profile = "default",
         )
 
-        assertEquals(listOf("opaque-access"), ticketClient.accessTokens)
+        assertEquals(1, ticketClient.calls)
         assertEquals(
             listOf("wss://hermes.example/api/ws?ticket=ticket-1"),
             socketFactory.urls,
@@ -273,7 +274,7 @@ class HermesChatGatewayTest {
         val socketFactory = RecordingSocketFactory(socket)
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("http://10.0.1.2"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient(
                 ticket = "ticket-1",
                 expectedOrigin = ServerOrigin.parse("http://10.0.1.2"),
@@ -306,7 +307,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -355,7 +356,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -411,7 +412,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -444,7 +445,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -487,7 +488,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = ticketClient,
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -526,7 +527,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = ticketClient,
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -569,7 +570,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -634,7 +635,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -720,7 +721,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -773,7 +774,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -848,7 +849,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -919,7 +920,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -967,7 +968,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -1017,7 +1018,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -1052,7 +1053,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("overflow-ticket"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -1083,7 +1084,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -1107,7 +1108,7 @@ class HermesChatGatewayTest {
         val socket = ScriptedSocket()
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -1130,7 +1131,7 @@ class HermesChatGatewayTest {
         val socket = ScriptedSocket()
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             maxFrameBytes = 64,
@@ -1152,11 +1153,11 @@ class HermesChatGatewayTest {
         val ticketFailure = runCatching {
             HermesChatGateway(
                 origin = origin,
-                accessToken = "opaque-access",
+                credential = HermesCredential.NativeBearer.create("opaque-access"),
                 ticketClient = object : WsTicketClient {
                     override suspend fun mintTicket(
                         origin: ServerOrigin,
-                        accessToken: String,
+                        credential: HermesCredential.NativeBearer,
                     ): WsTicket = throw CancellationException("cancel ticket")
                 },
                 socketFactory = RecordingSocketFactory(ScriptedSocket()),
@@ -1168,7 +1169,7 @@ class HermesChatGatewayTest {
         val socketFailure = runCatching {
             HermesChatGateway(
                 origin = origin,
-                accessToken = "opaque-access",
+                credential = HermesCredential.NativeBearer.create("opaque-access"),
                 ticketClient = RecordingTicketClient("ticket-1"),
                 socketFactory = object : ChatWebSocketFactory {
                     override suspend fun connect(url: String): HermesChatSocket =
@@ -1191,7 +1192,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -1217,7 +1218,7 @@ class HermesChatGatewayTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             parentScope = backgroundScope,
@@ -1236,7 +1237,7 @@ class HermesChatGatewayTest {
         val socket = ScriptedSocket()
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = RecordingTicketClient("ticket-1"),
             socketFactory = RecordingSocketFactory(socket),
             maxFrameBytes = 64,
@@ -1276,7 +1277,7 @@ class HermesChatGatewayTest {
 
         val ticket = KtorWsTicketClient(client).mintTicket(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
         )
 
         assertEquals("fresh-ticket", ticket.ticket)
@@ -1318,12 +1319,12 @@ class HermesChatGatewayTest {
             var calls = 0
             override suspend fun mintTicket(
                 origin: ServerOrigin,
-                accessToken: String,
+                credential: HermesCredential.NativeBearer,
             ): WsTicket = WsTicket("ticket-${++calls}", 30)
         }
         val gateway = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = ticketClient,
             socketFactory = factory,
             parentScope = backgroundScope,
@@ -1367,7 +1368,7 @@ class HermesChatGatewayTest {
 
         val gateway = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = ticketClient,
             socketFactory = socketFactory,
             parentScope = backgroundScope,
@@ -1408,7 +1409,7 @@ class HermesChatGatewayTest {
 
         val gateway = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = ticketClient,
             socketFactory = socketFactory,
             parentScope = backgroundScope,
@@ -1449,7 +1450,7 @@ class HermesChatGatewayTest {
 
         val gateway = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+            credential = HermesCredential.NativeBearer.create("opaque-access"),
             ticketClient = ticketClient,
             socketFactory = socketFactory,
             parentScope = backgroundScope,
@@ -1476,14 +1477,14 @@ private class RecordingTicketClient(
     private val ticket: String,
     private val expectedOrigin: ServerOrigin = ServerOrigin.parse("https://hermes.example"),
 ) : WsTicketClient {
-    val accessTokens = mutableListOf<String>()
+    var calls = 0
 
     override suspend fun mintTicket(
         origin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential.NativeBearer,
     ): WsTicket {
         assertEquals(expectedOrigin.value, origin.value)
-        accessTokens += accessToken
+        calls += 1
         return WsTicket(ticket = ticket, ttlSeconds = 30)
     }
 }

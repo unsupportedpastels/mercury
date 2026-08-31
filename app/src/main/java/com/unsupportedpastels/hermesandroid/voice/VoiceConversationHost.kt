@@ -514,6 +514,10 @@ class VoiceConversationHost(
                 speakViaRest(replyText)
             }
             SpeechStreamOutcome.Fallback -> speakViaRest(replyText)
+            // The server refused the credential. REST synthesis is billable and
+            // would present the same refused credential, so this turn stays
+            // silent and credential recovery is left to the connection layer.
+            SpeechStreamOutcome.CredentialRejected -> controller.onSpeechFailed()
             SpeechStreamOutcome.Stopped -> Unit
         }
     }

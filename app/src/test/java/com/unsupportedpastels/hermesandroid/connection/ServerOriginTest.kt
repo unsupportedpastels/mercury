@@ -1,7 +1,9 @@
 package com.unsupportedpastels.hermesandroid.connection
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ServerOriginTest {
@@ -39,6 +41,40 @@ class ServerOriginTest {
             "https://xn--r8jz45g.xn--zckzah",
             ServerOrigin.parse("https://例え.テスト/").value,
         )
+    }
+
+    @Test
+    fun classifiesOnlyExactSupportedLoopbackHosts() {
+        listOf(
+            "http://127.0.0.1",
+            "https://[::1]:8443",
+        ).forEach { input ->
+            assertTrue(input, ServerOrigin.parse(input).isLoopback)
+        }
+
+        listOf(
+            "http://localhost:8080",
+            "http://localhost",
+            "http://127.0.0.2",
+            "http://localhost.example",
+            "http://localhost.",
+            "http://[::2]",
+            "http://[0:0:0:0:0:0:0:1]",
+        ).forEach { input ->
+            assertFalse(input, ServerOrigin.parse(input).isLoopback)
+        }
+        assertTrue(runCatching { ServerOrigin.parse("http://127.1") }.isFailure)
+    }
+
+    @Test
+    fun numericLoopbackSpellingsRemainDistinctOrigins() {
+        val origins = listOf(
+            ServerOrigin.parse("http://127.0.0.1"),
+            ServerOrigin.parse("http://[::1]"),
+        )
+
+        assertEquals(2, origins.distinct().size)
+        assertFalse(ServerOrigin.parse("http://localhost").isLoopback)
     }
 
     @Test

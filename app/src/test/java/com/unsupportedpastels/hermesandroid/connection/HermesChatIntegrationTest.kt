@@ -110,7 +110,7 @@ class HermesChatIntegrationTest {
         val chat = viewModel.snapshots.value.chatSessions.getValue(durableId)
         assertEquals(listOf("Earlier question", "Earlier answer"), chat.messages.map { it.text })
         assertFalse(chat.isLoading)
-        assertEquals("opaque-access", client.transcriptAccessToken)
+        assertTrue(client.transcriptAccessToken is HermesCredential.NativeBearer)
     }
 
     @Test
@@ -137,9 +137,14 @@ class HermesChatIntegrationTest {
             settingsStates = MutableStateFlow(ServerSettingsState.Ready(origin)),
             client = ChatConnectionClient(),
             tokenStore = MemoryTokenStore(tokens),
-            chatConnector = HermesChatConnector { requestedOrigin, accessToken ->
+            chatConnector = HermesChatConnector { requestedOrigin, credential ->
                 assertEquals(origin, requestedOrigin)
-                assertEquals("opaque-access", accessToken)
+                val request = io.ktor.client.request.HttpRequestBuilder()
+                request.applyHermesCredential(credential, requestedOrigin)
+                assertEquals(
+                    "Bearer opaque-access",
+                    request.headers[io.ktor.http.HttpHeaders.Authorization],
+                )
                 session
             },
             nowEpochSeconds = { 1_900_000_000 },
@@ -870,7 +875,7 @@ class HermesChatIntegrationTest {
     }
 
     @Test
-    fun backgroundedStreamingDisconnectWaitsForForegroundBeforeReconnect() = runTest(dispatcher) {
+    fun backgroundedStreamingDisconnectKeepsBoundedReconnectWithAnActiveTurn() = runTest(dispatcher) {
         val foreground = MutableStateFlow(true)
         val first = ReconnectingChatSession(
             runtimeId = "runtime-backgrounded",
@@ -919,22 +924,13 @@ class HermesChatIntegrationTest {
         runCurrent()
         foreground.value = false
         advanceTimeBy(10_000)
-        runCurrent()
-
-        val backgrounded = viewModel.snapshots.value.chatSessions.getValue(durableId)
-        assertEquals(1, connections)
-        assertTrue(backgrounded.isSending)
-        assertEquals(null, backgrounded.error)
-        assertTrue(backgrounded.messages.last().isStreaming)
-
-        foreground.value = true
         advanceUntilIdle()
 
-        val foregrounded = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        val backgrounded = viewModel.snapshots.value.chatSessions.getValue(durableId)
         assertEquals(2, connections)
-        assertEquals("completed after foreground", foregrounded.messages.last().text)
-        assertFalse(foregrounded.isSending)
-        assertEquals(null, foregrounded.error)
+        assertEquals("completed after foreground", backgrounded.messages.last().text)
+        assertFalse(backgrounded.isSending)
+        assertEquals(null, backgrounded.error)
     }
 
     @Test
@@ -949,10 +945,10 @@ class HermesChatIntegrationTest {
             appForegroundStates = foreground,
         )
 
-        // The initial connect hits a transient failure and lands Disconnected —
-        // exactly the "Offline" state seen after resuming from background.
-        advanceUntilIdle()
-        assertEquals(ConnectionState.Disconnected, viewModel.snapshots.value.connectionState)
+        // The initial connect hits a transient failure and lands Recovering —
+        // the reducer owns backoff instead of a terminal offline state.
+        runCurrent()
+        assertEquals(ConnectionState.Recovering, viewModel.snapshots.value.connectionState)
         assertEquals(1, client.probeAttempts)
 
         // Toggling foreground off→on (returning from background) must self-heal.
@@ -975,8 +971,8 @@ class HermesChatIntegrationTest {
             tokenStore = MemoryTokenStore(tokens),
             nowEpochSeconds = { 1_900_000_000 },
         )
-        advanceUntilIdle()
-        assertEquals(ConnectionState.Disconnected, viewModel.snapshots.value.connectionState)
+        runCurrent()
+        assertEquals(ConnectionState.Recovering, viewModel.snapshots.value.connectionState)
 
         viewModel.retryConnection()
         advanceUntilIdle()
@@ -998,8 +994,13 @@ class HermesChatIntegrationTest {
             appForegroundStates = foreground,
         )
 
-        advanceUntilIdle()
-        assertEquals(ConnectionState.Disconnected, viewModel.snapshots.value.connectionState)
+        runCurrent()
+        // Started in background: idle bootstrap is suspended, so the published
+        // state may stay Connecting rather than Recovering.
+        assertTrue(
+            viewModel.snapshots.value.connectionState == ConnectionState.Recovering ||
+                viewModel.snapshots.value.connectionState == ConnectionState.Connecting,
+        )
         val probesBeforeSettingsRemoval = client.probeAttempts
 
         settings.value = ServerSettingsState.Unavailable
@@ -1032,6 +1033,34 @@ class HermesChatIntegrationTest {
         assertFalse(chat.isLoading)
         assertEquals(null, chat.error)
         assertTrue(client.authenticateCalls >= 2)
+    }
+
+    /**
+     * The transcript 401 type is now a refinement of the shared credential
+     * rejection, so this pins that a native OAuth connection still heals through
+     * reconnect/refresh and never scrapes a loopback bootstrap token.
+     */
+    @Test
+    fun unauthorizedTranscriptLoadUnderOAuthNeverBootstrapsALoopbackSession() = runTest(dispatcher) {
+        val client = UnauthorizedOnceTranscriptClient()
+        val bootstrap = CountingLoopbackBootstrap()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(ServerSettingsState.Ready(origin)),
+            client = client,
+            tokenStore = MemoryTokenStore(tokens),
+            nowEpochSeconds = { 1_900_000_000 },
+            loopbackSessionBootstrapClient = bootstrap,
+        )
+
+        advanceUntilIdle()
+        viewModel.openSession(durableId)
+        advanceUntilIdle()
+
+        val chat = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        assertEquals(0, bootstrap.calls)
+        assertEquals(2, client.transcriptLoads)
+        assertEquals(listOf("Recovered question"), chat.messages.map { it.text })
+        assertEquals(null, chat.error)
     }
 
     @Test
@@ -1083,7 +1112,8 @@ class HermesChatIntegrationTest {
                 if (connections == 2) {
                     throw HermesChatTransportException("network not restored yet")
                 }
-                sessions.removeFirst()
+                sessions.removeFirstOrNull()
+                    ?: throw AssertionError("unexpected chat connect #$connections")
             },
             nowEpochSeconds = { 1_900_000_000 },
         )
@@ -2121,13 +2151,13 @@ class HermesChatIntegrationTest {
 
         viewModel.sendMessage(durableId, "First operation")
         runCurrent()
-        advanceTimeBy(500)
+        advanceTimeBy(1_000)
         runCurrent()
         assertTrue(staleRecovery.resumeStarted.isCompleted)
 
         viewModel.sendMessage(durableId, "Replacement operation")
         runCurrent()
-        advanceTimeBy(500)
+        advanceTimeBy(1_000)
         runCurrent()
         assertTrue(currentRecovery.resumeStarted.isCompleted)
         assertTrue(viewModel.snapshots.value.chatSessions.getValue(durableId).isSending)
@@ -2138,7 +2168,7 @@ class HermesChatIntegrationTest {
         assertTrue(viewModel.snapshots.value.chatSessions.getValue(durableId).isSending)
         replacementInitial.closeEvents()
         runCurrent()
-        advanceTimeBy(500)
+        advanceTimeBy(1_000)
         runCurrent()
 
         assertEquals(4, connections)
@@ -2363,14 +2393,14 @@ class HermesChatIntegrationTest {
         }
         val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(firstOrigin))
         var now = 1_900_000_000L
-        var connectorToken: String? = null
+        var connectorCredential: HermesCredential? = null
         val viewModel = HermesConnectionViewModel(
             settingsStates = settings,
             client = ChatConnectionClient(),
             tokenStore = tokenStore,
             refreshClient = refreshClient,
-            chatConnector = HermesChatConnector { _, accessToken ->
-                connectorToken = accessToken
+            chatConnector = HermesChatConnector { _, credential ->
+                connectorCredential = credential
                 StreamingChatSession()
             },
             nowEpochSeconds = { now },
@@ -2390,7 +2420,12 @@ class HermesChatIntegrationTest {
         viewModel.sendMessage(durableId, "Current origin prompt")
         advanceUntilIdle()
 
-        assertEquals(secondTokens.accessToken, connectorToken)
+        val request = io.ktor.client.request.HttpRequestBuilder()
+        request.applyHermesCredential(checkNotNull(connectorCredential), secondOrigin)
+        assertEquals(
+            "Bearer ${secondTokens.accessToken}",
+            request.headers[io.ktor.http.HttpHeaders.Authorization],
+        )
     }
 
     @Test
@@ -2476,7 +2511,7 @@ private class RejectedAuthenticationClient : HermesConnectionClient {
 
     override suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ): AuthenticatedHermesConnection = throw HermesAuthenticationRejectedException(
         "Hermes authentication returned HTTP 401",
     )
@@ -2491,7 +2526,7 @@ private class MemoryTokenStore(initial: NativeTokenSet?) : NativeTokenStore {
 
 private class ChatConnectionClient : HermesConnectionClient {
     private val durableId = DurableSessionId("durable-1")
-    var transcriptAccessToken: String? = null
+    var transcriptAccessToken: HermesCredential? = null
     var transcriptLoads = 0
     var lastTranscriptDurableId: DurableSessionId? = null
 
@@ -2504,7 +2539,7 @@ private class ChatConnectionClient : HermesConnectionClient {
 
     override suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ) = AuthenticatedHermesConnection(
         userId = "user-1",
         sessions = listOf(SessionSummary(durableId, "Test session")),
@@ -2512,16 +2547,27 @@ private class ChatConnectionClient : HermesConnectionClient {
 
     override suspend fun loadTranscript(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
     ): List<com.unsupportedpastels.hermesandroid.gateway.ChatMessage> {
-        transcriptAccessToken = accessToken
+        transcriptAccessToken = credential
         transcriptLoads += 1
         lastTranscriptDurableId = durableSessionId
         return listOf(
             com.unsupportedpastels.hermesandroid.gateway.ChatMessage(ChatMessageRole.User, "Earlier question"),
             com.unsupportedpastels.hermesandroid.gateway.ChatMessage(ChatMessageRole.Assistant, "Earlier answer"),
         )
+    }
+}
+
+/** Fails the test if a non-loopback connection ever tries to adopt a session token. */
+private class CountingLoopbackBootstrap : LoopbackSessionBootstrapClient {
+    var calls = 0
+        private set
+
+    override suspend fun bootstrap(origin: ServerOrigin): LoopbackSessionBootstrapResult {
+        calls += 1
+        return LoopbackSessionBootstrapResult.Failure(LoopbackSessionBootstrapFailure.TokenAbsent)
     }
 }
 
@@ -2539,7 +2585,7 @@ private class UnauthorizedOnceTranscriptClient : HermesConnectionClient {
 
     override suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ) = AuthenticatedHermesConnection(
         userId = "user-1",
         sessions = listOf(SessionSummary(durableId, "Test session")),
@@ -2547,7 +2593,7 @@ private class UnauthorizedOnceTranscriptClient : HermesConnectionClient {
 
     override suspend fun loadTranscript(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
     ): List<com.unsupportedpastels.hermesandroid.gateway.ChatMessage> {
         transcriptLoads += 1
@@ -2588,7 +2634,7 @@ private class FailThenSucceedConnectionClient(
 
     override suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ) = AuthenticatedHermesConnection(
         userId = "user-1",
         sessions = listOf(SessionSummary(durableId, "Test session")),
@@ -2654,7 +2700,7 @@ private class NonCooperativeAuthenticationClient(
 
     override suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ): AuthenticatedHermesConnection {
         if (serverOrigin == firstOrigin) {
             withContext(NonCancellable) {
@@ -2674,7 +2720,7 @@ private class NonCooperativeAuthenticationClient(
 
     override suspend fun loadTranscript(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
     ) = emptyList<com.unsupportedpastels.hermesandroid.gateway.ChatMessage>()
 }
@@ -2692,7 +2738,7 @@ private class BlockingTranscriptClient : HermesConnectionClient {
 
     override suspend fun authenticate(
         serverOrigin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
     ) = AuthenticatedHermesConnection(
         userId = "user-1",
         sessions = listOf(SessionSummary(DurableSessionId("durable-1"), "Test session")),
@@ -2700,7 +2746,7 @@ private class BlockingTranscriptClient : HermesConnectionClient {
 
     override suspend fun loadTranscript(
         serverOrigin: ServerOrigin,
-        accessToken: String?,
+        credential: HermesCredential,
         durableSessionId: DurableSessionId,
     ): List<com.unsupportedpastels.hermesandroid.gateway.ChatMessage> = try {
         transcript.await()

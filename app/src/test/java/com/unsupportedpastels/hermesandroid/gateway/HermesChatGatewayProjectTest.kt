@@ -4,6 +4,7 @@ import com.unsupportedpastels.hermesandroid.app.ProjectId
 import com.unsupportedpastels.hermesandroid.app.MAX_PROCESS_ROWS
 import com.unsupportedpastels.hermesandroid.app.RunTodoItem
 import com.unsupportedpastels.hermesandroid.app.RunTodoStatus
+import com.unsupportedpastels.hermesandroid.connection.HermesCredential
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
@@ -23,9 +24,9 @@ class HermesChatGatewayProjectTest {
         val socket = MetadataSocket()
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "access-token",
+            credential = HermesCredential.NativeBearer.create("access-token"),
             ticketClient = object : WsTicketClient {
-                override suspend fun mintTicket(origin: ServerOrigin, accessToken: String) =
+                override suspend fun mintTicket(origin: ServerOrigin, credential: HermesCredential.NativeBearer) =
                     WsTicket("ticket", 30)
             },
             socketFactory = object : ChatWebSocketFactory { override suspend fun connect(url: String) = socket },
@@ -67,9 +68,9 @@ class HermesChatGatewayProjectTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "access-token",
+            credential = HermesCredential.NativeBearer.create("access-token"),
             ticketClient = object : WsTicketClient {
-                override suspend fun mintTicket(origin: ServerOrigin, accessToken: String) =
+                override suspend fun mintTicket(origin: ServerOrigin, credential: HermesCredential.NativeBearer) =
                     WsTicket("ticket", 30)
             },
             socketFactory = object : ChatWebSocketFactory { override suspend fun connect(url: String) = socket },
@@ -99,9 +100,9 @@ class HermesChatGatewayProjectTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "access-token",
+            credential = HermesCredential.NativeBearer.create("access-token"),
             ticketClient = object : WsTicketClient {
-                override suspend fun mintTicket(origin: ServerOrigin, accessToken: String) =
+                override suspend fun mintTicket(origin: ServerOrigin, credential: HermesCredential.NativeBearer) =
                     WsTicket("ticket", 30)
             },
             socketFactory = object : ChatWebSocketFactory { override suspend fun connect(url: String) = socket },
@@ -136,8 +137,8 @@ class HermesChatGatewayProjectTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "access",
-            ticketClient = object : WsTicketClient { override suspend fun mintTicket(origin: ServerOrigin, accessToken: String) = WsTicket("ticket", 30) },
+            credential = HermesCredential.NativeBearer.create("access"),
+            ticketClient = object : WsTicketClient { override suspend fun mintTicket(origin: ServerOrigin, credential: HermesCredential.NativeBearer) = WsTicket("ticket", 30) },
             socketFactory = object : ChatWebSocketFactory { override suspend fun connect(url: String) = socket },
             parentScope = backgroundScope,
         ).connect()
@@ -176,8 +177,8 @@ class HermesChatGatewayProjectTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "access",
-            ticketClient = object : WsTicketClient { override suspend fun mintTicket(origin: ServerOrigin, accessToken: String) = WsTicket("ticket", 30) },
+            credential = HermesCredential.NativeBearer.create("access"),
+            ticketClient = object : WsTicketClient { override suspend fun mintTicket(origin: ServerOrigin, credential: HermesCredential.NativeBearer) = WsTicket("ticket", 30) },
             socketFactory = object : ChatWebSocketFactory { override suspend fun connect(url: String) = socket },
             parentScope = backgroundScope,
         ).connect()
@@ -202,8 +203,8 @@ class HermesChatGatewayProjectTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "access",
-            ticketClient = object : WsTicketClient { override suspend fun mintTicket(origin: ServerOrigin, accessToken: String) = WsTicket("ticket", 30) },
+            credential = HermesCredential.NativeBearer.create("access"),
+            ticketClient = object : WsTicketClient { override suspend fun mintTicket(origin: ServerOrigin, credential: HermesCredential.NativeBearer) = WsTicket("ticket", 30) },
             socketFactory = object : ChatWebSocketFactory { override suspend fun connect(url: String) = socket },
             parentScope = backgroundScope,
         ).connect()
@@ -232,8 +233,8 @@ class HermesChatGatewayProjectTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "access",
-            ticketClient = object : WsTicketClient { override suspend fun mintTicket(origin: ServerOrigin, accessToken: String) = WsTicket("ticket", 30) },
+            credential = HermesCredential.NativeBearer.create("access"),
+            ticketClient = object : WsTicketClient { override suspend fun mintTicket(origin: ServerOrigin, credential: HermesCredential.NativeBearer) = WsTicket("ticket", 30) },
             socketFactory = object : ChatWebSocketFactory { override suspend fun connect(url: String) = socket },
             parentScope = backgroundScope,
         ).connect()
@@ -258,8 +259,8 @@ class HermesChatGatewayProjectTest {
         }
         val connection = HermesChatGateway(
             origin = ServerOrigin.parse("https://hermes.example"),
-            accessToken = "access",
-            ticketClient = object : WsTicketClient { override suspend fun mintTicket(origin: ServerOrigin, accessToken: String) = WsTicket("ticket", 30) },
+            credential = HermesCredential.NativeBearer.create("access"),
+            ticketClient = object : WsTicketClient { override suspend fun mintTicket(origin: ServerOrigin, credential: HermesCredential.NativeBearer) = WsTicket("ticket", 30) },
             socketFactory = object : ChatWebSocketFactory { override suspend fun connect(url: String) = socket },
             parentScope = backgroundScope,
         ).connect()

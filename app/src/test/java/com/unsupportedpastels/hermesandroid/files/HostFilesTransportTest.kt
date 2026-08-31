@@ -2,6 +2,7 @@ package com.unsupportedpastels.hermesandroid.files
 
 import com.unsupportedpastels.hermesandroid.connection.HttpHermesConnectionClient
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.hermesandroid.connection.toHermesCredential
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -38,7 +39,7 @@ class HostFilesTransportTest {
         }
         val listing = HttpHermesConnectionClient(HttpClient(engine)).loadHostFiles(
             ServerOrigin.parse("https://hermes.example"),
-            "access",
+            "access".toHermesCredential(),
             "/srv",
         )
 
@@ -72,8 +73,8 @@ class HostFilesTransportTest {
         val client = HttpHermesConnectionClient(HttpClient(engine))
         val origin = ServerOrigin.parse("https://hermes.example")
 
-        val read = client.readManagedFile(origin, "access", "/srv/notes.txt")
-        val download = client.downloadManagedFile(origin, "access", "/srv/notes.txt")
+        val read = client.readManagedFile(origin, "access".toHermesCredential(), "/srv/notes.txt")
+        val download = client.downloadManagedFile(origin, "access".toHermesCredential(), "/srv/notes.txt")
 
         assertEquals("hello", String(read.bytes))
         assertEquals("hello", String(download.bytes))
@@ -90,8 +91,8 @@ class HostFilesTransportTest {
         val client = HttpHermesConnectionClient(HttpClient(engine))
         val origin = ServerOrigin.parse("https://hermes.example")
 
-        val invalid = runCatching { client.downloadManagedFile(origin, "access", "/srv/../secret") }.exceptionOrNull()
-        val cancelled = runCatching { client.downloadManagedFile(origin, "access", "/srv/file.txt") }.exceptionOrNull()
+        val invalid = runCatching { client.downloadManagedFile(origin, "access".toHermesCredential(), "/srv/../secret") }.exceptionOrNull()
+        val cancelled = runCatching { client.downloadManagedFile(origin, "access".toHermesCredential(), "/srv/file.txt") }.exceptionOrNull()
 
         assertTrue(invalid is com.unsupportedpastels.hermesandroid.connection.HermesConnectionException)
         assertTrue(cancelled is CancellationException)

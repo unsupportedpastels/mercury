@@ -1,15 +1,17 @@
 package com.unsupportedpastels.hermesandroid.voice
 
+import com.unsupportedpastels.hermesandroid.connection.HermesCredential
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
 import com.unsupportedpastels.hermesandroid.gateway.WsTicketClient
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.webSocketSession
 import io.ktor.client.request.url
+import io.ktor.websocket.DefaultWebSocketSession
 import io.ktor.websocket.Frame
-import io.ktor.websocket.WebSocketSession
 import io.ktor.websocket.send
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.withTimeoutOrNull
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
@@ -19,17 +21,17 @@ import java.nio.charset.StandardCharsets
  * via `POST /api/auth/ws-ticket`, never a bearer token in the URL. The URL is
  * never logged (it carries the ticket).
  */
-internal fun speakStreamUrl(origin: ServerOrigin, ticket: String, profile: String): String {
-    val encodedTicket = URLEncoder.encode(ticket, StandardCharsets.UTF_8.name())
+internal fun speakStreamUrl(origin: ServerOrigin, authQuery: String?, profile: String): String {
     val encodedProfile = URLEncoder.encode(profile.take(64), StandardCharsets.UTF_8.name())
-    return "${origin.webSocketValue}/api/audio/speak-stream?ticket=$encodedTicket&profile=$encodedProfile"
+    val query = listOfNotNull(authQuery, "profile=$encodedProfile").joinToString("&")
+    return "${origin.webSocketValue}/api/audio/speak-stream?$query"
 }
 
 /** Seam the ViewModel uses to open speech sockets (fake-able in tests). */
 fun interface SpeechStreamConnector {
     suspend fun connect(
         origin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ): SpeechStreamSocket
 }
@@ -46,11 +48,27 @@ class StreamingSpeechTransport(
 ) : SpeechStreamConnector {
     override suspend fun connect(
         origin: ServerOrigin,
-        accessToken: String,
+        credential: HermesCredential,
         profile: String,
     ): SpeechStreamSocket {
-        val ticket = ticketClient.mintTicket(origin, accessToken)
-        return socketFactory.connect(speakStreamUrl(origin, ticket.ticket, profile))
+        val authQuery = when (val current = credential) {
+            is HermesCredential.NativeBearer -> {
+                val ticket = ticketClient.mintTicket(origin, current)
+                "ticket=${URLEncoder.encode(ticket.ticket, StandardCharsets.UTF_8.name())}"
+            }
+            is HermesCredential.LoopbackSession ->
+                "token=${current.encodedWebSocketToken(origin)}"
+            HermesCredential.None -> null
+        }
+        return try {
+            socketFactory.connect(speakStreamUrl(origin, authQuery, profile))
+        } catch (_: CancellationException) {
+            throw CancellationException("Hermes speech connection cancelled")
+        } catch (_: Exception) {
+            // The factory has seen a signed URL. Discard arbitrary causes that
+            // may echo its ticket/session token.
+            throw SpeechStreamConnectException()
+        }
     }
 }
 
@@ -61,20 +79,19 @@ class KtorSpeechWebSocketFactory(
     override suspend fun connect(url: String): SpeechStreamSocket {
         return try {
             KtorSpeechSocket(client.webSocketSession { url(url) })
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            throw SpeechStreamConnectException(error)
+        } catch (_: CancellationException) {
+            throw CancellationException("Hermes speech connection cancelled")
+        } catch (_: Exception) {
+            throw SpeechStreamConnectException()
         }
     }
 }
 
 /** Bounded connect failure — carries no URL/ticket detail. */
-class SpeechStreamConnectException(cause: Throwable?) :
-    Exception("Could not connect Hermes speech stream", cause)
+class SpeechStreamConnectException : Exception("Could not connect Hermes speech stream")
 
 private class KtorSpeechSocket(
-    private val session: WebSocketSession,
+    private val session: DefaultWebSocketSession,
 ) : SpeechStreamSocket {
     override suspend fun sendText(text: String) {
         session.send(text)
@@ -91,7 +108,21 @@ private class KtorSpeechSocket(
         }
     }
 
+    /**
+     * Bounded: a peer that never sends a close frame must not park the pump.
+     * A missing reason classifies as a transport failure, which keeps the
+     * existing one-shot REST fallback.
+     */
+    override suspend fun closeCode(): Int? =
+        withTimeoutOrNull(CLOSE_REASON_TIMEOUT_MILLIS) {
+            session.closeReason.await()
+        }?.code?.toInt()
+
     override suspend fun close() {
         session.cancel()
+    }
+
+    private companion object {
+        const val CLOSE_REASON_TIMEOUT_MILLIS = 2_000L
     }
 }

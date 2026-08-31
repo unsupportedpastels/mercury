@@ -2,6 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -21,17 +22,18 @@
         </intent>
     </queries>
 
-    <!-- HTTP is supported for explicitly entered local Hermes origins such as
-         http://10.0.1.2; all server requests still use the validated origin. -->
+    <!-- Cleartext is denied by default. Network security config permits HTTP only
+         for numeric loopback; app-level origin+mode checks still reject LAN,
+         private, Tailscale, and Direct-mode HTTP before any request. -->
     <application
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.HermesAndroid">
         <activity
             android:name=".MainActivity"

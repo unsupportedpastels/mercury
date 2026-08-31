@@ -7,6 +7,8 @@ import java.util.Locale
 @JvmInline
 value class ServerOrigin private constructor(val value: String) {
     companion object {
+        private val LOOPBACK_HOSTS = setOf("127.0.0.1", "::1")
+
         fun parse(input: String): ServerOrigin {
             val candidate = input.trim()
             val uri = runCatching { URI(candidate) }
@@ -81,4 +83,7 @@ value class ServerOrigin private constructor(val value: String) {
             value.startsWith("http://") -> value.replaceFirst("http://", "ws://")
             else -> error("Server origin must use HTTP or HTTPS")
         }
+
+    val isLoopback: Boolean
+        get() = URI(value).host.removeSurrounding("[", "]") in LOOPBACK_HOSTS
 }

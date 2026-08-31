@@ -45,6 +45,30 @@ enum class AuthenticationState {
     Authenticated,
 }
 
+/** Bounded external-tunnel failure classification for actionable UI. */
+enum class TunnelConnectionFailure {
+    TunnelUnavailable,
+    BootstrapRejected,
+    CredentialRejected,
+    NotHermesEndpoint,
+    ProtocolIncompatible,
+    InvalidTunnelOrigin,
+    CleartextPolicyBlocked,
+    InstallationChanged,
+}
+
+fun TunnelConnectionFailure.requiresManualRecovery(): Boolean = when (this) {
+    TunnelConnectionFailure.TunnelUnavailable -> false
+    TunnelConnectionFailure.BootstrapRejected,
+    TunnelConnectionFailure.CredentialRejected,
+    TunnelConnectionFailure.NotHermesEndpoint,
+    TunnelConnectionFailure.ProtocolIncompatible,
+    TunnelConnectionFailure.InvalidTunnelOrigin,
+    TunnelConnectionFailure.CleartextPolicyBlocked,
+    TunnelConnectionFailure.InstallationChanged,
+    -> true
+}
+
 enum class CacheSource {
     Live,
     Cached,
@@ -114,6 +138,7 @@ data class HermesGatewaySnapshot(
     val nativeOAuthSupported: Boolean = false,
     val authProviders: List<HermesAuthProvider> = emptyList(),
     val connectionError: String? = null,
+    val tunnelConnectionFailure: TunnelConnectionFailure? = null,
     val durableSessions: List<SessionSummary> = emptyList(),
     val recentSessions: RecentSessionsState = RecentSessionsState(),
     val sessionMetadataSource: CacheSource = CacheSource.Live,

@@ -37,6 +37,7 @@ import com.unsupportedpastels.hermesandroid.gateway.ModelSwitchResult
 import com.unsupportedpastels.hermesandroid.connection.ServerSettingsState
 import com.unsupportedpastels.hermesandroid.connection.ServerSettingsViewModel
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.hermesandroid.connection.TunnelTestResult
 import com.unsupportedpastels.hermesandroid.connection.launchBrowserAndAwaitReturn
 import com.unsupportedpastels.hermesandroid.connection.SlashCompletionState
 import com.unsupportedpastels.hermesandroid.gateway.HermesGatewaySnapshot
@@ -406,6 +407,15 @@ internal fun HermesAppHost(
         onLogout = { connectionViewModel?.logout() },
         onSignIn = onSignIn,
         onRetryConnection = { connectionViewModel?.retryConnection() },
+        onAcceptNewInstallation = { connectionViewModel?.acceptNewInstallation() },
+        onCancelRecovery = { connectionViewModel?.cancelNewInstallation() },
+        onTestTunnel = { origin ->
+            connectionViewModel?.testTunnel(origin)
+                ?: TunnelTestResult.Failure(
+                    com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure.TunnelUnavailable,
+                    com.unsupportedpastels.hermesandroid.connection.TUNNEL_UNAVAILABLE_BODY,
+                )
+        },
         onOpenProject = onOpenProject,
         onCreateProjectSession = onCreateProjectSession,
         onOpenSession = onOpenSession,

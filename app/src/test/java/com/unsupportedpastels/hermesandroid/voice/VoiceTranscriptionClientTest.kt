@@ -3,6 +3,7 @@ package com.unsupportedpastels.hermesandroid.voice
 import com.unsupportedpastels.hermesandroid.connection.HermesConnectionException
 import com.unsupportedpastels.hermesandroid.connection.HttpHermesConnectionClient
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.hermesandroid.connection.toHermesCredential
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -40,7 +41,7 @@ class VoiceTranscriptionClientTest {
 
         val result = client(engine).transcribeAudio(
             origin,
-            accessToken = "t",
+            credential = "t".toHermesCredential(),
             profile = "work",
             dataUrl = "data:audio/mp4;base64,AAAA",
             mimeType = "audio/mp4",
@@ -59,7 +60,7 @@ class VoiceTranscriptionClientTest {
 
         val result = client(engine).transcribeAudio(
             origin,
-            accessToken = "t",
+            credential = "t".toHermesCredential(),
             profile = "default",
             dataUrl = "data:audio/mp4;base64,AAAA",
             mimeType = null,
@@ -77,7 +78,7 @@ class VoiceTranscriptionClientTest {
         try {
             client(engine).transcribeAudio(
                 origin,
-                accessToken = "t",
+                credential = "t".toHermesCredential(),
                 profile = "default",
                 dataUrl = "data:audio/mp4;base64,AAAA",
                 mimeType = null,

@@ -43,6 +43,23 @@ Behavior checks must cover:
 - keyboard focus and navigation;
 - split screen, freeform, and DeX-sized windows.
 
+## External SSH tunnel and recovery matrix
+
+Local UI tests cover compact (400dp), medium (610dp), and expanded (900dp) widths plus large text:
+
+- setup instructions, numeric-loopback validation, and `localhost` rejection;
+- **Test tunnel** success without saving;
+- tunnel-unavailable actions (Retry reconnects HAM only);
+- wrong-service and bootstrap-incompatible errors as distinct copy;
+- connection-mode switching without leaking the previous origin;
+- selected server and mode restored after process recreation;
+- InstallationChanged accept/cancel while the snapshot is Recovering;
+- rejected mutation showing an explicit **Retry action**.
+
+Device/E2E coverage (owner, physical phone + SSH app) is listed in `docs/design/external-ssh-tunnel-session-auth.md` and Task 8. An agent cannot claim that matrix without an observed device result.
+
+Do not regenerate screenshot references without inspecting the visual diff.
+
 ## Device gate
 
 Use a disposable foldable emulator for instrumentation and process-restoration tests. Before milestone completion, install and exercise the debug APK on the standard/non-Ultra Galaxy Z Fold 8 with a data-preserving install. Capture the live layout tree and settled screenshots for cover, unfolded portrait, and unfolded landscape. Do not run uninstalling/clearing instrumentation against the user's authenticated primary installation. A missing or locked physical device blocks only real-device verification, not local development.

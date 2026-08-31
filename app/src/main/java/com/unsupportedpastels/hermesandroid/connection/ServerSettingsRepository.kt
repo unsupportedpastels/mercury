@@ -71,6 +71,9 @@ interface ServerSettingsRepository {
         save(entry)
     }
 
+    /** Remember a non-secret installation identifier without changing the active origin. */
+    suspend fun rememberInstallId(origin: ServerOrigin, installId: String) {}
+
     /** Returns true only when an inactive entry was removed. */
     suspend fun remove(serverOrigin: ServerOrigin): Boolean = false
 }
@@ -85,6 +88,8 @@ private data class PersistedServerCatalogEntry(
     val origin: String,
     val label: String = "",
     @SerialName("last_used_epoch_seconds") val lastUsedEpochSeconds: Long? = null,
+    @SerialName("connection_mode") val connectionMode: String = ServerConnectionMode.Direct.name,
+    @SerialName("last_seen_install_id") val lastSeenInstallId: String? = null,
 )
 
 class DataStoreServerSettingsRepository(
@@ -122,12 +127,23 @@ class DataStoreServerSettingsRepository(
 
     override suspend fun save(entry: ServerCatalogEntry) {
         val normalizedEntry = entry.normalized()
+        val transport = evaluateOriginTransport(normalizedEntry.origin, normalizedEntry.connectionMode)
+        if (transport is OriginTransportDecision.Rejected) {
+            throw IllegalArgumentException(transport.message)
+        }
         dataStore.edit { preferences ->
             val current = readCatalog(preferences)
             val now = nowEpochSeconds().coerceAtLeast(0L)
             val updated = current.entries
                 .filterNot { it.origin == normalizedEntry.origin }
-                .plus(normalizedEntry.copy(lastUsedEpochSeconds = now))
+                .plus(
+                    normalizedEntry.copy(
+                        lastUsedEpochSeconds = now,
+                        lastSeenInstallId = normalizedEntry.lastSeenInstallId
+                            ?: current.entries.firstOrNull { it.origin == normalizedEntry.origin }
+                                ?.lastSeenInstallId,
+                    ),
+                )
             writeCatalog(
                 preferences = preferences,
                 catalog = ServerCatalog.normalized(updated, normalizedEntry.origin),
@@ -177,6 +193,26 @@ class DataStoreServerSettingsRepository(
         }
     }
 
+    override suspend fun rememberInstallId(origin: ServerOrigin, installId: String) {
+        dataStore.edit { preferences ->
+            val current = readCatalog(preferences)
+            check(current.entries.any { it.origin == origin }) {
+                "Server origin is not in the local catalog"
+            }
+            val updated = current.entries.map { existing ->
+                if (existing.origin == origin) {
+                    existing.copy(lastSeenInstallId = installId)
+                } else {
+                    existing
+                }
+            }
+            writeCatalog(
+                preferences = preferences,
+                catalog = ServerCatalog.normalized(updated, current.activeOrigin),
+            )
+        }
+    }
+
     override suspend fun remove(serverOrigin: ServerOrigin): Boolean {
         var removed = false
         dataStore.edit { preferences ->
@@ -215,6 +251,8 @@ class DataStoreServerSettingsRepository(
                         origin = ServerOrigin.parse(entry.origin),
                         label = entry.label.take(MAX_SERVER_LABEL_CHARS),
                         lastUsedEpochSeconds = entry.lastUsedEpochSeconds,
+                        connectionMode = ServerConnectionMode.valueOf(entry.connectionMode),
+                        lastSeenInstallId = entry.lastSeenInstallId?.take(MAX_INSTALL_ID_CHARS),
                     )
                 }
             val active = preferences[ActiveOriginKey]
@@ -236,6 +274,8 @@ class DataStoreServerSettingsRepository(
                     origin = entry.origin.value,
                     label = entry.label,
                     lastUsedEpochSeconds = entry.lastUsedEpochSeconds,
+                    connectionMode = entry.connectionMode.name,
+                    lastSeenInstallId = entry.lastSeenInstallId,
                 )
             },
         )
