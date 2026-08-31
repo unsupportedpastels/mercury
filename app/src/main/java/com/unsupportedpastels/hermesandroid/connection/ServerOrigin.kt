@@ -7,7 +7,7 @@ import java.util.Locale
 @JvmInline
 value class ServerOrigin private constructor(val value: String) {
     companion object {
-        private val LOOPBACK_HOSTS = setOf("127.0.0.1", "localhost", "::1")
+        private val LOOPBACK_HOSTS = setOf("127.0.0.1", "::1")
 
         fun parse(input: String): ServerOrigin {
             val candidate = input.trim()

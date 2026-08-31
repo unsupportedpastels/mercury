@@ -50,6 +50,23 @@ enum class TunnelConnectionFailure {
     TunnelUnavailable,
     BootstrapRejected,
     CredentialRejected,
+    NotHermesEndpoint,
+    ProtocolIncompatible,
+    InvalidTunnelOrigin,
+    CleartextPolicyBlocked,
+    InstallationChanged,
+}
+
+fun TunnelConnectionFailure.requiresManualRecovery(): Boolean = when (this) {
+    TunnelConnectionFailure.TunnelUnavailable -> false
+    TunnelConnectionFailure.BootstrapRejected,
+    TunnelConnectionFailure.CredentialRejected,
+    TunnelConnectionFailure.NotHermesEndpoint,
+    TunnelConnectionFailure.ProtocolIncompatible,
+    TunnelConnectionFailure.InvalidTunnelOrigin,
+    TunnelConnectionFailure.CleartextPolicyBlocked,
+    TunnelConnectionFailure.InstallationChanged,
+    -> true
 }
 
 enum class CacheSource {

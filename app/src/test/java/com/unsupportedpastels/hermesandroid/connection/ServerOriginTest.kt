@@ -47,13 +47,14 @@ class ServerOriginTest {
     fun classifiesOnlyExactSupportedLoopbackHosts() {
         listOf(
             "http://127.0.0.1",
-            "http://localhost:8080",
             "https://[::1]:8443",
         ).forEach { input ->
             assertTrue(input, ServerOrigin.parse(input).isLoopback)
         }
 
         listOf(
+            "http://localhost:8080",
+            "http://localhost",
             "http://127.0.0.2",
             "http://localhost.example",
             "http://localhost.",
@@ -66,14 +67,14 @@ class ServerOriginTest {
     }
 
     @Test
-    fun supportedLoopbackSpellingsRemainDistinctOrigins() {
+    fun numericLoopbackSpellingsRemainDistinctOrigins() {
         val origins = listOf(
             ServerOrigin.parse("http://127.0.0.1"),
-            ServerOrigin.parse("http://localhost"),
             ServerOrigin.parse("http://[::1]"),
         )
 
-        assertEquals(3, origins.distinct().size)
+        assertEquals(2, origins.distinct().size)
+        assertFalse(ServerOrigin.parse("http://localhost").isLoopback)
     }
 
     @Test

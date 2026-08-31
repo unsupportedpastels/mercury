@@ -1,7 +1,8 @@
 package com.unsupportedpastels.hermesandroid.connection
 
+import com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ServerCatalogTest {
@@ -13,14 +14,7 @@ class ServerCatalogTest {
     }
 
     @Test
-    fun externalSshTunnelModeRequiresLoopbackOrigin() {
-        assertThrows(IllegalArgumentException::class.java) {
-            ServerCatalogEntry(
-                origin = ServerOrigin.parse("https://hermes.example"),
-                connectionMode = ServerConnectionMode.ExternalSshTunnel,
-            )
-        }
-
+    fun externalSshTunnelModeCanRecordNumericLoopback() {
         assertEquals(
             ServerConnectionMode.ExternalSshTunnel,
             ServerCatalogEntry(
@@ -28,5 +22,27 @@ class ServerCatalogTest {
                 connectionMode = ServerConnectionMode.ExternalSshTunnel,
             ).connectionMode,
         )
+    }
+
+    @Test
+    fun externalSshTunnelModeRejectsLocalhostWithIpv4Ipv6Explanation() {
+        val rejected = evaluateOriginTransport(
+            ServerOrigin.parse("http://localhost:9119"),
+            ServerConnectionMode.ExternalSshTunnel,
+        ) as OriginTransportDecision.Rejected
+        assertEquals(TunnelConnectionFailure.InvalidTunnelOrigin, rejected.failure)
+        assertTrue(rejected.message.contains("IPv4"))
+        assertTrue(rejected.message.contains("IPv6"))
+        assertTrue(rejected.message.contains("127.0.0.1"))
+    }
+
+    @Test
+    fun externalSshTunnelModeRejectsNonLoopbackOrigins() {
+        val rejected = evaluateOriginTransport(
+            ServerOrigin.parse("https://hermes.example"),
+            ServerConnectionMode.ExternalSshTunnel,
+        ) as OriginTransportDecision.Rejected
+        assertEquals(TunnelConnectionFailure.InvalidTunnelOrigin, rejected.failure)
+        assertTrue(rejected.message.contains("127.0.0.1"))
     }
 }
