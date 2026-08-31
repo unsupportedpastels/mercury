@@ -52,11 +52,11 @@ HAM uses the available window and posture — not a device name or orientation �
 
 HAM is a client, not an agent host. Install and configure Hermes Agent on a machine you control (or deploy an always-on **Hermes Cloud** instance from the [Nous Portal](https://portal.nousresearch.com/cloud)), then keep a compatible Hermes backend running before connecting from Android. The host remains authoritative for your agent, tools, files, sessions, and data.
 
-Both paths authenticate the same way — **Sign in with Nous**. HAM's Connect screen has three modes:
+**Hermes Cloud** and **Server URL** authenticate with **Sign in with Nous**. **External SSH tunnel** does not — it scrapes a dashboard session token from the local forward and keeps that token in memory only. HAM's Connect screen has three modes:
 
 - **Hermes Cloud** — sign in once to Nous Portal and pick from the agents on your account; no URL to paste. HAM discovers your deployed [Hermes Cloud](https://portal.nousresearch.com/cloud) agents automatically and connects to the one you choose. Multi-org accounts get an org picker.
 - **Server URL** — enter the HTTPS origin of a Hermes host you run yourself. Use this for self-hosting (below) or to connect to a known instance by hand.
-- **External SSH tunnel** (Experimental) — connect through a local port forward that you already configured in Termius or another SSH app. HAM talks only to `http://127.0.0.1:<port>` on this device. See [External SSH tunnel setup](docs/external-ssh-tunnel-setup.md).
+- **External SSH tunnel** (Experimental) — connect through a local port forward you already configured in Termius or another SSH app. HAM talks only to `http://127.0.0.1:<port>` on this device. It does not start or restore the tunnel. See [External SSH tunnel setup](docs/external-ssh-tunnel-setup.md) for the scrape and in-memory token story, the shared-loopback warning, and recovery.
 
 The rest of this section covers self-hosting.
 
@@ -128,7 +128,7 @@ These are connection examples, not a server provisioner: HAM does not create or 
 
 1. Download the [latest signed APK](https://github.com/unsupportedpastels/Hermes-Agent-Mobile-HAM/releases/latest) (Android 10+ / API 29).
 2. Tap the file and allow installs from your browser when Android asks.
-3. On first launch, enter your server origin and **Sign in with Nous**.
+3. On first launch, choose a connection mode. Hermes Cloud and Server URL complete **Sign in with Nous**. External SSH tunnel uses the in-memory dashboard token from the local forward — see [External SSH tunnel setup](docs/external-ssh-tunnel-setup.md).
 
 Releases are built and signed in CI. Verify the signature with `apksigner verify --verbose` before installing if you like. A Play Store listing is in progress; until then the signed APK on GitHub Releases is the official build. The sideload APK and a future Play install are signed differently and won't upgrade over each other.
 
