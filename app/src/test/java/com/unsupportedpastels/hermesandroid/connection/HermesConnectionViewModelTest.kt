@@ -131,6 +131,68 @@ class HermesConnectionViewModelTest {
     }
 
     @Test
+    fun testTunnelDoesNotSaveSelectOrStoreTokenAndKeepsLocalhostAndWrongServiceClassified() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("http://127.0.0.1:19119")
+        val localhost = ServerOrigin.parse("http://localhost:9119")
+        val client = TunnelConnectionClient()
+        val bootstrap = RecordingTunnelBootstrap(origin, listOf("session-token"))
+        val store = RecordingNativeTokenStore()
+        val remembered = mutableListOf<Pair<ServerOrigin, String>>()
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(null))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = settings,
+            client = client,
+            tokenStore = store,
+            loopbackSessionBootstrapClient = bootstrap,
+            rememberInstallId = { serverOrigin, installId -> remembered += serverOrigin to installId },
+        )
+        advanceUntilIdle()
+
+        assertEquals(TunnelTestResult.Success, viewModel.testTunnel(origin))
+        assertEquals(0, store.saveCalls)
+        assertEquals(0, store.loadCalls)
+        assertTrue(remembered.isEmpty())
+        assertEquals(null, (settings.value as ServerSettingsState.Ready).activeOrigin)
+        assertEquals(ConnectionState.Disconnected, viewModel.snapshots.value.connectionState)
+        assertEquals(AuthenticationState.Unknown, viewModel.snapshots.value.authenticationState)
+        assertTrue(viewModel.snapshots.value.durableSessions.isEmpty())
+        assertEquals(1, bootstrap.calls)
+        assertEquals(1, client.credentials.size)
+
+        assertEquals(
+            TunnelTestResult.Failure(
+                TunnelConnectionFailure.InvalidTunnelOrigin,
+                LOCALHOST_TUNNEL_MESSAGE,
+            ),
+            viewModel.testTunnel(localhost),
+        )
+        assertEquals(1, bootstrap.calls)
+        assertEquals(1, client.credentials.size)
+
+        val wrongClient = TunnelConnectionClient(
+            probeFailure = HermesEndpointException(
+                TunnelConnectionFailure.NotHermesEndpoint,
+                NOT_HERMES_ENDPOINT_MESSAGE,
+            ),
+        )
+        val wrongModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(ServerSettingsState.Ready(null)),
+            client = wrongClient,
+            tokenStore = RecordingNativeTokenStore(),
+            loopbackSessionBootstrapClient = RecordingTunnelBootstrap(origin, listOf("unused")),
+        )
+        advanceUntilIdle()
+        assertEquals(
+            TunnelTestResult.Failure(
+                TunnelConnectionFailure.NotHermesEndpoint,
+                NOT_HERMES_ENDPOINT_MESSAGE,
+            ),
+            wrongModel.testTunnel(origin),
+        )
+        assertTrue(wrongClient.credentials.isEmpty())
+    }
+
+    @Test
     fun tunnelModeRejectsLocalhostBeforeAnyRequest() = runTest(dispatcher) {
         val origin = ServerOrigin.parse("http://localhost:9119")
         val client = TunnelConnectionClient()
