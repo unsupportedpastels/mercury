@@ -22,7 +22,11 @@ import com.unsupportedpastels.hermesandroid.app.RunToolRow
 import com.unsupportedpastels.hermesandroid.app.RunToolState
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.hermesandroid.connection.ServerCatalog
+import com.unsupportedpastels.hermesandroid.connection.ServerCatalogEntry
+import com.unsupportedpastels.hermesandroid.connection.ServerConnectionMode
 import com.unsupportedpastels.hermesandroid.connection.ServerSettingsState
+import com.unsupportedpastels.hermesandroid.gateway.TunnelConnectionFailure
 import com.unsupportedpastels.hermesandroid.connection.SlashCompletionState
 import com.unsupportedpastels.hermesandroid.gateway.ActiveRuntimeSession
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
@@ -558,6 +562,73 @@ fun HermesServerDialogScreenshot() {
             onBack = {},
             onSave = { Result.success(Unit) },
         )
+    }
+}
+
+private val screenshotTunnelOrigin = ServerOrigin.parse("http://127.0.0.1:9119")
+private val screenshotTunnelCatalog = ServerCatalog.single(
+    ServerCatalogEntry(
+        origin = screenshotTunnelOrigin,
+        connectionMode = ServerConnectionMode.ExternalSshTunnel,
+    ),
+)
+
+@PreviewTest
+@Preview(name = "Compact external SSH tunnel setup", widthDp = 400, heightDp = 900, showBackground = true)
+@Preview(name = "Medium external SSH tunnel setup", widthDp = 610, heightDp = 900, showBackground = true)
+@Preview(name = "Expanded external SSH tunnel setup", widthDp = 900, heightDp = 675, showBackground = true)
+@Composable
+fun HermesExternalSshTunnelSetupScreenshot() {
+    HermesAndroidTheme(darkTheme = false) {
+        ServerSettingsScreen(
+            serverOrigin = screenshotTunnelOrigin,
+            serverCatalog = screenshotTunnelCatalog,
+            showBack = true,
+            onBack = {},
+            onSave = { Result.success(Unit) },
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "Compact tunnel unavailable", widthDp = 400, heightDp = 900, showBackground = true)
+@Preview(name = "Medium tunnel unavailable", widthDp = 610, heightDp = 900, showBackground = true)
+@Preview(name = "Expanded tunnel unavailable", widthDp = 900, heightDp = 675, showBackground = true)
+@Composable
+fun HermesTunnelUnavailableScreenshot() {
+    ScreenshotNavigationHost {
+        HermesAndroidTheme(darkTheme = false) {
+            HermesApp(
+                snapshot = HermesGatewaySnapshot(
+                    connectionState = ConnectionState.Recovering,
+                    tunnelConnectionFailure = TunnelConnectionFailure.TunnelUnavailable,
+                    connectionError = "SSH tunnel unavailable",
+                ),
+                serverSettingsState = ServerSettingsState.Ready(screenshotTunnelOrigin),
+                serverCatalog = screenshotTunnelCatalog,
+            )
+        }
+    }
+}
+
+@PreviewTest
+@Preview(name = "Compact installation changed", widthDp = 400, heightDp = 900, showBackground = true)
+@Preview(name = "Medium installation changed", widthDp = 610, heightDp = 900, showBackground = true)
+@Preview(name = "Expanded installation changed", widthDp = 900, heightDp = 675, showBackground = true)
+@Composable
+fun HermesInstallationChangedScreenshot() {
+    ScreenshotNavigationHost {
+        HermesAndroidTheme(darkTheme = false) {
+            HermesApp(
+                snapshot = HermesGatewaySnapshot(
+                    connectionState = ConnectionState.Recovering,
+                    tunnelConnectionFailure = TunnelConnectionFailure.InstallationChanged,
+                    connectionError = "This local port now appears to lead to a different Hermes installation.",
+                ),
+                serverSettingsState = ServerSettingsState.Ready(screenshotTunnelOrigin),
+                serverCatalog = screenshotTunnelCatalog,
+            )
+        }
     }
 }
 
