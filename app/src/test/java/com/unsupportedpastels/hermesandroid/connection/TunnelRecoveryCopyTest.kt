@@ -73,6 +73,17 @@ class TunnelRecoveryCopyTest {
         assertTrue(bootstrap.body != gated.body)
         assertFalse(bootstrap.body.contains("OAuth", ignoreCase = true))
         assertTrue(gated.body.contains("OAuth", ignoreCase = true))
+
+        val oauthMention = tunnelRecoveryCopy(
+            failure = TunnelConnectionFailure.BootstrapRejected,
+            connectionState = ConnectionState.Disconnected,
+            connectionError = "OAuth handshake failed during bootstrap",
+        )
+        assertNotNull(oauthMention)
+        assertEquals("Bootstrap unavailable", oauthMention!!.title)
+        assertEquals(BOOTSTRAP_REJECTED_USER_MESSAGE, oauthMention.body)
+        assertFalse(isGatedTunnelTarget("OAuth handshake failed during bootstrap"))
+        assertTrue(isGatedTunnelTarget(GATED_TUNNEL_TARGET_MESSAGE))
     }
 
     @Test

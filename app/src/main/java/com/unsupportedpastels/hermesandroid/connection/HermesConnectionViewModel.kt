@@ -1523,7 +1523,7 @@ class HermesConnectionViewModel(
             if (info.authRequired) {
                 publishTunnelFailure(
                     serverOrigin, currentGeneration, TunnelConnectionFailure.BootstrapRejected,
-                    "Hermes tunnel target requires OAuth authorization",
+                    GATED_TUNNEL_TARGET_MESSAGE,
                 )
                 return
             }

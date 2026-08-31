@@ -122,7 +122,7 @@ fun tunnelRecoveryCopy(
 }
 
 fun isGatedTunnelTarget(connectionError: String?): Boolean =
-    connectionError?.contains("OAuth", ignoreCase = true) == true
+    connectionError == GATED_TUNNEL_TARGET_MESSAGE
 
 sealed interface TunnelTestResult {
     data object Success : TunnelTestResult
