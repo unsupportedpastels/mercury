@@ -236,6 +236,60 @@ class LifecycleRecoveryReducerTest {
                 assertTrue(decision.effects.isEmpty())
             },
             Case(
+                name = "foreground does not auto-accept an installation change",
+                initial = waiting(
+                    attempt = 1,
+                    nextRetryAt = 0L,
+                    startedAt = 0L,
+                    exhausted = true,
+                    failure = TunnelConnectionFailure.InstallationChanged,
+                    retry = false,
+                ),
+                event = LifecycleRecoveryEvent.Foreground(nowEpochMs = 50_000L, hasActiveTurn = false),
+            ) { decision ->
+                val waiting = decision.state as LifecycleRecoveryState.WaitingForTunnel
+                assertEquals(TunnelConnectionFailure.InstallationChanged, waiting.failure)
+                assertFalse(waiting.isTerminalCredentialFailure())
+                assertTrue(decision.effects.isEmpty())
+            },
+            Case(
+                name = "network hint does not auto-accept an installation change",
+                initial = waiting(
+                    attempt = 1,
+                    nextRetryAt = 0L,
+                    startedAt = 0L,
+                    exhausted = true,
+                    failure = TunnelConnectionFailure.InstallationChanged,
+                    retry = false,
+                ),
+                event = LifecycleRecoveryEvent.NetworkHint(nowEpochMs = 50_000L),
+            ) { decision ->
+                val waiting = decision.state as LifecycleRecoveryState.WaitingForTunnel
+                assertEquals(TunnelConnectionFailure.InstallationChanged, waiting.failure)
+                assertFalse(waiting.isTerminalCredentialFailure())
+                assertTrue(decision.effects.isEmpty())
+            },
+            Case(
+                name = "debounce during installation change does not bootstrap",
+                initial = LifecycleRecoveryState.WaitingForTunnel(
+                    scope = scope(),
+                    failure = TunnelConnectionFailure.InstallationChanged,
+                    attempt = 1,
+                    nextRetryAtEpochMs = 0L,
+                    recoveryStartedAtEpochMs = 0L,
+                    budgetExhausted = true,
+                    jobs = RecoveryJobs(debounce = true),
+                    authorization = AuthorizationKind.LoopbackSession,
+                ),
+                event = LifecycleRecoveryEvent.DebounceFired(origin, 1L, nowEpochMs = 50_300L),
+            ) { decision ->
+                val waiting = decision.state as LifecycleRecoveryState.WaitingForTunnel
+                assertEquals(TunnelConnectionFailure.InstallationChanged, waiting.failure)
+                assertFalse(waiting.isTerminalCredentialFailure())
+                assertFalse(decision.effects.any { it is LifecycleRecoveryEffect.Bootstrap })
+                assertFalse(decision.effects.any { it is LifecycleRecoveryEffect.Probe })
+            },
+            Case(
                 name = "foreground from ready schedules a debounced probe",
                 initial = LifecycleRecoveryState.Ready(scope(), AuthorizationKind.LoopbackSession),
                 event = LifecycleRecoveryEvent.Foreground(nowEpochMs = 1_000L, hasActiveTurn = false),

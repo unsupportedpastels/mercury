@@ -255,6 +255,11 @@ fun LifecycleRecoveryState.isTerminalCredentialFailure(): Boolean =
     this is LifecycleRecoveryState.WaitingForTunnel &&
         failure == TunnelConnectionFailure.CredentialRejected
 
+fun LifecycleRecoveryState.blocksAutomaticReconnect(): Boolean =
+    isTerminalCredentialFailure() ||
+        (this is LifecycleRecoveryState.WaitingForTunnel &&
+            failure == TunnelConnectionFailure.InstallationChanged)
+
 fun LifecycleRecoveryState.publishedConnectionState(): ConnectionState = when (this) {
     LifecycleRecoveryState.Unconfigured -> ConnectionState.Disconnected
     is LifecycleRecoveryState.Probing -> when {
@@ -387,7 +392,7 @@ private fun foreground(
     state: LifecycleRecoveryState,
     event: LifecycleRecoveryEvent.Foreground,
 ): LifecycleRecoveryDecision {
-    if (state.isTerminalCredentialFailure()) return LifecycleRecoveryDecision(state)
+    if (state.blocksAutomaticReconnect()) return LifecycleRecoveryDecision(state)
     if (state.jobsOrNull()?.hasExclusiveWork == true) return LifecycleRecoveryDecision(state)
     return requestDebouncedProbe(state, event.nowEpochMs)
 }
@@ -409,7 +414,7 @@ private fun networkHint(
     event: LifecycleRecoveryEvent.NetworkHint,
 ): LifecycleRecoveryDecision {
     if (state is LifecycleRecoveryState.Unconfigured) return LifecycleRecoveryDecision(state)
-    if (state.isTerminalCredentialFailure()) return LifecycleRecoveryDecision(state)
+    if (state.blocksAutomaticReconnect()) return LifecycleRecoveryDecision(state)
     if (state.jobsOrNull()?.hasExclusiveWork == true) return LifecycleRecoveryDecision(state)
     return requestDebouncedProbe(state, event.nowEpochMs)
 }
@@ -432,7 +437,7 @@ private fun debounceFired(
 ): LifecycleRecoveryDecision {
     val scope = state.scopeOrNull() ?: return LifecycleRecoveryDecision(state)
     val jobs = state.jobsOrNull() ?: return LifecycleRecoveryDecision(state)
-    if (state.isTerminalCredentialFailure()) {
+    if (state.blocksAutomaticReconnect()) {
         return LifecycleRecoveryDecision(
             withJobs(state, jobs.copy(debounce = false)),
             listOf(LifecycleRecoveryEffect.CancelDebounce(scope)),

@@ -763,8 +763,17 @@ class HermesConnectionViewModel(
         loopbackCredentialMutex.withLock {
             activeLoopbackCredential = null
             loopbackRecoveryEpoch = null
+            val origin = activeOrigin
+            if (origin != null) {
+                loopbackRecoveryTerminal = LoopbackRecoveryTerminal(origin, generation)
+            }
         }
         activeTokens = null
+        mutableSnapshots.value = mutableSnapshots.value.copy(
+            tunnelConnectionFailure = null,
+            connectionError = null,
+        )
+        applyRecoveryPresentation()
     }
 
     private fun dispatchRecovery(event: LifecycleRecoveryEvent) {
@@ -829,6 +838,7 @@ class HermesConnectionViewModel(
             }
             is LifecycleRecoveryEffect.Bootstrap -> {
                 if (isTerminalLoopbackScope(effect.scope.origin, effect.scope.generation)) return
+                if (pendingObservedInstallId != null) return
                 if (loopbackRecoveryEpoch != null) return
                 connectionJob?.cancel()
                 val job = viewModelScope.launch {
@@ -1536,7 +1546,9 @@ class HermesConnectionViewModel(
         loopbackCredentialMutex.withLock {
             activeLoopbackCredential = null
             loopbackRecoveryEpoch = null
-            if (failure == TunnelConnectionFailure.CredentialRejected) {
+            if (failure == TunnelConnectionFailure.CredentialRejected ||
+                failure == TunnelConnectionFailure.InstallationChanged
+            ) {
                 loopbackRecoveryTerminal = LoopbackRecoveryTerminal(origin, expectedGeneration)
             }
         }
@@ -1586,6 +1598,7 @@ class HermesConnectionViewModel(
         loopbackCredentialMutex.withLock {
             activeLoopbackCredential = null
             loopbackRecoveryEpoch = null
+            loopbackRecoveryTerminal = LoopbackRecoveryTerminal(origin, expectedGeneration)
         }
         activeTokens = null
         publishTunnelFailure(
@@ -6802,6 +6815,7 @@ class HermesConnectionViewModel(
                 ?.takeIf { it.origin == origin && it.generation == expectedGeneration }
             if (current != null && current.credential !== rejected) return current.credential
             if (isTerminalLoopbackScope(origin, expectedGeneration)) return null
+            if (pendingObservedInstallId != null) return null
             loopbackRecoveryEpoch
                 ?.takeIf {
                     it.origin == origin &&
@@ -6938,6 +6952,7 @@ class HermesConnectionViewModel(
         // A terminal state published while this scrape was in flight wins: installing
         // now would silently revive a scope the user has to retry explicitly.
         if (isTerminalLoopbackScope(origin, expectedGeneration)) return@withLock null
+        if (pendingObservedInstallId != null) return@withLock null
         activeLoopbackCredential = ActiveLoopbackCredentialRecord(origin, expectedGeneration, recovered)
         // The record owns the token now; retire the epoch so its completed
         // deferred stops holding a second reference to it.
