@@ -2,15 +2,19 @@
 
 **Status:** DONE_WITH_CONCERNS  
 **Branch:** `docs/external-ssh-tunnel-session-auth`  
-**Base HEAD at start:** `d503c6a` (Task 7)  
+**HEAD:** `754e844` — docs: record owner passes for Hermes restart and tunnel stop/start  
 **Not pushed. Not merged.**  
-**Device matrix:** not exercised. Never claim device pass.
+**Device matrix:** partial owner coverage only (items 1, 3–7). Never claim full device pass.
 
 ## Commits
 
 | Hash | Subject |
 |---|---|
 | `90438f7` | test: pin release merged manifests against global cleartext |
+| `99dcbb2` | feat(ui): keep compact tunnel warning, Test, and Save on screen |
+| `53c2deb` | docs: record compact tunnel setup above-the-fold follow-up |
+| `983643c` | docs: record partial owner device observations for tunnel matrix |
+| `754e844` | docs: record owner passes for Hermes restart and tunnel stop/start |
 
 Screenshot goldens were not updated and were not committed.
 
@@ -26,31 +30,27 @@ Agent preparation only. No physical phone. No ADB device. No SSH credentials.
 6. Optional protocol smoke against local Hermes `v0.20.4` on `127.0.0.1:9119`. Token values were never printed.
 7. Residual-risks paragraph for a future PR (below).
 
-Independent spec + security reviews of the complete feature were not requested in this dispatch.
+Whole-feature spec review PASS (`.superpowers/sdd/task-8-feature-spec-review.md`, `90438f7`). Whole-feature security review PASS (`.superpowers/sdd/task-8-feature-security-review.md`, `90438f7`). Compact-fold follow-up spec PASS and security PASS (`task-7-compact-fold-review.md`, `task-7-compact-fold-security.md`, `53c2deb`).
 
 ## Verification
 
 ```
-./gradlew --no-daemon --no-configuration-cache --no-build-cache --rerun-tasks testDebugUnitTest
-./gradlew --no-daemon lintDebug assembleDebug
-git diff --check
-./gradlew --no-daemon processReleaseMainManifest
-./gradlew --no-daemon --no-configuration-cache --no-build-cache testDebugUnitTest --tests '*MergedManifestCleartextTest'
-./gradlew --no-daemon validateDebugScreenshotTest
+./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
+./gradlew --no-daemon testDebugUnitTest --tests '*MergedManifestCleartextTest'
+./gradlew --no-daemon validateDebugScreenshotTest   # at 53c2deb; goldens not updated
 ```
 
 | Gate | Result |
 |---|---|
-| `testDebugUnitTest` (full, `--rerun-tasks`) | **961 tests, 7 failed** — all `NativeOAuthTest` (environmental socket bind / assertion; not chased) |
-| Leftover `MergedManifestCleartextTest` | 5/5 after adding two assertions; run after `processReleaseMainManifest` |
+| `testDebugUnitTest` (full, HEAD `754e844`, 2026-08-31) | **965 tests, 7 failed** — all `NativeOAuthTest` (environmental socket bind / assertion; not chased) |
+| `MergedManifestCleartextTest` | 5/5 |
 | `lintDebug` | pass |
 | `assembleDebug` | pass |
-| `git diff --check` | pass |
-| Release merged manifest | `app/build/intermediates/merged_manifest/release/processReleaseMainManifest/AndroidManifest.xml`: no `usesCleartextTraffic="true"`; `networkSecurityConfig` present; no `src/release` overlay |
-| `validateDebugScreenshotTest` | **27 tests, 12 failed** — see screenshot status. Goldens not updated |
-| Debug APK | `app/build/outputs/apk/debug/app-debug.apk` (81 498 951 bytes, 2026-08-31 01:19) |
-| Protocol smoke | ran (see below) |
-| Device matrix | **not run** |
+| Release merged manifest | no `usesCleartextTraffic="true"`; `networkSecurityConfig` present; no `src/release` overlay (pinned by `MergedManifestCleartextTest`) |
+| `validateDebugScreenshotTest` (at `53c2deb`, post compact-fold) | **27 tests, 12 failed** — see screenshot status. Goldens not updated |
+| Debug APK | `app/build/outputs/apk/debug/app-debug.apk` (refreshed 2026-08-31) |
+| Protocol smoke | ran at agent prep (see below) |
+| Device matrix | **partial owner only** — items 1, 3–7 reported pass; 2, 8–12 and adaptive hardware still open |
 
 NativeOAuthTest failures (7):
 
@@ -92,7 +92,7 @@ Diffs:
 - Compact active session workspace
 - Compact dark markdown table
 
-Compact tunnel setup at 400×900 still crops below the fold (checklist / Test tunnel / warning / Save). Confirm when approving goldens.
+Compact tunnel setup at 400×900 (post `99dcbb2`): warning, Test tunnel, and Save are on the first screen; checklist starts after Save and may be partially cut off. Confirm pixels when approving goldens (see `.superpowers/sdd/screenshot-candidates/README.md`).
 
 ## Protocol smoke
 
@@ -108,10 +108,11 @@ Compact tunnel setup at 400×900 still crops below the fold (checklist / Test tu
 | WS rejected token (pre-accept) | **HTTP 403**, empty body — still not close `4401` |
 | WS valid token | HTTP 101 |
 
-## Owner blockers
+## Owner blockers (remaining)
 
-1. **Screenshot goldens** — 9 missing + 3 compact diffs. Owner visual review required. Do not ship the screenshot gate as green.
-2. **Device matrix** — 12 tunnel items plus adaptive layout on real hardware. Checklist: `docs/external-ssh-tunnel-device-checklist.md`. Empty until the owner fills it. An agent must not mark any row pass.
+1. **Screenshot goldens** — 9 missing + 3 compact diffs. Owner visual review required. Do not ship the screenshot gate as green. Candidates at `.superpowers/sdd/screenshot-candidates/`.
+2. **Device matrix (incomplete)** — owner-reported pass on items 1, 3–7 only. Still open: item 2 (second SSH client), items 8–12 (network transitions, lock/battery, reboot, wrong service, two-port isolation), and adaptive layout on real compact/medium/expanded hardware. Checklist: `docs/external-ssh-tunnel-device-checklist.md`. An agent must not mark untested rows pass.
+3. **IPv6 `::1` NSC matching** — unverified on physical device (prefer `127.0.0.1` until confirmed).
 
 ## Residual risks (for a future PR)
 
@@ -120,8 +121,8 @@ Keep the pull request honest. These are structural, not cosmetic:
 - **HTML-scrape coupling.** The session token is adopted from `window.__HERMES_SESSION_TOKEN__` in the loopback root HTML. There is no first-class local-client adoption endpoint. If upstream Hermes publishes one, retire the scrape rather than maintain it. This is why the mode is Experimental.
 - **Shared-loopback exposure.** Any other app on the device can reach the forwarded port and obtain the same token. Android loopback is not app-private. Setup UI and user docs already warn; do not describe it as sandboxed.
 - **Handshake HTTP 403 vs 4401.** A rejected-token WebSocket *upgrade* on live `v0.20.4` is HTTP 403 with an empty body, not a WebSocket close `4401`. Credential recovery is proven for an already-open socket whose peer then closes `4401`, and for REST `401`. A Hermes restart that drops sockets and refuses the next upgrade with 403 may not enter the `4401` branch until a REST `401` also arrives. Distinguishing `4401` from `4403` is impossible from handshake 403 alone. Left as instructed; do not map HTTP 403 to credential refresh.
-- **Screenshot goldens are not approved.** Nine new tunnel/recovery previews have no references. Three compact existing goldens mismatch. Compact tunnel setup is below the fold. Owner must review pixels before updating references.
-- **Device matrix was not exercised by the agent.** Cold forward, second SSH client, chat/speech, background/foreground, process death, Hermes restart, tunnel stop/start, network transitions, lock/battery, reboot, wrong local service, two ports, and adaptive layout on hardware are owner-only. This report is not a device pass.
+- **Screenshot goldens are not approved.** Nine new tunnel/recovery previews have no references. Three compact existing goldens mismatch. Owner must review pixels before updating references.
+- **Device matrix is incomplete.** Owner reported pass on items 1, 3–7 (cold/test handshake, chat, background/reopen, kill/restart, Hermes restart, tunnel stop/start). Items 2, 8–12 and adaptive hardware remain untested. Agent partial screenshot corroborates item 7 chrome only. This report is not a full device pass.
 
 Also still true from earlier tasks: NativeOAuthTest environmental failures (7); IPv6 `::1` NSC matching unverified on device; no `src/release` overlay today, but a future overlay is what the new test is for.
 
