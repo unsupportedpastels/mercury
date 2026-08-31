@@ -48,6 +48,7 @@ sealed interface LifecycleRecoveryState {
         val keepReadyPresentation: Boolean = false,
         val recoveryAttempt: Int = 0,
         val recoveryStartedAtEpochMs: Long? = null,
+        val recoveryElapsedMs: Long = 0L,
     ) : LifecycleRecoveryState
 
     data class Ready(
@@ -65,6 +66,7 @@ sealed interface LifecycleRecoveryState {
         val budgetExhausted: Boolean,
         val jobs: RecoveryJobs,
         val authorization: AuthorizationKind? = null,
+        val elapsedMs: Long = 0L,
     ) : LifecycleRecoveryState
 
     data class RefreshingCredential(
@@ -81,6 +83,7 @@ sealed interface LifecycleRecoveryState {
         val recoveryStartedAtEpochMs: Long,
         val jobs: RecoveryJobs,
         val authorization: AuthorizationKind,
+        val elapsedMs: Long = 0L,
     ) : LifecycleRecoveryState
 
     data class Suspended(
@@ -208,11 +211,13 @@ sealed interface LifecycleRecoveryEffect {
     data class ScheduleRetry(
         val scope: RecoveryScope,
         val atEpochMs: Long,
+        val waitMs: Long,
     ) : LifecycleRecoveryEffect
     data class CancelRetry(val scope: RecoveryScope) : LifecycleRecoveryEffect
     data class ScheduleDebounce(
         val scope: RecoveryScope,
         val atEpochMs: Long,
+        val waitMs: Long,
     ) : LifecycleRecoveryEffect
     data class CancelDebounce(val scope: RecoveryScope) : LifecycleRecoveryEffect
 }
@@ -389,7 +394,7 @@ private fun requestDebouncedProbe(
     val at = nowEpochMs + LIFECYCLE_PROBE_DEBOUNCE_MS
     return LifecycleRecoveryDecision(
         state = withJobs(state, (state.jobsOrNull() ?: RecoveryJobs()).copy(debounce = true)),
-        effects = listOf(LifecycleRecoveryEffect.ScheduleDebounce(scope, at)),
+        effects = listOf(LifecycleRecoveryEffect.ScheduleDebounce(scope, at, LIFECYCLE_PROBE_DEBOUNCE_MS)),
     )
 }
 
@@ -399,6 +404,12 @@ private fun debounceFired(
 ): LifecycleRecoveryDecision {
     val scope = state.scopeOrNull() ?: return LifecycleRecoveryDecision(state)
     val jobs = state.jobsOrNull() ?: return LifecycleRecoveryDecision(state)
+    if (state.isTerminalCredentialFailure()) {
+        return LifecycleRecoveryDecision(
+            withJobs(state, jobs.copy(debounce = false)),
+            listOf(LifecycleRecoveryEffect.CancelDebounce(scope)),
+        )
+    }
     if (jobs.hasExclusiveWork) {
         return LifecycleRecoveryDecision(
             withJobs(state, jobs.copy(debounce = false)),
@@ -571,9 +582,20 @@ private fun transportLost(
     event: LifecycleRecoveryEvent.TransportLost,
 ): LifecycleRecoveryDecision {
     if (state.isTerminalCredentialFailure()) return LifecycleRecoveryDecision(state)
-    if (state is LifecycleRecoveryState.RecoveringTurn) return LifecycleRecoveryDecision(state)
     val scope = state.scopeOrNull() ?: return LifecycleRecoveryDecision(state)
     if (event.hasActiveTurn) {
+        if (state is LifecycleRecoveryState.RecoveringTurn) {
+            return LifecycleRecoveryDecision(
+                state.copy(
+                    sessionId = event.sessionId,
+                    jobs = RecoveryJobs(turnRecovery = true),
+                ),
+                listOf(
+                    LifecycleRecoveryEffect.CancelRetry(scope),
+                    LifecycleRecoveryEffect.RecoverTurn(scope, event.sessionId),
+                ),
+            )
+        }
         val nextRetry = event.nowEpochMs + lifecycleBackoffMs(1)
         return LifecycleRecoveryDecision(
             LifecycleRecoveryState.RecoveringTurn(
@@ -584,8 +606,9 @@ private fun transportLost(
                 recoveryStartedAtEpochMs = event.nowEpochMs,
                 jobs = RecoveryJobs(retryTimer = true),
                 authorization = authorizationOf(state) ?: AuthorizationKind.LoopbackSession,
+                elapsedMs = lifecycleBackoffMs(1),
             ),
-            cancelTimers(state) + LifecycleRecoveryEffect.ScheduleRetry(scope, nextRetry),
+            cancelTimers(state) + LifecycleRecoveryEffect.ScheduleRetry(scope, nextRetry, lifecycleBackoffMs(1)),
         )
     }
     return waitForFailure(
@@ -641,10 +664,16 @@ private fun retryTimerFired(
     val scope = state.scopeOrNull() ?: return LifecycleRecoveryDecision(state)
     when (state) {
         is LifecycleRecoveryState.WaitingForTunnel -> {
-            if (budgetElapsed(state.recoveryStartedAtEpochMs, event.nowEpochMs) ||
-                state.budgetExhausted
+            if (state.failure == TunnelConnectionFailure.CredentialRejected ||
+                budgetElapsed(state.recoveryStartedAtEpochMs, event.nowEpochMs) ||
+                state.budgetExhausted ||
+                state.elapsedMs >= LIFECYCLE_RECOVERY_BUDGET_MS
             ) {
-                return exhaust(state, event.nowEpochMs)
+                return if (state.failure == TunnelConnectionFailure.CredentialRejected) {
+                    LifecycleRecoveryDecision(state, cancelTimers(state))
+                } else {
+                    exhaust(state, event.nowEpochMs)
+                }
             }
             return startBootstrap(
                 scope = scope,
@@ -656,7 +685,9 @@ private fun retryTimerFired(
             )
         }
         is LifecycleRecoveryState.RecoveringTurn -> {
-            if (budgetElapsed(state.recoveryStartedAtEpochMs, event.nowEpochMs)) {
+            if (budgetElapsed(state.recoveryStartedAtEpochMs, event.nowEpochMs) ||
+                state.elapsedMs >= LIFECYCLE_RECOVERY_BUDGET_MS
+            ) {
                 return exhaustTurn(state, event.nowEpochMs)
             }
             return LifecycleRecoveryDecision(
@@ -713,6 +744,13 @@ private fun startBootstrap(
             keepReadyPresentation = keepReadyPresentation,
             recoveryAttempt = if (resetBudget) 0 else recoveryAttempt,
             recoveryStartedAtEpochMs = recoveryStartedAtEpochMs,
+            recoveryElapsedMs = when {
+                resetBudget -> 0L
+                previous is LifecycleRecoveryState.WaitingForTunnel -> previous.elapsedMs
+                previous is LifecycleRecoveryState.RecoveringTurn -> previous.elapsedMs
+                previous is LifecycleRecoveryState.Probing -> previous.recoveryElapsedMs
+                else -> 0L
+            },
         ),
         effects,
     )
@@ -732,7 +770,17 @@ private fun waitForFailure(
     }
     val attempt = previousAttempt + 1
     val recoveryStartedAt = startedAt ?: nowEpochMs
-    if (budgetElapsed(recoveryStartedAt, nowEpochMs)) {
+    val previousElapsed = when (previous) {
+        is LifecycleRecoveryState.WaitingForTunnel -> previous.elapsedMs
+        is LifecycleRecoveryState.RecoveringTurn -> previous.elapsedMs
+        is LifecycleRecoveryState.Probing -> previous.recoveryElapsedMs
+        else -> 0L
+    }
+    val wait = lifecycleBackoffMs(attempt)
+    val nextElapsed = previousElapsed + wait
+    if (budgetElapsed(recoveryStartedAt, nowEpochMs) ||
+        nextElapsed >= LIFECYCLE_RECOVERY_BUDGET_MS
+    ) {
         return LifecycleRecoveryDecision(
             LifecycleRecoveryState.WaitingForTunnel(
                 scope = scope,
@@ -743,11 +791,12 @@ private fun waitForFailure(
                 budgetExhausted = true,
                 jobs = RecoveryJobs(),
                 authorization = authorization,
+                elapsedMs = nextElapsed,
             ),
             cancelTimers(previous),
         )
     }
-    val nextRetry = nowEpochMs + lifecycleBackoffMs(attempt)
+    val nextRetry = nowEpochMs + wait
     return LifecycleRecoveryDecision(
         LifecycleRecoveryState.WaitingForTunnel(
             scope = scope,
@@ -758,8 +807,9 @@ private fun waitForFailure(
             budgetExhausted = false,
             jobs = RecoveryJobs(retryTimer = true),
             authorization = authorization,
+            elapsedMs = nextElapsed,
         ),
-        cancelTimers(previous) + LifecycleRecoveryEffect.ScheduleRetry(scope, nextRetry),
+        cancelTimers(previous) + LifecycleRecoveryEffect.ScheduleRetry(scope, nextRetry, wait),
     )
 }
 
@@ -769,18 +819,22 @@ private fun scheduleTurnRetry(
     previousAttempt: Int,
     startedAt: Long,
 ): LifecycleRecoveryDecision {
-    if (budgetElapsed(startedAt, nowEpochMs)) {
+    if (budgetElapsed(startedAt, nowEpochMs) ||
+        state.elapsedMs + lifecycleBackoffMs(previousAttempt + 1) >= LIFECYCLE_RECOVERY_BUDGET_MS
+    ) {
         return exhaustTurn(state, nowEpochMs)
     }
     val attempt = previousAttempt + 1
-    val nextRetry = nowEpochMs + lifecycleBackoffMs(attempt)
+    val wait = lifecycleBackoffMs(attempt)
+    val nextRetry = nowEpochMs + wait
     return LifecycleRecoveryDecision(
         state.copy(
             attempt = attempt,
             nextRetryAtEpochMs = nextRetry,
             jobs = RecoveryJobs(retryTimer = true),
+            elapsedMs = state.elapsedMs + wait,
         ),
-        cancelTimers(state) + LifecycleRecoveryEffect.ScheduleRetry(state.scope, nextRetry),
+        cancelTimers(state) + LifecycleRecoveryEffect.ScheduleRetry(state.scope, nextRetry, wait),
     )
 }
 
