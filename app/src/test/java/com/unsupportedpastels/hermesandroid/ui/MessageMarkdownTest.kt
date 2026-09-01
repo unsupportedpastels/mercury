@@ -1,5 +1,7 @@
 package com.unsupportedpastels.hermesandroid.ui
 
+import com.unsupportedpastels.hermesandroid.files.HostFileOpenPolicy
+import com.unsupportedpastels.hermesandroid.files.MarkdownLinkTarget
 import kotlin.system.measureTimeMillis
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -296,5 +298,23 @@ class MessageMarkdownTest {
         assertEquals("First\nline", (blocks[0] as MarkdownTextBlock).plainText)
         assertEquals("Second", (blocks[1] as MarkdownTextBlock).plainText)
         assertNull((blocks[1] as MarkdownTextBlock).prefix)
+    }
+
+    @Test
+    fun hostPathMarkdownLinksAreClassifiedForOpenWhileHttpStaysWeb() {
+        val blocks = parseMessageMarkdown(
+            "See [docs](https://example.invalid/readme) and [report](/home/mark/out/report.pdf).",
+        )
+        val inlines = (blocks.single() as MarkdownTextBlock).inlines
+        assertEquals("https://example.invalid/readme", inlines.single { it.text == "docs" }.link)
+        assertEquals("/home/mark/out/report.pdf", inlines.single { it.text == "report" }.link)
+        assertEquals(
+            MarkdownLinkTarget.RemoteWeb("https://example.invalid/readme"),
+            HostFileOpenPolicy.markdownLinkTarget(inlines.single { it.text == "docs" }.link!!),
+        )
+        assertEquals(
+            MarkdownLinkTarget.ManagedHostPath("/home/mark/out/report.pdf"),
+            HostFileOpenPolicy.markdownLinkTarget(inlines.single { it.text == "report" }.link!!),
+        )
     }
 }

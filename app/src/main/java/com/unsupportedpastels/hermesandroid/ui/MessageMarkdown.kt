@@ -46,6 +46,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import com.unsupportedpastels.hermesandroid.files.HostFileOpenPolicy
+import com.unsupportedpastels.hermesandroid.files.MarkdownLinkTarget
 import com.unsupportedpastels.hermesandroid.files.MediaLineKind
 
 internal sealed interface MarkdownBlock
@@ -562,6 +563,7 @@ internal fun MarkdownMessage(
     text: String,
     modifier: Modifier = Modifier,
     loadManagedImage: (suspend (String) -> ByteArray)? = null,
+    onOpenManagedPath: ((String) -> Unit)? = null,
 ) {
     val displayText = remember(text) { compactEmbeddedPayloads(text) }
     var requestedCharacters by rememberSaveable(displayText) {
@@ -584,14 +586,14 @@ internal fun MarkdownMessage(
             ) {
                 blocks.forEach { block ->
                     when (block) {
-                        is MarkdownTextBlock -> MarkdownText(block)
+                        is MarkdownTextBlock -> MarkdownText(block, onOpenManagedPath)
                         is MarkdownCodeBlock -> MarkdownCode(block)
                         is MarkdownImageBlock -> RemoteMediaImage(
                             source = block.url,
                             loadManagedImage = loadManagedImage,
                         )
                         is MarkdownFileChipBlock -> Text(block.displayName)
-                        is MarkdownTableBlock -> MarkdownTable(block)
+                        is MarkdownTableBlock -> MarkdownTable(block, onOpenManagedPath)
                     }
                 }
             }
@@ -627,7 +629,10 @@ private val MarkdownTableCellMinWidth = 96.dp
 private val MarkdownTableCellMaxWidth = 240.dp
 
 @Composable
-private fun MarkdownTable(block: MarkdownTableBlock) {
+private fun MarkdownTable(
+    block: MarkdownTableBlock,
+    onOpenManagedPath: ((String) -> Unit)? = null,
+) {
     val scrollState = rememberScrollState()
     val columnCount = maxOf(block.header.size, block.rows.maxOfOrNull { it.size } ?: 0)
     if (columnCount == 0) return
@@ -654,6 +659,7 @@ private fun MarkdownTable(block: MarkdownTableBlock) {
                                 alignment = block.alignments.getOrElse(column) {
                                     MarkdownTableAlignment.Start
                                 },
+                                onOpenManagedPath = onOpenManagedPath,
                             )
                         }
                     }
@@ -725,9 +731,10 @@ private fun MarkdownTableCellText(
     cell: MarkdownTableCell?,
     header: Boolean,
     alignment: MarkdownTableAlignment,
+    onOpenManagedPath: ((String) -> Unit)? = null,
 ) {
     Text(
-        text = cell?.let { annotatedMarkdown(it.inlines) } ?: AnnotatedString(""),
+        text = cell?.let { annotatedMarkdown(it.inlines, onOpenManagedPath) } ?: AnnotatedString(""),
         modifier = Modifier
             .background(
                 if (header) {
@@ -753,8 +760,11 @@ private fun MarkdownTableCellText(
 }
 
 @Composable
-private fun MarkdownText(block: MarkdownTextBlock) {
-    val annotated = annotatedMarkdown(block.inlines)
+private fun MarkdownText(
+    block: MarkdownTextBlock,
+    onOpenManagedPath: ((String) -> Unit)? = null,
+) {
+    val annotated = annotatedMarkdown(block.inlines, onOpenManagedPath)
     val textStyle = when (block.kind) {
         MarkdownTextKind.Heading -> when (block.headingLevel) {
             1 -> MaterialTheme.typography.headlineSmall
@@ -805,7 +815,10 @@ private fun MarkdownText(block: MarkdownTextBlock) {
 }
 
 @Composable
-private fun annotatedMarkdown(inlines: List<MarkdownInline>): AnnotatedString {
+private fun annotatedMarkdown(
+    inlines: List<MarkdownInline>,
+    onOpenManagedPath: ((String) -> Unit)? = null,
+): AnnotatedString {
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     val linkColor = MaterialTheme.colorScheme.primary
     return buildAnnotatedString {
@@ -825,15 +838,17 @@ private fun annotatedMarkdown(inlines: List<MarkdownInline>): AnnotatedString {
                     else -> null
                 },
             )
-            val webUrl = inline.link?.takeIf { url ->
-                webUrlPrefixes.any { prefix -> url.startsWith(prefix, ignoreCase = true) }
-            }
-            if (webUrl != null) {
-                withLink(LinkAnnotation.Url(webUrl)) {
+            when (val target = inline.link?.let(HostFileOpenPolicy::markdownLinkTarget)) {
+                is MarkdownLinkTarget.RemoteWeb -> withLink(LinkAnnotation.Url(target.url)) {
                     withStyle(style) { append(inline.text) }
                 }
-            } else {
-                withStyle(style) { append(inline.text) }
+                is MarkdownLinkTarget.ManagedHostPath -> {
+                    val click = LinkAnnotation.Clickable("host-file") {
+                        onOpenManagedPath?.invoke(target.path)
+                    }
+                    withLink(click) { withStyle(style) { append(inline.text) } }
+                }
+                else -> withStyle(style) { append(inline.text) }
             }
         }
     }
