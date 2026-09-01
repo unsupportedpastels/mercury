@@ -2760,8 +2760,11 @@ class HermesAppTest {
         composeRule.onNodeWithContentDescription("Settings").performClick()
         // Hub shows a concise list of sections, not the full form.
         composeRule.onNodeWithContentDescription("Open Servers settings").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Open Files settings").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Open Default model settings").assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("Open Offline & privacy settings").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Open Offline & privacy settings")
+            .performScrollTo()
+            .assertIsDisplayed()
 
         composeRule.onNodeWithContentDescription("Open Default model settings").performClick()
         composeRule.onNodeWithText("Default model for new chats").assertIsDisplayed()
@@ -2779,8 +2782,31 @@ class HermesAppTest {
 
         composeRule.onNodeWithContentDescription("Settings").performClick()
         composeRule.onNodeWithContentDescription("Open Servers settings").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Open Files settings").assertDoesNotExist()
         composeRule.onNodeWithContentDescription("Open Default model settings").assertDoesNotExist()
         composeRule.onNodeWithContentDescription("Open Account settings").assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("Open Offline & privacy settings").assertDoesNotExist()
+    }
+
+    @Test
+    fun settingsHubPlacesFilesAfterServersAndOpensDisabledPreviewToggle() {
+        val snapshot = connectedSnapshot.copy(authenticationState = AuthenticationState.Authenticated)
+        composeRule.setContent {
+            HermesAndroidTheme { HermesApp(snapshot = snapshot) }
+        }
+
+        composeRule.onNodeWithContentDescription("Settings").performClick()
+        composeRule.onNodeWithContentDescription("Open Files settings").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Open Files settings").performClick()
+        // Do NOT assert onNodeWithText("Files"): the section renders "Files" twice
+        // (TopAppBar `title = section.title` and the Offline-style body header), so
+        // a single-node matcher throws "found 2 nodes". Assert unique copy instead.
+        composeRule.onNodeWithText(
+            "Files the agent puts in chat open in another app on this phone. In-app preview is coming soon.",
+        ).assertIsDisplayed()
+        composeRule.onNodeWithText("How files from chat open on this phone").assertDoesNotExist()
+        composeRule.onNodeWithText("In-app file preview").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("In-app file preview").assertIsNotEnabled()
     }
 
     @Test

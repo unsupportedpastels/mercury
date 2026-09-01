@@ -31,6 +31,9 @@ data object ServerSettingsRoute : NavKey
 data object SettingsServersRoute : NavKey
 
 @Serializable
+data object SettingsFilesRoute : NavKey
+
+@Serializable
 data object SettingsConnectionRoute : NavKey
 
 @Serializable

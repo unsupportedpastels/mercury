@@ -293,6 +293,7 @@ import com.unsupportedpastels.hermesandroid.navigation.RecentSessionsRoute
 import com.unsupportedpastels.hermesandroid.navigation.SessionDetailRoute
 import com.unsupportedpastels.hermesandroid.navigation.ServerSettingsRoute
 import com.unsupportedpastels.hermesandroid.navigation.SettingsServersRoute
+import com.unsupportedpastels.hermesandroid.navigation.SettingsFilesRoute
 import com.unsupportedpastels.hermesandroid.navigation.SettingsConnectionRoute
 import com.unsupportedpastels.hermesandroid.navigation.SettingsModelRoute
 import com.unsupportedpastels.hermesandroid.navigation.SettingsVoiceRoute
@@ -425,6 +426,8 @@ fun HermesApp(
     serverSettingsState: ServerSettingsState = ServerSettingsState.Ready(null),
     transcriptCachingEnabled: Boolean = false,
     onTranscriptCachingChanged: (Boolean) -> Unit = {},
+    inAppFilePreviewEnabled: Boolean = false,
+    onInAppFilePreviewChanged: (Boolean) -> Unit = {},
     onClearOfflineCache: () -> Unit = {},
     onSaveServerOrigin: suspend (ServerOrigin) -> Result<Unit> = { Result.success(Unit) },
     serverCatalog: ServerCatalog = ServerCatalog.empty(),
@@ -734,6 +737,7 @@ fun HermesApp(
         backStack.add(
             when (section) {
                 SettingsSection.Servers -> SettingsServersRoute
+                SettingsSection.Files -> SettingsFilesRoute
                 SettingsSection.Connection -> SettingsConnectionRoute
                 SettingsSection.Model -> SettingsModelRoute
                 SettingsSection.Voice -> SettingsVoiceRoute
@@ -860,6 +864,8 @@ fun HermesApp(
                     onRemoveServer = onRemoveServerOrigin,
                     transcriptCachingEnabled = transcriptCachingEnabled,
                     onTranscriptCachingChanged = onTranscriptCachingChanged,
+                    inAppFilePreviewEnabled = inAppFilePreviewEnabled,
+                    onInAppFilePreviewChanged = onInAppFilePreviewChanged,
                     onClearOfflineCache = onClearOfflineCache,
                     onLoadManagementSettings = onLoadManagementSettings,
                     onSetProfileDefaultModel = onSetProfileDefaultModel,
@@ -1172,6 +1178,9 @@ fun HermesApp(
             }
             entry<SettingsServersRoute>(metadata = ListDetailSceneStrategy.detailPane()) {
                 renderSettingsSection(SettingsSection.Servers)
+            }
+            entry<SettingsFilesRoute>(metadata = ListDetailSceneStrategy.detailPane()) {
+                renderSettingsSection(SettingsSection.Files)
             }
             entry<SettingsConnectionRoute>(metadata = ListDetailSceneStrategy.detailPane()) {
                 renderSettingsSection(SettingsSection.Connection)
@@ -3939,6 +3948,7 @@ private fun MissingProjectScreen() {
  */
 internal enum class SettingsSection(val title: String, val summary: String) {
     Servers("Servers", "Add, switch, or remove Hermes servers"),
+    Files("Files", "How files from chat open on this phone"),
     Connection("Connection & profile", "Version, sign-in, and active profile"),
     Model("Default model", "Model and reasoning for new chats"),
     Voice("Voice", "Dictation and hands-free conversation"),
@@ -3951,6 +3961,7 @@ internal enum class SettingsSection(val title: String, val summary: String) {
 private fun NavKey?.isSettingsRoute(): Boolean = when (this) {
     ServerSettingsRoute,
     SettingsServersRoute,
+    SettingsFilesRoute,
     SettingsConnectionRoute,
     SettingsModelRoute,
     SettingsVoiceRoute,
@@ -3964,7 +3975,7 @@ private fun NavKey?.isSettingsRoute(): Boolean = when (this) {
 /**
  * Settings landing: a compact list of sections instead of one giant scroll.
  * Each row navigates to its own section route; [availableSections] hides rows
- * (Connection/Model/Voice/Offline/Jobs/Account) that require an authenticated
+ * (Connection/Model/Voice/Files/Offline/Jobs/Account) that require an authenticated
  * connection.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -4037,6 +4048,8 @@ internal fun ServerSettingsScreen(
     },
     transcriptCachingEnabled: Boolean = false,
     onTranscriptCachingChanged: (Boolean) -> Unit = {},
+    inAppFilePreviewEnabled: Boolean = false,
+    onInAppFilePreviewChanged: (Boolean) -> Unit = {},
     onClearOfflineCache: () -> Unit = {},
     onLoadManagementSettings: (String) -> Unit = {},
     onSetProfileDefaultModel: suspend (ModelSelection, Boolean) -> ModelSwitchResult = { _, _ ->
@@ -4541,6 +4554,28 @@ internal fun ServerSettingsScreen(
                         ?.takeIf { it.profile == snapshot.selectedProfile }
                     val scopedCurrentModelInfo = snapshot.currentModelInfo
                         ?.takeIf { it.profile == snapshot.selectedProfile }
+                    if (SettingsSection.Files in visibleSections) {
+                        Text("Files", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Files the agent puts in chat open in another app on this phone. In-app preview is coming soon.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("In-app file preview")
+                            Switch(
+                                checked = inAppFilePreviewEnabled,
+                                onCheckedChange = onInAppFilePreviewChanged,
+                                enabled = false,
+                                modifier = Modifier.semantics {
+                                    contentDescription = "In-app file preview"
+                                },
+                            )
+                        }
+                    }
                     if (SettingsSection.Model in visibleSections) {
                         scopedCurrentModelInfo?.let { info ->
                             Text("Current profile model", style = MaterialTheme.typography.titleMedium)

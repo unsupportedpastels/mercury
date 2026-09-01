@@ -16,6 +16,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -26,6 +27,8 @@ import com.unsupportedpastels.hermesandroid.app.ProjectId
 import com.unsupportedpastels.hermesandroid.connection.HermesConnectionViewModel
 import com.unsupportedpastels.hermesandroid.connection.HermesAppForeground
 import com.unsupportedpastels.hermesandroid.connection.HermesWindowFocus
+import com.unsupportedpastels.hermesandroid.files.DataStoreFilesPreferencesRepository
+import com.unsupportedpastels.hermesandroid.files.FilesPreferences
 import com.unsupportedpastels.hermesandroid.voice.ComposerVoiceConversation
 import com.unsupportedpastels.hermesandroid.voice.MessageReadAloud
 import com.unsupportedpastels.hermesandroid.voice.VoiceCapabilities
@@ -57,6 +60,8 @@ import com.unsupportedpastels.hermesandroid.ui.ProjectIconAssignmentsState
 import com.unsupportedpastels.hermesandroid.ui.ProjectIconViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val incomingShare = MutableStateFlow<SharePayload?>(null)
@@ -262,6 +267,16 @@ internal fun HermesAppHost(
     val currentServerOrigin = (serverSettingsState as? ServerSettingsState.Ready)?.activeOrigin
     val currentServerCatalog = (serverSettingsState as? ServerSettingsState.Ready)?.catalog
         ?: com.unsupportedpastels.hermesandroid.connection.ServerCatalog.empty()
+    val filesPreferencesContext = LocalContext.current.applicationContext
+    val filesPreferencesRepository = remember(filesPreferencesContext) {
+        DataStoreFilesPreferencesRepository(filesPreferencesContext)
+    }
+    val filesPreferencesFlow = remember(filesPreferencesRepository, currentServerOrigin) {
+        currentServerOrigin?.let(filesPreferencesRepository::preferences)
+            ?: flowOf(FilesPreferences())
+    }
+    val filesPreferences by filesPreferencesFlow.collectAsStateWithLifecycle(FilesPreferences())
+    val filesPreferencesScope = rememberCoroutineScope()
     val projectIcons = (projectIconAssignments as? ProjectIconAssignmentsState.Ready)
         ?.assignments
         .orEmpty()
@@ -365,6 +380,15 @@ internal fun HermesAppHost(
         serverCatalog = currentServerCatalog,
         transcriptCachingEnabled = transcriptCachingEnabled,
         onTranscriptCachingChanged = onTranscriptCachingChanged,
+        inAppFilePreviewEnabled = filesPreferences.inAppFilePreviewEnabled,
+        onInAppFilePreviewChanged = { enabled ->
+            val origin = currentServerOrigin
+            if (origin != null) {
+                filesPreferencesScope.launch {
+                    filesPreferencesRepository.setInAppFilePreviewEnabled(origin, enabled)
+                }
+            }
+        },
         onClearOfflineCache = onClearOfflineCache,
         onSaveServerOrigin = { origin -> viewModel.save(origin).await() },
         onSaveServerEntry = { entry -> viewModel.save(entry).await() },
