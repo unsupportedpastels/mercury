@@ -291,6 +291,7 @@ import com.unsupportedpastels.hermesandroid.files.HostFileListing
 import com.unsupportedpastels.hermesandroid.files.HostFileOpenEvent
 import com.unsupportedpastels.hermesandroid.files.HostFileOpenPolicy
 import com.unsupportedpastels.hermesandroid.files.HostFileOpenUiState
+import com.unsupportedpastels.hermesandroid.files.HostFileRowAction
 import com.unsupportedpastels.hermesandroid.navigation.HomeRoute
 import com.unsupportedpastels.hermesandroid.navigation.ProjectRoute
 import com.unsupportedpastels.hermesandroid.navigation.RecentSessionsRoute
@@ -6100,6 +6101,7 @@ private fun SessionDetailScreen(
         HostFileBrowserSheet(
             onDismiss = { showHostFiles = false },
             onLoad = onLoadHostFiles,
+            onLoadManagedFile = onLoadManagedFile,
             onAttach = { reference ->
                 onAttachHostReference(reference)
                 showHostFiles = false
@@ -6121,13 +6123,16 @@ private fun SessionDetailScreen(
 private fun HostFileBrowserSheet(
     onDismiss: () -> Unit,
     onLoad: suspend (String?) -> Result<HostFileListing>,
+    onLoadManagedFile: suspend (String) -> Result<HostFileContent>,
     onAttach: (String) -> Unit,
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var listing by remember { mutableStateOf<HostFileListing?>(null) }
     var filter by rememberSaveable { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var openStates by remember { mutableStateOf<Map<String, HostFileOpenUiState>>(emptyMap()) }
 
     fun load(path: String?) {
         scope.launch {
@@ -6141,6 +6146,23 @@ private fun HostFileBrowserSheet(
                 },
             )
             loading = false
+        }
+    }
+
+    fun openPath(path: String, displayName: String) {
+        scope.launch {
+            val requested = HostFileOpenPolicy.reduce(
+                openStates[path] ?: HostFileOpenUiState.Idle,
+                HostFileOpenEvent.Requested,
+            )
+            openStates = openStates + (path to requested)
+            val event = openManagedHostFile(
+                context = context,
+                source = path,
+                displayName = displayName,
+                load = onLoadManagedFile,
+            )
+            openStates = openStates + (path to HostFileOpenPolicy.reduce(requested, event))
         }
     }
 
@@ -6197,17 +6219,32 @@ private fun HostFileBrowserSheet(
                     ListItem(
                         headlineContent = { Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         supportingContent = {
-                            Text(
-                                if (entry.isDirectory) "Folder" else entry.mimeType ?: "File",
-                                maxLines = 1,
-                            )
+                            val openState = openStates[entry.path]
+                            when (openState) {
+                                HostFileOpenUiState.Opening -> Text(HostFileOpenPolicy.OPENING_LABEL)
+                                is HostFileOpenUiState.Failed -> Text(
+                                    openState.message,
+                                    color = MaterialTheme.colorScheme.error,
+                                    maxLines = 2,
+                                )
+                                else -> Text(
+                                    if (entry.isDirectory) "Folder" else entry.mimeType ?: "File",
+                                    maxLines = 1,
+                                )
+                            }
                         },
                         trailingContent = {
                             TextButton(onClick = { onAttach(entry.reference) }) { Text("Attach") }
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable(enabled = entry.isDirectory && !loading) { load(entry.path) }
+                            .clickable(enabled = !loading) {
+                                when (val action = HostFileOpenPolicy.hostFileRowAction(entry)) {
+                                    HostFileRowAction.DrillFolder -> load(entry.path)
+                                    is HostFileRowAction.OpenFile -> openPath(action.path, entry.name)
+                                    HostFileRowAction.Ignore -> Unit
+                                }
+                            }
                             .semantics {
                                 contentDescription = if (entry.isDirectory) {
                                     "Open host folder ${entry.name}"
