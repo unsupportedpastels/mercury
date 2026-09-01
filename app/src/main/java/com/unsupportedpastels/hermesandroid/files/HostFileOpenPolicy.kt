@@ -35,10 +35,16 @@ sealed interface HostFileOpenEvent {
     data class Failed(val message: String) : HostFileOpenEvent
 }
 
+sealed interface HostFileLaunchFailure {
+    data object NoHandler : HostFileLaunchFailure
+    data class Other(val message: String?) : HostFileLaunchFailure
+}
+
 object HostFileOpenPolicy {
     const val OPENING_LABEL = "Opening…"
     const val NO_HANDLER_MESSAGE = "No app on this phone can open this file"
     const val OPEN_FAILED_MESSAGE = "Could not open file"
+    const val DOWNLOAD_FAILED_MESSAGE = "Could not download file"
 
     fun markdownLinkTarget(href: String): MarkdownLinkTarget {
         val trimmed = href.trim()
@@ -83,4 +89,16 @@ object HostFileOpenPolicy {
             event.message.take(160).takeIf { it.isNotBlank() } ?: OPEN_FAILED_MESSAGE,
         )
     }
+
+    fun eventForLaunchFailure(failure: HostFileLaunchFailure): HostFileOpenEvent = when (failure) {
+        HostFileLaunchFailure.NoHandler -> HostFileOpenEvent.NoAppHandler
+        is HostFileLaunchFailure.Other -> HostFileOpenEvent.Failed(
+            failure.message?.take(160)?.takeIf { it.isNotBlank() } ?: OPEN_FAILED_MESSAGE,
+        )
+    }
+
+    fun eventForDownloadFailure(message: String?): HostFileOpenEvent =
+        HostFileOpenEvent.Failed(
+            message?.take(160)?.takeIf { it.isNotBlank() } ?: DOWNLOAD_FAILED_MESSAGE,
+        )
 }

@@ -106,4 +106,28 @@ class HostFileOpenPolicyTest {
         )
         assertEquals(HostFileOpenUiState.Failed("Could not download file"), failed)
     }
+
+    @Test
+    fun activityNotFoundBecomesNoAppHandler() {
+        assertEquals(
+            HostFileOpenEvent.NoAppHandler,
+            HostFileOpenPolicy.eventForLaunchFailure(HostFileLaunchFailure.NoHandler),
+        )
+    }
+
+    @Test
+    fun otherLaunchFailureUsesBoundedOpenFailedMessage() {
+        assertEquals(
+            HostFileOpenEvent.Failed(HostFileOpenPolicy.OPEN_FAILED_MESSAGE),
+            HostFileOpenPolicy.eventForLaunchFailure(HostFileLaunchFailure.Other(null)),
+        )
+        assertEquals(
+            HostFileOpenEvent.Failed(HostFileOpenPolicy.OPEN_FAILED_MESSAGE),
+            HostFileOpenPolicy.eventForLaunchFailure(HostFileLaunchFailure.Other("   ")),
+        )
+        assertEquals(
+            HostFileOpenEvent.Failed("disk full"),
+            HostFileOpenPolicy.eventForLaunchFailure(HostFileLaunchFailure.Other("disk full")),
+        )
+    }
 }

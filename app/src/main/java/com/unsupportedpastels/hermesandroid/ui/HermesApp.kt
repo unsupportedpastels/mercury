@@ -286,7 +286,10 @@ import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
 import com.unsupportedpastels.hermesandroid.gateway.SlashCompletionItem
 import com.unsupportedpastels.hermesandroid.gateway.ValidReasoningEfforts
 import com.unsupportedpastels.hermesandroid.files.HostFileContent
+import com.unsupportedpastels.hermesandroid.files.HostFileLaunchFailure
 import com.unsupportedpastels.hermesandroid.files.HostFileListing
+import com.unsupportedpastels.hermesandroid.files.HostFileOpenEvent
+import com.unsupportedpastels.hermesandroid.files.HostFileOpenPolicy
 import com.unsupportedpastels.hermesandroid.navigation.HomeRoute
 import com.unsupportedpastels.hermesandroid.navigation.ProjectRoute
 import com.unsupportedpastels.hermesandroid.navigation.RecentSessionsRoute
@@ -6526,6 +6529,46 @@ private fun ZoomedArtifactDialog(
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
+}
+
+internal suspend fun openManagedHostFile(
+    context: Context,
+    source: String,
+    displayName: String,
+    load: suspend (String) -> Result<HostFileContent>,
+    startActivity: (Intent) -> Unit = context::startActivity,
+): HostFileOpenEvent {
+    val loaded = load(source)
+    val content = loaded.getOrElse { failure ->
+        return HostFileOpenPolicy.eventForDownloadFailure(failure.message)
+    }
+    return try {
+        val artifact = Artifact(
+            stableIdentity = source,
+            type = ArtifactType.File,
+            origin = ArtifactOrigin.ManagedPath,
+            source = source,
+            displayName = displayName,
+        )
+        val sharedFile = withContext(Dispatchers.IO) {
+            writeSharedArtifact(context, artifact, content.bytes)
+        }
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.files",
+            sharedFile,
+        )
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, content.mimeType)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(intent)
+        HostFileOpenEvent.LaunchSucceeded
+    } catch (error: android.content.ActivityNotFoundException) {
+        HostFileOpenPolicy.eventForLaunchFailure(HostFileLaunchFailure.NoHandler)
+    } catch (error: Throwable) {
+        HostFileOpenPolicy.eventForLaunchFailure(HostFileLaunchFailure.Other(error.message))
+    }
 }
 
 private fun writeSharedArtifact(context: Context, artifact: Artifact, bytes: ByteArray): File {
