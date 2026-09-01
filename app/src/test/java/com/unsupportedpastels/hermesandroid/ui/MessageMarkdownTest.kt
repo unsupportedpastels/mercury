@@ -60,6 +60,30 @@ class MessageMarkdownTest {
     }
 
     @Test
+    fun parsesNonPictureHostMediaDirectiveAsFileChipInsteadOfRawText() {
+        val path = "/home/mark/out/report.pdf"
+        val blocks = parseMessageMarkdown("Result:\n\nMEDIA:$path\n\nDone")
+        val chip = blocks.filterIsInstance<MarkdownFileChipBlock>().single()
+        assertEquals(path, chip.source)
+        assertEquals("report.pdf", chip.displayName)
+        assertFalse(blocks.filterIsInstance<MarkdownTextBlock>().any { it.plainText.contains("MEDIA:") })
+        assertTrue(blocks.filterIsInstance<MarkdownImageBlock>().isEmpty())
+    }
+
+    @Test
+    fun keepsPictureMediaDirectiveAsImageAndMermaidFenceAsCopyableCode() {
+        val imagePath = "/home/mark/project/design/generated-mockup.jpg"
+        val blocks = parseMessageMarkdown(
+            "Result:\n\nMEDIA:$imagePath\n\n```mermaid\nflowchart LR\nA-->B\n```\n",
+        )
+        assertEquals(imagePath, blocks.filterIsInstance<MarkdownImageBlock>().single().url)
+        val code = blocks.filterIsInstance<MarkdownCodeBlock>().single()
+        assertEquals("mermaid", code.language)
+        assertTrue(code.code.contains("flowchart LR"))
+        assertTrue(blocks.filterIsInstance<MarkdownFileChipBlock>().isEmpty())
+    }
+
+    @Test
     fun compactsEmbeddedImagePayloadAndHidesServerAttachmentPath() {
         val source = buildString {
             appendLine("before")

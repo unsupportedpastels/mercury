@@ -45,6 +45,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
+import com.unsupportedpastels.hermesandroid.files.HostFileOpenPolicy
+import com.unsupportedpastels.hermesandroid.files.MediaLineKind
 
 internal sealed interface MarkdownBlock
 
@@ -82,6 +84,11 @@ internal data class MarkdownCodeBlock(
 
 internal data class MarkdownImageBlock(
     val url: String,
+) : MarkdownBlock
+
+internal data class MarkdownFileChipBlock(
+    val source: String,
+    val displayName: String,
 ) : MarkdownBlock
 
 internal enum class MarkdownTableAlignment {
@@ -305,12 +312,20 @@ internal fun parseMessageMarkdown(source: String): List<MarkdownBlock> {
         val trimmedStart = line.trimStart()
         val media = mediaDirectivePattern.matchEntire(trimmedStart)
         if (media != null) {
-            val source = media.groupValues[1]
-            if (validateRemoteMediaUrl(source) || validateGatewayMediaPath(source)) {
-                flushParagraph()
-                blocks += MarkdownImageBlock(source)
-                index += 1
-                continue
+            when (val kind = HostFileOpenPolicy.mediaLineKind(media.groupValues[1])) {
+                is MediaLineKind.InAppImage -> {
+                    flushParagraph()
+                    blocks += MarkdownImageBlock(kind.source)
+                    index += 1
+                    continue
+                }
+                is MediaLineKind.FileChip -> {
+                    flushParagraph()
+                    blocks += MarkdownFileChipBlock(kind.source, kind.displayName)
+                    index += 1
+                    continue
+                }
+                MediaLineKind.Ignore -> Unit
             }
         }
         if (trimmedStart.startsWith("```")) {
@@ -575,6 +590,7 @@ internal fun MarkdownMessage(
                             source = block.url,
                             loadManagedImage = loadManagedImage,
                         )
+                        is MarkdownFileChipBlock -> Text(block.displayName)
                         is MarkdownTableBlock -> MarkdownTable(block)
                     }
                 }
