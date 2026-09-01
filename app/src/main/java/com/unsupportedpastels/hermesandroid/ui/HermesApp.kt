@@ -290,6 +290,7 @@ import com.unsupportedpastels.hermesandroid.files.HostFileLaunchFailure
 import com.unsupportedpastels.hermesandroid.files.HostFileListing
 import com.unsupportedpastels.hermesandroid.files.HostFileOpenEvent
 import com.unsupportedpastels.hermesandroid.files.HostFileOpenPolicy
+import com.unsupportedpastels.hermesandroid.files.HostFileOpenUiState
 import com.unsupportedpastels.hermesandroid.navigation.HomeRoute
 import com.unsupportedpastels.hermesandroid.navigation.ProjectRoute
 import com.unsupportedpastels.hermesandroid.navigation.RecentSessionsRoute
@@ -6242,6 +6243,7 @@ private fun ArtifactBrowserSheet(
     var query by rememberSaveable { mutableStateOf("") }
     var selectedType by rememberSaveable { mutableStateOf<ArtifactType?>(null) }
     var zoomedImage by remember { mutableStateOf<Artifact?>(null) }
+    var openStates by remember { mutableStateOf<Map<String, HostFileOpenUiState>>(emptyMap()) }
     val filteredArtifacts = artifacts.filter { artifact ->
         (selectedType == null || artifact.type == selectedType) &&
             (query.isBlank() ||
@@ -6279,6 +6281,25 @@ private fun ArtifactBrowserSheet(
                 onFailure = { failure ->
                     error = failure.message?.take(160) ?: "Could not download artifact"
                 },
+            )
+        }
+    }
+
+    fun openManaged(artifact: Artifact) {
+        scope.launch {
+            val requested = HostFileOpenPolicy.reduce(
+                openStates[artifact.stableIdentity] ?: HostFileOpenUiState.Idle,
+                HostFileOpenEvent.Requested,
+            )
+            openStates = openStates + (artifact.stableIdentity to requested)
+            val event = openManagedHostFile(
+                context = context,
+                source = artifact.source,
+                displayName = artifact.displayName,
+                load = onLoadManagedFile,
+            )
+            openStates = openStates + (
+                artifact.stableIdentity to HostFileOpenPolicy.reduce(requested, event)
             )
         }
     }
@@ -6402,15 +6423,38 @@ private fun ArtifactBrowserSheet(
                                 },
                             )
                             if (artifact.origin == ArtifactOrigin.ManagedPath) {
+                                val openState = openStates[artifact.stableIdentity]
+                                    ?: HostFileOpenUiState.Idle
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.End,
                                 ) {
+                                    if (HostFileOpenPolicy.artifactOpenAvailable(artifact.origin)) {
+                                        TextButton(
+                                            enabled = openState !is HostFileOpenUiState.Opening,
+                                            onClick = { openManaged(artifact) },
+                                        ) {
+                                            Text(
+                                                if (openState is HostFileOpenUiState.Opening) {
+                                                    HostFileOpenPolicy.OPENING_LABEL
+                                                } else {
+                                                    "Open"
+                                                },
+                                            )
+                                        }
+                                    }
                                     TextButton(onClick = { shareManaged(artifact) }) { Text("Share") }
                                     TextButton(onClick = {
                                         pendingSave = artifact
                                         saveLauncher.launch(artifact.displayName)
                                     }) { Text("Save") }
+                                }
+                                if (openState is HostFileOpenUiState.Failed) {
+                                    Text(
+                                        openState.message,
+                                        color = MaterialTheme.colorScheme.error,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
                                 }
                             }
                             if (
