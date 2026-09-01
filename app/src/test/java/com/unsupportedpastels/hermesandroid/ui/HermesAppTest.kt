@@ -331,7 +331,9 @@ class HermesAppTest {
         composeRule.onNodeWithText("voice.mp3").assertIsDisplayed()
         composeRule.onNodeWithText("Play").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Filter artifacts: Image").performClick()
-        composeRule.onNodeWithContentDescription("Zoom image preview.png").performClick()
+        composeRule.onNodeWithContentDescription("Zoom image preview.png")
+            .performScrollTo()
+            .performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("Close").assertExists()
     }
