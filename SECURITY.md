@@ -25,7 +25,7 @@ Transcript tails are **disabled by default**. A user may explicitly opt in from 
 
 The cache never stores access or refresh tokens, WebSocket tickets, transient runtime IDs, secret or sudo input, attachments, or connection strings. Corrupt or tampered cache rows are ignored and removed without exposing their contents. Transcript tails associated with an origin are cleared on logout or origin removal; explicit cache clearing removes all rows, and deleting a server session removes its local row. Android Auto Backup remains disabled.
 
-Managed artifact downloads remain bounded by the client transport. Explicit sharing writes only the selected artifact to app-private cache and grants read access through a non-exported `FileProvider` content URI. HAM does not execute or render HTML/SVG artifacts in a WebView.
+Managed artifact downloads remain bounded by the client transport. Explicit sharing and opening write only the selected artifact to app-private cache and grant read access through a non-exported `FileProvider` content URI. HAM does not execute or render HTML/SVG artifacts in a WebView.
 
 ## Voice
 
