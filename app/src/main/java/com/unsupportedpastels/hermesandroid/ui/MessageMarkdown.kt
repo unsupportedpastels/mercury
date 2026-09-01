@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -24,7 +25,9 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -45,9 +48,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
+import com.unsupportedpastels.hermesandroid.files.HostFileOpenEvent
 import com.unsupportedpastels.hermesandroid.files.HostFileOpenPolicy
+import com.unsupportedpastels.hermesandroid.files.HostFileOpenUiState
 import com.unsupportedpastels.hermesandroid.files.MarkdownLinkTarget
 import com.unsupportedpastels.hermesandroid.files.MediaLineKind
+import kotlinx.coroutines.launch
 
 internal sealed interface MarkdownBlock
 
@@ -564,6 +570,7 @@ internal fun MarkdownMessage(
     modifier: Modifier = Modifier,
     loadManagedImage: (suspend (String) -> ByteArray)? = null,
     onOpenManagedPath: ((String) -> Unit)? = null,
+    onOpenManagedFile: (suspend (String) -> HostFileOpenEvent)? = null,
 ) {
     val displayText = remember(text) { compactEmbeddedPayloads(text) }
     var requestedCharacters by rememberSaveable(displayText) {
@@ -574,6 +581,25 @@ internal fun MarkdownMessage(
     }
     val visibleText = remember(displayText, visibleEnd) { displayText.substring(0, visibleEnd) }
     val blocks = remember(visibleText) { parseMessageMarkdown(visibleText) }
+    val scope = rememberCoroutineScope()
+    var openStates by remember { mutableStateOf<Map<String, HostFileOpenUiState>>(emptyMap()) }
+    val chipSources = remember(blocks) {
+        blocks.filterIsInstance<MarkdownFileChipBlock>().map { it.source }.toSet()
+    }
+    val openPath: (String) -> Unit = { path ->
+        onOpenManagedPath?.invoke(path)
+        if (onOpenManagedFile != null) {
+            scope.launch {
+                val requested = HostFileOpenPolicy.reduce(
+                    openStates[path] ?: HostFileOpenUiState.Idle,
+                    HostFileOpenEvent.Requested,
+                )
+                openStates = openStates + (path to requested)
+                val next = HostFileOpenPolicy.reduce(requested, onOpenManagedFile(path))
+                openStates = openStates + (path to next)
+            }
+        }
+    }
 
     Column(
         modifier = modifier,
@@ -586,14 +612,27 @@ internal fun MarkdownMessage(
             ) {
                 blocks.forEach { block ->
                     when (block) {
-                        is MarkdownTextBlock -> MarkdownText(block, onOpenManagedPath)
+                        is MarkdownTextBlock -> MarkdownText(block, openPath)
                         is MarkdownCodeBlock -> MarkdownCode(block)
                         is MarkdownImageBlock -> RemoteMediaImage(
                             source = block.url,
                             loadManagedImage = loadManagedImage,
                         )
-                        is MarkdownFileChipBlock -> Text(block.displayName)
-                        is MarkdownTableBlock -> MarkdownTable(block, onOpenManagedPath)
+                        is MarkdownFileChipBlock -> MarkdownFileChip(
+                            displayName = block.displayName,
+                            state = openStates[block.source] ?: HostFileOpenUiState.Idle,
+                            onClick = { openPath(block.source) },
+                        )
+                        is MarkdownTableBlock -> MarkdownTable(block, openPath)
+                    }
+                }
+                openStates.forEach { (path, state) ->
+                    if (path !in chipSources && state is HostFileOpenUiState.Failed) {
+                        Text(
+                            state.message,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                 }
             }
@@ -609,6 +648,33 @@ internal fun MarkdownMessage(
             ) {
                 Text("Show more")
             }
+        }
+    }
+}
+
+@Composable
+internal fun MarkdownFileChip(
+    displayName: String,
+    state: HostFileOpenUiState,
+    onClick: () -> Unit,
+) {
+    val label = if (state is HostFileOpenUiState.Opening) {
+        HostFileOpenPolicy.OPENING_LABEL
+    } else {
+        displayName
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        AssistChip(
+            onClick = onClick,
+            enabled = state !is HostFileOpenUiState.Opening,
+            label = { Text(label) },
+        )
+        if (state is HostFileOpenUiState.Failed) {
+            Text(
+                state.message,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }

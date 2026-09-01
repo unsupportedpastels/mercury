@@ -5137,6 +5137,14 @@ private fun SessionDetailScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val transcriptScope = rememberCoroutineScope()
+    val openChatHostFile: suspend (String) -> HostFileOpenEvent = { path ->
+        openManagedHostFile(
+            context = context,
+            source = path,
+            displayName = HostFileOpenPolicy.displayName(path),
+            load = onLoadManagedFile,
+        )
+    }
     val readAloudSession = rememberReadAloudSession(readAloud, session.id.value)
     var showSessionInsights by remember(session.id) { mutableStateOf(false) }
     var showHostFiles by remember(session.id) { mutableStateOf(false) }
@@ -5388,6 +5396,7 @@ private fun SessionDetailScreen(
                                     loadManagedImage = { path ->
                                         onLoadManagedImage(path).getOrThrow()
                                     },
+                                    onOpenManagedFile = openChatHostFile,
                                 )
                                 return@items
                             }
@@ -5426,6 +5435,7 @@ private fun SessionDetailScreen(
                                             loadManagedImage = { path ->
                                                 onLoadManagedImage(path).getOrThrow()
                                             },
+                                            onOpenManagedFile = openChatHostFile,
                                         )
                                     }
                                     message.role == ChatMessageRole.User -> {
@@ -5455,6 +5465,7 @@ private fun SessionDetailScreen(
                                                     loadManagedImage = { path ->
                                                         onLoadManagedImage(path).getOrThrow()
                                                     },
+                                                    onOpenManagedFile = openChatHostFile,
                                                 )
                                             }
                                         }
@@ -5474,6 +5485,7 @@ private fun SessionDetailScreen(
                                                 loadManagedImage = { path ->
                                                     onLoadManagedImage(path).getOrThrow()
                                                 },
+                                                onOpenManagedFile = openChatHostFile,
                                             )
                                         }
                                         val streamingTail = renderedText.substring(stableLength)
@@ -5491,6 +5503,7 @@ private fun SessionDetailScreen(
                                             loadManagedImage = { path ->
                                                 onLoadManagedImage(path).getOrThrow()
                                             },
+                                            onOpenManagedFile = openChatHostFile,
                                         )
                                     }
                                 }
@@ -7426,6 +7439,7 @@ private fun ToolMessageBlock(
     expanded: Boolean,
     onToggle: () -> Unit,
     loadManagedImage: (suspend (String) -> ByteArray)? = null,
+    onOpenManagedFile: (suspend (String) -> HostFileOpenEvent)? = null,
 ) {
     val preview = remember(text) {
         text.replace('\n', ' ').trim().take(80)
@@ -7481,6 +7495,7 @@ private fun ToolMessageBlock(
                 MarkdownMessage(
                     text,
                     loadManagedImage = loadManagedImage,
+                    onOpenManagedFile = onOpenManagedFile,
                 )
             }
         }
@@ -7500,6 +7515,7 @@ private fun TranscriptToolRunGroup(
     onToggle: () -> Unit,
     sessionKey: String,
     loadManagedImage: (suspend (String) -> ByteArray)? = null,
+    onOpenManagedFile: (suspend (String) -> HostFileOpenEvent)? = null,
 ) {
     val semanticColors = LocalHermesSemanticColors.current
     val noun = if (tools.size == 1) "action" else "actions"
@@ -7559,6 +7575,7 @@ private fun TranscriptToolRunGroup(
                             expanded = showToolMessage,
                             onToggle = { showToolMessage = !showToolMessage },
                             loadManagedImage = loadManagedImage,
+                            onOpenManagedFile = onOpenManagedFile,
                         )
                     }
                 }
