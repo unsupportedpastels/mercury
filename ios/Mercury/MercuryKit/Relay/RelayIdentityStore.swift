@@ -1,4 +1,5 @@
 import Foundation
+import MercuryCore
 import Security
 
 /// Bounds for locally paired Mercury Relay targets. Relay records live in
@@ -7,10 +8,10 @@ import Security
 /// server catalog, so removing or renaming either side can never touch the
 /// other's material.
 enum RelayTargetPolicy {
-    static let maxTargets = 8
-    static let maxLabelCharacters = 80
-    static let maxPersistedBytes = 64 * 1024
-    static let persistedVersion = 1
+    static let maxTargets = Int(MercuryCore.RelayTargetCodec.shared.maxTargets)
+    static let maxLabelCharacters = Int(MercuryCore.RelayTargetCodec.shared.maxLabelCharacters)
+    static let maxPersistedBytes = Int(MercuryCore.RelayTargetCodec.shared.maxPersistedBytes)
+    static let persistedVersion = Int(MercuryCore.RelayTargetCodec.shared.persistedVersion)
 }
 
 enum RelayTargetStoreError: Error, Equatable {
@@ -44,6 +45,35 @@ struct RelayPairedTarget: Identifiable, Equatable, Sendable {
     var status: RelayTargetStatus
     let createdAtEpochSeconds: Int64
     var lastUsedEpochSeconds: Int64?
+    let relayRoutingToken: String?
+
+    init(
+        id: UUID,
+        label: String,
+        relayOrigin: String,
+        installationID: Data,
+        hostPublicKey: Data,
+        deviceID: String,
+        deviceStaticPrivateKey: Data,
+        fingerprint: String,
+        status: RelayTargetStatus,
+        createdAtEpochSeconds: Int64,
+        lastUsedEpochSeconds: Int64?,
+        relayRoutingToken: String? = nil
+    ) {
+        self.id = id
+        self.label = label
+        self.relayOrigin = relayOrigin
+        self.installationID = installationID
+        self.hostPublicKey = hostPublicKey
+        self.deviceID = deviceID
+        self.deviceStaticPrivateKey = deviceStaticPrivateKey
+        self.fingerprint = fingerprint
+        self.status = status
+        self.createdAtEpochSeconds = createdAtEpochSeconds
+        self.lastUsedEpochSeconds = lastUsedEpochSeconds
+        self.relayRoutingToken = relayRoutingToken
+    }
 
     var displayLabel: String {
         if !label.isEmpty { return label }
@@ -124,19 +154,15 @@ actor RelayTargetStore {
             loaded = []
             return []
         }
-        guard data.count <= RelayTargetPolicy.maxPersistedBytes,
-              let persisted = try? JSONDecoder().decode(PersistedRelayTargets.self, from: data),
-              persisted.version == RelayTargetPolicy.persistedVersion
-        else { throw RelayTargetStoreError.corruptState }
-        var targets: [RelayPairedTarget] = []
-        var seenIDs = Set<UUID>()
-        for row in persisted.targets {
-            guard let target = row.validated(), seenIDs.insert(target.id).inserted else {
-                throw RelayTargetStoreError.corruptState
-            }
-            targets.append(target)
+        guard data.count <= RelayTargetPolicy.maxPersistedBytes else {
+            throw RelayTargetStoreError.corruptState
         }
-        guard targets.count <= RelayTargetPolicy.maxTargets else {
+        let targets: [RelayPairedTarget]
+        do {
+            targets = try MercuryCore.RelayTargetCodec.shared
+                .decode(data: data.relayKotlinBytes)
+                .map(RelayPairedTarget.init(core:))
+        } catch {
             throw RelayTargetStoreError.corruptState
         }
         loaded = targets
@@ -213,11 +239,14 @@ actor RelayTargetStore {
     }
 
     private func persist(_ targets: [RelayPairedTarget]) throws {
-        let payload = PersistedRelayTargets(
-            version: RelayTargetPolicy.persistedVersion,
-            targets: targets.map(PersistedRelayTargets.Row.init)
-        )
-        let data = try JSONEncoder().encode(payload)
+        let data: Data
+        do {
+            data = try MercuryCore.RelayTargetCodec.shared
+                .encode(targets: targets.map(\.coreTarget))
+                .relayData
+        } catch {
+            throw RelayTargetStoreError.persistenceFailed
+        }
         guard data.count <= RelayTargetPolicy.maxPersistedBytes else {
             throw RelayTargetStoreError.persistenceFailed
         }
@@ -226,65 +255,41 @@ actor RelayTargetStore {
     }
 }
 
-private struct PersistedRelayTargets: Codable {
-    struct Row: Codable {
-        let id: String
-        let label: String
-        let relayOrigin: String
-        let installationID: Data
-        let hostPublicKey: Data
-        let deviceID: String
-        let deviceStaticPrivateKey: Data
-        let fingerprint: String
-        let status: String
-        let createdAtEpochSeconds: Int64
-        let lastUsedEpochSeconds: Int64?
-
-        init(_ target: RelayPairedTarget) {
-            id = target.id.uuidString
-            label = target.label
-            relayOrigin = target.relayOrigin
-            installationID = target.installationID
-            hostPublicKey = target.hostPublicKey
-            deviceID = target.deviceID
-            deviceStaticPrivateKey = target.deviceStaticPrivateKey
-            fingerprint = target.fingerprint
-            status = target.status.rawValue
-            createdAtEpochSeconds = target.createdAtEpochSeconds
-            lastUsedEpochSeconds = target.lastUsedEpochSeconds
-        }
-
-        func validated() -> RelayPairedTarget? {
-            guard let uuid = UUID(uuidString: id),
-                  let parsedStatus = RelayTargetStatus(rawValue: status),
-                  label.count <= RelayTargetPolicy.maxLabelCharacters,
-                  RelayPairingPayload.normalizeOrigin(relayOrigin) != nil,
-                  installationID.count == RelayProtocolPolicy.installationIDBytes,
-                  hostPublicKey.count == RelayProtocolPolicy.hostPublicKeyBytes,
-                  deviceStaticPrivateKey.count == RelaySecureChannelPolicy.keyBytes,
-                  RelayBase64.urlSafeDecodeExact(
-                      deviceID, count: RelayProtocolPolicy.deviceIDBytes
-                  ) != nil,
-                  fingerprint.count == RelayProtocolPolicy.fingerprintHexCharacters,
-                  createdAtEpochSeconds >= 0,
-                  lastUsedEpochSeconds == nil || lastUsedEpochSeconds! >= 0
-            else { return nil }
-            return RelayPairedTarget(
-                id: uuid,
-                label: label,
-                relayOrigin: relayOrigin,
-                installationID: installationID,
-                hostPublicKey: hostPublicKey,
-                deviceID: deviceID,
-                deviceStaticPrivateKey: deviceStaticPrivateKey,
-                fingerprint: fingerprint,
-                status: parsedStatus,
-                createdAtEpochSeconds: createdAtEpochSeconds,
-                lastUsedEpochSeconds: lastUsedEpochSeconds
-            )
-        }
+private extension RelayPairedTarget {
+    var coreTarget: MercuryCore.RelayPairedTarget {
+        MercuryCore.RelayPairedTarget(
+            id: id.uuidString,
+            label: label,
+            relayOrigin: relayOrigin,
+            installationId: installationID.relayKotlinBytes,
+            hostPublicKey: hostPublicKey.relayKotlinBytes,
+            deviceId: deviceID,
+            deviceStaticPrivateKey: deviceStaticPrivateKey.relayKotlinBytes,
+            fingerprint: fingerprint,
+            status: status == .approved ? .approved : .pending,
+            createdAtEpochSeconds: createdAtEpochSeconds,
+            lastUsedEpochSeconds: lastUsedEpochSeconds.map(KotlinLong.init(value:)),
+            relayRoutingToken: relayRoutingToken
+        )
     }
 
-    let version: Int
-    let targets: [Row]
+    init(core: MercuryCore.RelayPairedTarget) throws {
+        guard let id = UUID(uuidString: core.id) else {
+            throw RelayTargetStoreError.corruptState
+        }
+        self.init(
+            id: id,
+            label: core.label,
+            relayOrigin: core.relayOrigin,
+            installationID: core.installationId.relayData,
+            hostPublicKey: core.hostPublicKey.relayData,
+            deviceID: core.deviceId,
+            deviceStaticPrivateKey: core.deviceStaticPrivateKey.relayData,
+            fingerprint: core.fingerprint,
+            status: core.status == .approved ? .approved : .pending,
+            createdAtEpochSeconds: core.createdAtEpochSeconds,
+            lastUsedEpochSeconds: core.lastUsedEpochSeconds?.int64Value,
+            relayRoutingToken: core.relayRoutingToken
+        )
+    }
 }

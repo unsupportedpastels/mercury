@@ -1,4 +1,5 @@
 import Foundation
+import MercuryCore
 
 // MARK: - Binary socket seams
 
@@ -17,7 +18,7 @@ protocol RelayBinarySocketing: Sendable {
 }
 
 protocol RelayBinarySocketFactorying: Sendable {
-    func connect(url: String) async throws -> any RelayBinarySocketing
+    func connect(url: String, routingToken: String?) async throws -> any RelayBinarySocketing
 }
 
 /// URLSession-backed binary WebSocket toward `wss://<relay>/v1/device/…`.
@@ -28,12 +29,20 @@ final class URLSessionRelaySocketFactory: RelayBinarySocketFactorying, @unchecke
         self.session = session
     }
 
-    func connect(url: String) async throws -> any RelayBinarySocketing {
+    func connect(url: String, routingToken: String?) async throws -> any RelayBinarySocketing {
         guard let socketURL = URL(string: url),
               socketURL.scheme?.lowercased() == "wss",
               socketURL.host != nil
         else { throw RelayConnectionError.offline }
-        let task = session.webSocketTask(with: socketURL)
+        var request = URLRequest(url: socketURL)
+        if let routingToken {
+            guard !routingToken.isEmpty,
+                  routingToken.count <= Int(MercuryCore.RelayProtocolPolicy.shared.maxRoutingTokenCharacters),
+                  routingToken.utf8.allSatisfy({ $0 >= 0x21 && $0 <= 0x7e })
+            else { throw RelayConnectionError.protocolViolation }
+            request.setValue("Bearer \(routingToken)", forHTTPHeaderField: "Authorization")
+        }
+        let task = session.webSocketTask(with: request)
         // The URLSession default (1 MiB) comfortably covers the 65,535-byte
         // Noise record cap; do not shrink it below that.
         task.maximumMessageSize = 1 << 20
@@ -161,7 +170,7 @@ enum RelayConnector {
             relayOrigin: target.relayOrigin,
             installationID: target.installationID
         ) else { throw RelayConnectionError.protocolViolation }
-        let socket = try await socketFactory.connect(url: url)
+        let socket = try await socketFactory.connect(url: url, routingToken: target.relayRoutingToken)
         do {
             let channel = try RelaySecureChannel(
                 initiatorStaticPrivateKey: target.deviceStaticPrivateKey,

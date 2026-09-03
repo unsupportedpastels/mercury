@@ -55,14 +55,16 @@ enum InMemoryRelayTransport {
 
 final class FakeRelaySocketFactory: RelayBinarySocketFactorying, @unchecked Sendable {
     private(set) var requestedURLs: [String] = []
+    private(set) var requestedRoutingTokens: [String?] = []
     private var sockets: [FakeRelaySocket]
 
     init(sockets: [FakeRelaySocket]) {
         self.sockets = sockets
     }
 
-    func connect(url: String) async throws -> any RelayBinarySocketing {
+    func connect(url: String, routingToken: String?) async throws -> any RelayBinarySocketing {
         requestedURLs.append(url)
+        requestedRoutingTokens.append(routingToken)
         guard !sockets.isEmpty else { throw RelayConnectionError.offline }
         return sockets.removeFirst()
     }

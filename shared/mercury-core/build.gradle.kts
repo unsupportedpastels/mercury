@@ -32,8 +32,19 @@ kotlin {
   }
 
   sourceSets {
+    androidMain.dependencies {
+      implementation(libs.cryptography.provider.jdk)
+      implementation(libs.bcprov)
+    }
     commonMain.dependencies {
+      implementation(libs.cryptography.core)
+      implementation(libs.cryptography.random)
       implementation(libs.kotlinx.serialization.json)
+    }
+    if (appleTargetsEnabled) {
+      iosMain.dependencies {
+        implementation(libs.cryptography.provider.cryptokit)
+      }
     }
     commonTest.dependencies {
       implementation(libs.kotlin.test)

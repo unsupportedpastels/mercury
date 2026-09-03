@@ -81,13 +81,17 @@ actor RelayPairingCoordinator {
 
         let socket: any RelayBinarySocketing
         do {
-            socket = try await socketFactory.connect(url: url)
+            socket = try await socketFactory.connect(
+                url: url,
+                routingToken: payload.pairingRoutingToken
+            )
         } catch {
             throw RelayPairingError.offline
         }
 
         let fingerprint: String
         let deviceID: String
+        let relayRoutingToken: String?
         do {
             let channel = try RelaySecureChannel(
                 initiatorStaticPrivateKey: deviceKey,
@@ -109,7 +113,11 @@ actor RelayPairingCoordinator {
             guard let ackCiphertext = try await socket.receive() else {
                 throw RelayPairingError.offerRejected
             }
-            deviceID = try RelayPairingAck.parse(try channel.decrypt(ackCiphertext))
+            let acknowledgement = try RelayPairingAck.parseEnvelope(
+                try channel.decrypt(ackCiphertext)
+            )
+            deviceID = acknowledgement.deviceID
+            relayRoutingToken = acknowledgement.relayRoutingToken
             fingerprint = RelayFingerprint.shortAuthenticationString(
                 channelBinding: try channel.channelBinding
             )
@@ -140,7 +148,8 @@ actor RelayPairingCoordinator {
             fingerprint: fingerprint,
             status: .pending,
             createdAtEpochSeconds: max(0, Int64(now().timeIntervalSince1970)),
-            lastUsedEpochSeconds: nil
+            lastUsedEpochSeconds: nil,
+            relayRoutingToken: relayRoutingToken
         )
         do {
             try await store.add(target)
@@ -167,8 +176,20 @@ actor RelayPairingCoordinator {
             try await chatSocket.sendText(
                 #"{"jsonrpc":"2.0","id":"pairing-probe","method":"gateway.ping","params":{}}"#
             )
-            guard let reply = try await chatSocket.receiveText() else { return false }
-            _ = reply
+            var approved = false
+            for _ in 0..<32 {
+                guard let reply = try await chatSocket.receiveText() else { return false }
+                switch RelayApprovalProbe.evaluateGatewayPing(reply) {
+                case .approved:
+                    approved = true
+                case .rejected:
+                    return false
+                case .ignore:
+                    continue
+                }
+                break
+            }
+            guard approved else { return false }
             try? await store.markApproved(id: target.id)
             return true
         } catch {
