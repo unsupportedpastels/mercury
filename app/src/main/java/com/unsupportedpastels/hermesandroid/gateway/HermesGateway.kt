@@ -111,6 +111,8 @@ data class HermesGatewaySnapshot(
     val connectionState: ConnectionState = ConnectionState.Disconnected,
     val authenticationState: AuthenticationState = AuthenticationState.Unknown,
     val serverVersion: String? = null,
+    val relayTargetId: String? = null,
+    val relayTargetLabel: String? = null,
     val nativeOAuthSupported: Boolean = false,
     val authProviders: List<HermesAuthProvider> = emptyList(),
     val connectionError: String? = null,

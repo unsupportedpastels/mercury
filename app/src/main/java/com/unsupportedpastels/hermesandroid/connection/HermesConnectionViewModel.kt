@@ -23,6 +23,8 @@ import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
 import com.unsupportedpastels.mercury.core.attachment.AttachmentAddResult
 import com.unsupportedpastels.mercury.core.notifications.NotificationTextPolicy
 import com.unsupportedpastels.mercury.core.transcript.InterruptSentinel
+import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
+import com.unsupportedpastels.mercury.core.relay.RelayTargetStatus
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentByteReader
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentPolicy
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentReadException
@@ -44,6 +46,7 @@ import com.unsupportedpastels.hermesandroid.gateway.ChatSessionSnapshot
 import com.unsupportedpastels.hermesandroid.gateway.CacheSource
 import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnector
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnection
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatEvent
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatMethodNotFoundException
@@ -105,14 +108,20 @@ import com.unsupportedpastels.hermesandroid.session.SessionFilterScope
 import com.unsupportedpastels.hermesandroid.session.evaluateBulkDeleteSelection
 import com.unsupportedpastels.hermesandroid.session.SessionListFilter
 import com.unsupportedpastels.hermesandroid.session.toggleBulkSelection
+import com.unsupportedpastels.hermesandroid.relay.TlsRelayBinarySocketFactory
+import com.unsupportedpastels.hermesandroid.relay.RelayConnector
+import com.unsupportedpastels.hermesandroid.relay.RelayHermesChatSocket
 import com.unsupportedpastels.hermesandroid.ui.isSlashCommandContext
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.plugins.websocket.WebSockets
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -130,8 +139,13 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
+import kotlinx.coroutines.cancel
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -143,6 +157,7 @@ private const val MAX_SESSION_TITLE_CHARS = 256
 private const val SLASH_COMPLETION_DEBOUNCE_MS = 60L
 private const val OPERATIONAL_STATUS_POLL_INTERVAL_MILLIS = 60_000L
 private const val RECENT_SESSIONS_PAGE_SIZE = 20
+private const val MAX_RELAY_SESSIONS = 100
 // Consecutive HTTP-503 auth-provider-unavailable connect failures tolerated
 // (with a silent reconnect) before the client stops looping and surfaces a
 // recoverable sign-in prompt. Small enough that the user isn't stuck for long,
@@ -254,6 +269,13 @@ private data class ProjectMetadataSessionRecord(
     val session: HermesChatSession,
 )
 
+private data class RelayProjectSnapshot(
+    val projects: List<ProjectSummary>,
+    val state: ProjectLoadState,
+    val activeProjectId: ProjectId? = null,
+    val scopedSessionIds: Set<DurableSessionId> = emptySet(),
+)
+
 private class ChatRecoveryState(
     val operationGeneration: Long,
     var remaining: Int = MAX_CHAT_RECOVERIES_PER_OPERATION,
@@ -326,6 +348,7 @@ class HermesConnectionViewModel(
     private val refreshClient: NativeRefreshClient? = null,
     private val chatConnector: HermesChatConnector? = null,
     private val projectConnector: HermesChatConnector? = null,
+    private val relaySessionFactory: (suspend (RelayPairedTarget, String) -> HermesChatSession)? = null,
     private val cacheRepository: OfflineCacheRepository? = null,
     private val nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1_000L },
     private val attachmentReader: AttachmentByteReader =
@@ -354,6 +377,7 @@ class HermesConnectionViewModel(
     private var cacheLoadJob: Job? = null
     private var profileGeneration = 0L
     private var activeOrigin: ServerOrigin? = null
+    private var activeRelayTarget: RelayPairedTarget? = null
     private var activeTokens: ActiveTokenRecord? = null
 
     // Serializes token refresh: concurrent callers that all observe an expired access
@@ -498,7 +522,13 @@ class HermesConnectionViewModel(
                 // Label edits and catalog metadata updates must not tear down a live transport when
                 // the active origin is unchanged. Only an actual active-origin transition resets
                 // client state and starts a new connection generation.
-                if (hasAppliedReadySettings && settingsState is ServerSettingsState.Ready && nextOrigin == activeOrigin) {
+                val directOriginUnchanged = settingsState is ServerSettingsState.Ready &&
+                    (
+                        nextOrigin == activeOrigin ||
+                            (activeRelayTarget != null && nextOrigin == lastReadySettings?.activeOrigin)
+                    )
+                if (hasAppliedReadySettings && directOriginUnchanged) {
+                    lastReadySettings = settingsState
                     return@collect
                 }
                 hasAppliedReadySettings = settingsState is ServerSettingsState.Ready
@@ -550,6 +580,7 @@ class HermesConnectionViewModel(
                 serverDurableIds.clear()
                 mutableAttachments.value = emptyMap()
                 activeTokens = null
+                activeRelayTarget = null
                 setSessionFilterScope(null, null)
                 activeOrigin = nextOrigin
                 lastReadySettings = settingsState as? ServerSettingsState.Ready
@@ -599,7 +630,199 @@ class HermesConnectionViewModel(
      * foreground recovery. No-op when there is no configured origin or a connection
      * attempt is already in flight.
      */
-    fun retryConnection(): Job = viewModelScope.launch { reconnectActiveOrigin() }
+    fun retryConnection(): Job {
+        val relayTarget = activeRelayTarget
+        return if (relayTarget != null) {
+            connectRelay(relayTarget, mutableSnapshots.value.selectedProfile)
+        } else {
+            viewModelScope.launch { reconnectActiveOrigin() }
+        }
+    }
+
+    /** Connects through one approved Mercury Relay target without probing its router as Hermes REST. */
+    fun connectRelay(target: RelayPairedTarget, profile: String = "default"): Job {
+        if (target.status != RelayTargetStatus.Approved) return viewModelScope.launch { }
+        val factory = relaySessionFactory ?: return viewModelScope.launch { }
+        val relayOrigin = runCatching { ServerOrigin.parse(target.relayOrigin) }.getOrNull()
+            ?: return viewModelScope.launch { }
+        val boundedProfile = profile.trim().take(64).ifEmpty { "default" }
+        val currentGeneration = ++generation
+        connectionJob?.cancel()
+        cacheLoadJob?.cancel()
+        projectLoadJob?.cancel()
+        nextChatOperationGeneration += 1
+        chatJobs.values.forEach(Job::cancel)
+        chatJobs.clear()
+        chatOperationGenerations.clear()
+        val cleanupJob = viewModelScope.launch {
+            disconnectProjectMetadata()
+            disconnectChat()
+        }
+        activeTokens = null
+        activeRelayTarget = target
+        activeOrigin = relayOrigin
+        profileGeneration += 1
+        mutableSnapshots.value = HermesGatewaySnapshot(
+            connectionState = ConnectionState.Connecting,
+            relayTargetId = target.id,
+            relayTargetLabel = target.displayLabel,
+            selectedProfile = boundedProfile,
+        )
+        return viewModelScope.launch {
+            var session: HermesChatSession? = null
+            try {
+                cleanupJob.join()
+                session = factory(target, boundedProfile)
+                val profiles = try {
+                    session.loadProfiles()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: HermesChatMethodNotFoundException) {
+                    emptyList()
+                }
+                val result = session.relayRequest(
+                    "relay.sessions.list",
+                    buildJsonObject {
+                        put("profile", boundedProfile)
+                        put("limit", 20)
+                        put("offset", 0)
+                    },
+                )
+                val durableSessions = parseRelaySessionRows(result)
+                val projectSnapshot = loadRelayProjects(
+                    session = session,
+                    profile = boundedProfile,
+                    durableSessions = durableSessions,
+                )
+                currentCoroutineContext().ensureActive()
+                if (generation != currentGeneration || activeRelayTarget?.id != target.id) return@launch
+                mutableSnapshots.value = HermesGatewaySnapshot(
+                    connectionState = ConnectionState.Connected,
+                    authenticationState = AuthenticationState.Authenticated,
+                    relayTargetId = target.id,
+                    relayTargetLabel = target.displayLabel,
+                    durableSessions = durableSessions,
+                    projects = projectSnapshot.projects,
+                    projectState = projectSnapshot.state,
+                    activeProjectId = projectSnapshot.activeProjectId,
+                    scopedSessionIds = projectSnapshot.scopedSessionIds,
+                    profiles = (profiles + boundedProfile).distinct(),
+                    selectedProfile = boundedProfile,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (generation != currentGeneration || activeRelayTarget?.id != target.id) return@launch
+                mutableSnapshots.value = HermesGatewaySnapshot(
+                    connectionState = ConnectionState.Disconnected,
+                    authenticationState = AuthenticationState.Unknown,
+                    relayTargetId = target.id,
+                    relayTargetLabel = target.displayLabel,
+                    connectionError = "The relay or host is unreachable. Check that the host is online, then retry.",
+                )
+            } finally {
+                closeChatSessionNonCancellably(session)
+            }
+        }.also { connectionJob = it }
+    }
+
+    fun leaveRelayMode() {
+        if (activeRelayTarget == null) return
+        ++generation
+        activeRelayTarget = null
+        activeOrigin = null
+        connectionJob?.cancel()
+        viewModelScope.launch {
+            disconnectProjectMetadata()
+            disconnectChat()
+        }
+        mutableSnapshots.value = HermesGatewaySnapshot()
+    }
+
+    private fun refreshRelaySessions(target: RelayPairedTarget): Job {
+        if (liveControllers.isNotEmpty()) return viewModelScope.launch { }
+        val expectedGeneration = generation
+        val factory = relaySessionFactory ?: return viewModelScope.launch { }
+        return viewModelScope.launch {
+            var session: HermesChatSession? = null
+            try {
+                session = factory(target, mutableSnapshots.value.selectedProfile)
+                val result = session.relayRequest(
+                    "relay.sessions.list",
+                    buildJsonObject {
+                        put("profile", mutableSnapshots.value.selectedProfile)
+                        put("limit", MAX_RELAY_SESSIONS)
+                        put("offset", 0)
+                    },
+                )
+                val durableSessions = parseRelaySessionRows(result)
+                val projectSnapshot = loadRelayProjects(
+                    session = session,
+                    profile = mutableSnapshots.value.selectedProfile,
+                    durableSessions = durableSessions,
+                )
+                if (generation != expectedGeneration || activeRelayTarget?.id != target.id) return@launch
+                mutableSnapshots.value = mutableSnapshots.value.copy(
+                    connectionState = ConnectionState.Connected,
+                    connectionError = null,
+                    durableSessions = durableSessions,
+                    projects = projectSnapshot.projects,
+                    projectState = projectSnapshot.state,
+                    activeProjectId = projectSnapshot.activeProjectId,
+                    scopedSessionIds = projectSnapshot.scopedSessionIds,
+                    projectSessions = emptyMap(),
+                    projectSessionStates = emptyMap(),
+                    sessionMetadataSource = CacheSource.Live,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (generation != expectedGeneration || activeRelayTarget?.id != target.id) return@launch
+                mutableSnapshots.value = mutableSnapshots.value.copy(
+                    connectionError = "The relay host could not be reached. Pull to retry.",
+                )
+            } finally {
+                closeChatSessionNonCancellably(session)
+            }
+        }
+    }
+
+    private suspend fun loadRelayProjects(
+        session: HermesChatSession,
+        profile: String,
+        durableSessions: List<SessionSummary>,
+    ): RelayProjectSnapshot = try {
+        val tree = session.loadProjectTree(profile = profile)
+        val projects = tree.projects.map { project ->
+            project.copy(
+                previewSessions = project.previewSessions.map { preview ->
+                    reconcileProjectSession(project.id, preview, durableSessions)
+                },
+            )
+        }
+        RelayProjectSnapshot(
+            projects = projects,
+            state = ProjectLoadState.Loaded(
+                projects = projects,
+                activeProjectId = tree.activeProjectId,
+                scopedSessionIds = tree.scopedSessionIds,
+            ),
+            activeProjectId = tree.activeProjectId,
+            scopedSessionIds = tree.scopedSessionIds,
+        )
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: HermesChatMethodNotFoundException) {
+        RelayProjectSnapshot(emptyList(), ProjectLoadState.Unsupported)
+    } catch (error: Exception) {
+        RelayProjectSnapshot(
+            projects = emptyList(),
+            state = ProjectLoadState.TransientError(
+                error.message?.take(160)?.takeIf(String::isNotBlank)
+                    ?: "Could not load project metadata",
+            ),
+        )
+    }
 
     private fun maybeReconnectOnForeground() {
         // Only heal a dropped connection; never disturb a live session, an
@@ -607,7 +830,12 @@ class HermesConnectionViewModel(
         if (mutableSnapshots.value.connectionState != ConnectionState.Disconnected) return
         if (mutableSnapshots.value.authenticationState == AuthenticationState.SignInRequired) return
         if (foregroundReconnectJob?.isActive == true) return
-        foregroundReconnectJob = viewModelScope.launch { reconnectActiveOrigin() }
+        val relayTarget = activeRelayTarget
+        foregroundReconnectJob = if (relayTarget != null) {
+            connectRelay(relayTarget, mutableSnapshots.value.selectedProfile)
+        } else {
+            viewModelScope.launch { reconnectActiveOrigin() }
+        }
     }
 
     private suspend fun reconnectActiveOrigin() {
@@ -1037,6 +1265,11 @@ class HermesConnectionViewModel(
      * capabilities at [VoiceCapabilities.NONE], so the mic stays hidden.
      */
     suspend fun refreshVoiceCapabilities() {
+        if (activeRelayTarget != null) {
+            mutableVoiceCapabilities.value = VoiceCapabilities.NONE
+            mutableVoiceServerConfig.value = VoiceServerConfig.DEFAULT
+            return
+        }
         val probe = runCatching {
             withHermesRestOperation { origin, token ->
                 val profile = mutableSnapshots.value.selectedProfile
@@ -1383,6 +1616,85 @@ class HermesConnectionViewModel(
         val serverOrigin = activeOrigin
         val originGeneration = generation
         val connector = projectConnector
+        val relayTarget = activeRelayTarget
+
+        if (relayTarget != null) {
+            val factory = relaySessionFactory
+            if (serverOrigin == null || factory == null ||
+                !isCurrentProjectLoad(serverOrigin, originGeneration)
+            ) {
+                if (serverOrigin != null && factory == null) {
+                    publishProjectSessionStateIfCurrent(
+                        projectId = projectId,
+                        serverOrigin = serverOrigin,
+                        originGeneration = originGeneration,
+                        requestGeneration = requestGeneration,
+                        projectState = ProjectSessionLoadState.Unsupported,
+                    )
+                }
+                return viewModelScope.launch { }
+            }
+            publishProjectSessionStateIfCurrent(
+                projectId = projectId,
+                serverOrigin = serverOrigin,
+                originGeneration = originGeneration,
+                requestGeneration = requestGeneration,
+                projectState = ProjectSessionLoadState.Loading,
+            )
+            return viewModelScope.launch {
+                var session: HermesChatSession? = null
+                try {
+                    session = factory(relayTarget, profile)
+                    val result = session.loadProjectSessions(projectId = projectId, profile = profile)
+                    if (!isCurrentProjectSession(
+                            projectId,
+                            serverOrigin,
+                            originGeneration,
+                            requestGeneration,
+                        ) || activeRelayTarget?.id != relayTarget.id
+                    ) return@launch
+                    val durableSessions = mutableSnapshots.value.durableSessions
+                    val sessions = result.sessions
+                        .take(ProjectSummary.MAX_PROJECT_SESSIONS)
+                        .map { reconcileProjectSession(projectId, it, durableSessions) }
+                    publishProjectSessionStateIfCurrent(
+                        projectId = projectId,
+                        serverOrigin = serverOrigin,
+                        originGeneration = originGeneration,
+                        requestGeneration = requestGeneration,
+                        projectState = ProjectSessionLoadState.Loaded(sessions),
+                    )
+                    reconcileProjectSummaryFromDrillIn(
+                        fresh = result.project,
+                        serverOrigin = serverOrigin,
+                        originGeneration = originGeneration,
+                    )
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: HermesChatMethodNotFoundException) {
+                    publishProjectSessionStateIfCurrent(
+                        projectId = projectId,
+                        serverOrigin = serverOrigin,
+                        originGeneration = originGeneration,
+                        requestGeneration = requestGeneration,
+                        projectState = ProjectSessionLoadState.Unsupported,
+                    )
+                } catch (error: Exception) {
+                    publishProjectSessionStateIfCurrent(
+                        projectId = projectId,
+                        serverOrigin = serverOrigin,
+                        originGeneration = originGeneration,
+                        requestGeneration = requestGeneration,
+                        projectState = ProjectSessionLoadState.TransientError(
+                            error.message?.take(160)?.takeIf(String::isNotBlank)
+                                ?: "Could not load project sessions",
+                        ),
+                    )
+                } finally {
+                    closeChatSessionNonCancellably(session)
+                }
+            }.also { projectSessionJobs[projectId] = it }
+        }
 
         if (serverOrigin == null || connector == null ||
             !isCurrentProjectLoad(serverOrigin, originGeneration)
@@ -1595,6 +1907,7 @@ class HermesConnectionViewModel(
      * refresh never blanks the screen; [homeRefreshing] reports the window.
      */
     fun refreshHomeData(): Job {
+        activeRelayTarget?.let { return refreshRelaySessions(it) }
         val serverOrigin = activeOrigin
         val originGeneration = generation
         if (serverOrigin == null || !isCurrentProjectLoad(serverOrigin, originGeneration)) {
@@ -1692,6 +2005,7 @@ class HermesConnectionViewModel(
         profile: String = mutableSnapshots.value.selectedProfile,
         refreshStatus: Boolean = true,
     ): Job {
+        activeRelayTarget?.let { return connectRelay(it, profile) }
         managementJob?.cancel()
         val origin = activeOrigin ?: return viewModelScope.launch { }
         val boundedProfile = profile.trim().take(64).ifEmpty { "default" }
@@ -1880,6 +2194,7 @@ class HermesConnectionViewModel(
      * and stale results are never published after a scope change.
      */
     fun refreshDurableSessions(archivedOnly: Boolean): Job {
+        activeRelayTarget?.let { return refreshRelaySessions(it) }
         val origin = activeOrigin ?: return viewModelScope.launch { }
         val expectedGeneration = generation
         val profile = mutableSnapshots.value.selectedProfile.trim().take(64).ifEmpty { "default" }
@@ -1945,6 +2260,7 @@ class HermesConnectionViewModel(
     private fun loadRecentSessionsPage(loadMore: Boolean): Job {
         val origin = activeOrigin ?: return viewModelScope.launch { }
         val expectedGeneration = generation
+        val relayTarget = activeRelayTarget
         val profile = mutableSnapshots.value.selectedProfile.trim().take(64).ifEmpty { "default" }
         val previous = mutableSnapshots.value.recentSessions
         val offset = if (loadMore) previous.nextOffset else 0
@@ -1957,30 +2273,39 @@ class HermesConnectionViewModel(
                 ),
             )
             try {
-                val token = accessTokenForRequest(origin, expectedGeneration)
-                if (
-                    token == null &&
-                    mutableSnapshots.value.authenticationState != AuthenticationState.NotRequired
-                ) {
-                    if (activeOrigin == origin && generation == expectedGeneration) {
-                        mutableSnapshots.value = mutableSnapshots.value.copy(
-                            recentSessions = mutableSnapshots.value.recentSessions.copy(
-                                isLoading = false,
-                                isLoadingMore = false,
-                                error = "Sign in required",
-                            ),
-                        )
+                val page = if (relayTarget != null) {
+                    loadRelaySessionPage(
+                        target = relayTarget,
+                        profile = profile,
+                        limit = RECENT_SESSIONS_PAGE_SIZE,
+                        offset = offset,
+                    )
+                } else {
+                    val token = accessTokenForRequest(origin, expectedGeneration)
+                    if (
+                        token == null &&
+                        mutableSnapshots.value.authenticationState != AuthenticationState.NotRequired
+                    ) {
+                        if (activeOrigin == origin && generation == expectedGeneration) {
+                            mutableSnapshots.value = mutableSnapshots.value.copy(
+                                recentSessions = mutableSnapshots.value.recentSessions.copy(
+                                    isLoading = false,
+                                    isLoadingMore = false,
+                                    error = "Sign in required",
+                                ),
+                            )
+                        }
+                        return@launch
                     }
-                    return@launch
+                    client.loadSessionsPageForProfile(
+                        serverOrigin = origin,
+                        accessToken = token,
+                        profile = profile,
+                        limit = RECENT_SESSIONS_PAGE_SIZE,
+                        offset = offset,
+                        archivedOnly = false,
+                    )
                 }
-                val page = client.loadSessionsPageForProfile(
-                    serverOrigin = origin,
-                    accessToken = token,
-                    profile = profile,
-                    limit = RECENT_SESSIONS_PAGE_SIZE,
-                    offset = offset,
-                    archivedOnly = false,
-                )
                 currentCoroutineContext().ensureActive()
                 val current = mutableSnapshots.value.recentSessions
                 val combined = (if (loadMore) current.sessions else emptyList())
@@ -2027,6 +2352,36 @@ class HermesConnectionViewModel(
         }
         recentSessionsJob = job
         return job
+    }
+
+    private suspend fun loadRelaySessionPage(
+        target: RelayPairedTarget,
+        profile: String,
+        limit: Int,
+        offset: Int,
+    ): SessionPage {
+        val factory = relaySessionFactory
+            ?: throw HermesConnectionException("Mercury Relay sessions are unavailable")
+        var session: HermesChatSession? = null
+        return try {
+            session = factory(target, profile)
+            val result = session.relayRequest(
+                "relay.sessions.list",
+                buildJsonObject {
+                    put("profile", profile)
+                    put("limit", limit)
+                    put("offset", offset)
+                },
+            )
+            SessionPage(
+                sessions = parseRelaySessionRows(result),
+                total = (result["total"] as? JsonPrimitive)?.intOrNull?.coerceAtLeast(0),
+                limit = limit,
+                offset = offset,
+            )
+        } finally {
+            closeChatSessionNonCancellably(session)
+        }
     }
 
     private fun isCurrentManagementRequest(
@@ -2615,11 +2970,20 @@ class HermesConnectionViewModel(
                 return@launch
             }
             try {
-                val accessToken = accessTokenForRequest(origin, originGeneration)
-                    ?: throw HermesConnectionException("Sign in is required to load session defaults")
-                val options = client.loadDefaultModelOptions(origin, accessToken, profile)
+                val relayTarget = activeRelayTarget
+                val accessToken = if (relayTarget != null) {
+                    ""
+                } else {
+                    accessTokenForRequest(origin, originGeneration)
+                        ?: throw HermesConnectionException("Sign in is required to load session defaults")
+                }
+                val options = if (relayTarget != null) {
+                    loadRelayProfileModelOptions(relayTarget, profile)
+                } else {
+                    client.loadDefaultModelOptions(origin, accessToken, profile)
+                }
                 val selection = options.current
-                val reasoningEffort = selection?.let {
+                val reasoningEffort = selection?.takeIf { relayTarget == null }?.let {
                     try {
                         client.loadProfileReasoningEffort(
                             serverOrigin = origin,
@@ -2664,6 +3028,21 @@ class HermesConnectionViewModel(
                     updateChat(durableSessionId) { it.copy(draftDefaultsLoaded = true) }
                 }
             }
+        }
+    }
+
+    private suspend fun loadRelayProfileModelOptions(
+        target: RelayPairedTarget,
+        profile: String,
+    ): ModelOptions {
+        val factory = relaySessionFactory
+            ?: throw HermesConnectionException("Mercury Relay model options are unavailable")
+        var session: HermesChatSession? = null
+        return try {
+            session = factory(target, profile)
+            session.loadProfileModelOptions()
+        } finally {
+            closeChatSessionNonCancellably(session)
         }
     }
 
@@ -2716,19 +3095,46 @@ class HermesConnectionViewModel(
     private fun openDraftSession(@Suppress("UNUSED_PARAMETER") durableSessionId: DurableSessionId): Job =
         viewModelScope.launch { }
 
+    private suspend fun loadRelayTranscript(
+        target: RelayPairedTarget,
+        durableSessionId: DurableSessionId,
+        profile: String,
+    ): List<ChatMessage> {
+        val factory = relaySessionFactory
+            ?: throw HermesConnectionException("Mercury Relay chat is unavailable")
+        var session: HermesChatSession? = null
+        return try {
+            session = factory(target, profile)
+            val result = session.relayRequest(
+                "relay.session.transcript",
+                buildJsonObject {
+                    put("profile", profile)
+                    put("session_id", serverDurableId(durableSessionId).value)
+                    put("limit", 100)
+                    put("offset", 0)
+                    put("order", "latest")
+                },
+            )
+            parseRelayTranscriptRows(result)
+        } finally {
+            closeChatSessionNonCancellably(session)
+        }
+    }
+
     private fun loadBackgroundViewedTranscript(durableSessionId: DurableSessionId): Job =
         viewModelScope.launch {
             val origin = activeOrigin ?: return@launch
             val originGeneration = generation
             updateChat(durableSessionId) { it.copy(isLoading = true, error = null) }
             try {
-                val accessToken = accessTokenForRequest(origin, originGeneration)
-                if (!isCurrentOrigin(origin, originGeneration)) return@launch
-                val messages = client.loadTranscript(
-                    origin,
-                    accessToken,
-                    serverDurableId(durableSessionId),
-                )
+                val relayTarget = activeRelayTarget
+                val messages = if (relayTarget != null) {
+                    loadRelayTranscript(relayTarget, durableSessionId, mutableSnapshots.value.selectedProfile)
+                } else {
+                    val accessToken = accessTokenForRequest(origin, originGeneration)
+                    if (!isCurrentOrigin(origin, originGeneration)) return@launch
+                    client.loadTranscript(origin, accessToken, serverDurableId(durableSessionId))
+                }
                 if (!isCurrentOrigin(origin, originGeneration)) return@launch
                 updateChat(durableSessionId) {
                     it.copy(messages = messages, isLoading = false, error = null)
@@ -2789,10 +3195,15 @@ class HermesConnectionViewModel(
             }
             updateChat(durableSessionId) { it.copy(isLoading = !hasCachedMessages, error = null) }
             try {
+                val relayTarget = activeRelayTarget
                 var accessToken: String? = null
                 var messages: List<ChatMessage>? = null
                 var retriedAfterUnauthorized = false
-                while (messages == null) {
+                if (relayTarget != null) {
+                    accessToken = ""
+                    messages = loadRelayTranscript(relayTarget, durableSessionId, profile)
+                }
+                while (messages == null && relayTarget == null) {
                     try {
                         accessToken = accessTokenForRequest(origin, originGeneration)
                         if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return@launch
@@ -2820,7 +3231,7 @@ class HermesConnectionViewModel(
                         originGeneration = generation
                     }
                 }
-                val loadedMessages = messages
+                val loadedMessages = checkNotNull(messages)
                 updateChat(durableSessionId) {
                     it.copy(
                         messages = loadedMessages,
@@ -2829,12 +3240,14 @@ class HermesConnectionViewModel(
                         transcriptSource = CacheSource.Live,
                     )
                 }
-                cachedSummary(durableSessionId)?.let { summary ->
-                    persistCachedTranscript(origin, profile, summary, loadedMessages, originGeneration)
+                if (relayTarget == null) {
+                    cachedSummary(durableSessionId)?.let { summary ->
+                        persistCachedTranscript(origin, profile, summary, loadedMessages, originGeneration)
+                    }
                 }
                 if (
                     accessToken != null &&
-                    chatConnector != null &&
+                    (chatConnector != null || (relayTarget != null && relaySessionFactory != null)) &&
                     mutableSnapshots.value.authenticationState == AuthenticationState.Authenticated
                 ) {
                     ensureLiveSession(
@@ -2918,8 +3331,12 @@ class HermesConnectionViewModel(
             var promptStaged = false
             var stagingFailed = false
             try {
-                val accessToken = accessTokenForRequest(origin, originGeneration)
-                    ?: throw HermesConnectionException("Sign in is required to send messages")
+                val accessToken = if (activeRelayTarget != null) {
+                    ""
+                } else {
+                    accessTokenForRequest(origin, originGeneration)
+                        ?: throw HermesConnectionException("Sign in is required to send messages")
+                }
                 val session = ensureLiveSession(
                     origin = origin,
                     originGeneration = originGeneration,
@@ -3424,6 +3841,7 @@ class HermesConnectionViewModel(
     }
 
     fun refreshCronJobs(): Job {
+        if (activeRelayTarget != null) return viewModelScope.launch { }
         val origin = activeOrigin
         val originGeneration = generation
         val profile = mutableSnapshots.value.selectedProfile.trim().take(64).ifEmpty { "default" }
@@ -3759,8 +4177,12 @@ class HermesConnectionViewModel(
             }
             val originGeneration = generation
             try {
-                val accessToken = accessTokenForRequest(origin, originGeneration)
-                    ?: throw HermesConnectionException("Sign in is required to change reasoning")
+                val accessToken = if (activeRelayTarget != null) {
+                    ""
+                } else {
+                    accessTokenForRequest(origin, originGeneration)
+                        ?: throw HermesConnectionException("Sign in is required to change reasoning")
+                }
                 val session = ensureLiveSession(
                     origin = origin,
                     originGeneration = originGeneration,
@@ -3812,8 +4234,12 @@ class HermesConnectionViewModel(
             }
             val originGeneration = generation
             try {
-                val accessToken = accessTokenForRequest(origin, originGeneration)
-                    ?: throw HermesConnectionException("Sign in is required to change Fast mode")
+                val accessToken = if (activeRelayTarget != null) {
+                    ""
+                } else {
+                    accessTokenForRequest(origin, originGeneration)
+                        ?: throw HermesConnectionException("Sign in is required to change Fast mode")
+                }
                 val session = ensureLiveSession(
                     origin = origin,
                     originGeneration = originGeneration,
@@ -3865,8 +4291,12 @@ class HermesConnectionViewModel(
             }
             val originGeneration = generation
             try {
-                val accessToken = accessTokenForRequest(origin, originGeneration)
-                    ?: throw HermesConnectionException("Sign in is required to select a model")
+                val accessToken = if (activeRelayTarget != null) {
+                    ""
+                } else {
+                    accessTokenForRequest(origin, originGeneration)
+                        ?: throw HermesConnectionException("Sign in is required to select a model")
+                }
                 val session = ensureLiveSession(
                     origin = origin,
                     originGeneration = originGeneration,
@@ -4161,12 +4591,23 @@ class HermesConnectionViewModel(
             )
             return existing
         }
+        val relayTarget = activeRelayTarget
+            ?.takeIf { activeOrigin == origin && generation == originGeneration }
         val connector = chatConnector
-            ?: throw HermesConnectionException("Live chat is unavailable")
+        if (relayTarget == null && connector == null) {
+            throw HermesConnectionException("Live chat is unavailable")
+        }
         if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
             throw CancellationException("Chat operation was replaced")
         }
-        val session = connector.connect(origin, accessToken)
+        val session = if (relayTarget != null) {
+            relaySessionFactory?.invoke(
+                relayTarget,
+                localDraftSession(durableSessionId)?.profile ?: mutableSnapshots.value.selectedProfile,
+            ) ?: throw HermesConnectionException("Mercury Relay chat is unavailable")
+        } else {
+            connector!!.connect(origin, accessToken)
+        }
         try {
             val creatingDraft = durableSessionId in pendingDraftSessions
             val resumed = if (creatingDraft) {
@@ -4582,7 +5023,9 @@ class HermesConnectionViewModel(
         recoveryAttempt: ChatRecoveryAttempt,
     ) {
         if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
-        val connector = chatConnector ?: return
+        val relayTarget = activeRelayTarget
+        val connector = chatConnector
+        if (relayTarget == null && connector == null) return
         val previous = liveControllers[durableSessionId]
         closeChatSessionNonCancellably(previous?.session)
         liveControllers.remove(durableSessionId)
@@ -4596,10 +5039,17 @@ class HermesConnectionViewModel(
             if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
             var candidate: HermesChatSession? = null
             try {
-                val token = accessTokenForRequest(origin, originGeneration)
-                    ?: throw HermesConnectionException("Sign in is required to reconnect")
+                val token = if (relayTarget != null) "" else {
+                    accessTokenForRequest(origin, originGeneration)
+                        ?: throw HermesConnectionException("Sign in is required to reconnect")
+                }
                 if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
-                candidate = connector.connect(origin, token)
+                candidate = if (relayTarget != null) {
+                    relaySessionFactory?.invoke(relayTarget, mutableSnapshots.value.selectedProfile)
+                        ?: throw HermesConnectionException("Mercury Relay chat is unavailable")
+                } else {
+                    connector!!.connect(origin, token)
+                }
                 if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                     closeChatSessionNonCancellably(candidate)
                     return
@@ -4644,11 +5094,11 @@ class HermesConnectionViewModel(
                         operationGeneration,
                     )
                 } else {
-                    val messages = client.loadTranscript(
-                        origin,
-                        token,
-                        serverDurableId(durableSessionId),
-                    )
+                    val messages = if (relayTarget != null) {
+                        loadRelayTranscript(relayTarget, durableSessionId, mutableSnapshots.value.selectedProfile)
+                    } else {
+                        client.loadTranscript(origin, token, serverDurableId(durableSessionId))
+                    }
                     if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                         closeChatSessionNonCancellably(candidate)
                         return
@@ -6036,6 +6486,20 @@ class HermesConnectionViewModel(
             }
             val chatConnector = newConnector()
             val projectConnector = newConnector()
+            val relayScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val relaySocketFactory = TlsRelayBinarySocketFactory()
+            val relaySessionFactory: suspend (RelayPairedTarget, String) -> HermesChatSession = { target, profile ->
+                val connected = RelayConnector.connect(
+                    target = target,
+                    profile = profile,
+                    socketFactory = relaySocketFactory,
+                )
+                HermesChatConnection(
+                    socket = RelayHermesChatSocket(connected),
+                    maxFrameBytes = HERMES_CHAT_MAX_FRAME_BYTES,
+                    parentScope = relayScope,
+                )
+            }
             return HermesConnectionViewModel(
                 settingsStates = settingsStates,
                 client = HttpHermesConnectionClient(httpClient),
@@ -6046,11 +6510,15 @@ class HermesConnectionViewModel(
                     },
                 ),
                 passwordLogin = HttpHermesPasswordAuthClient(httpClient),
-                closeResources = httpClient::close,
+                closeResources = {
+                    relayScope.cancel()
+                    httpClient.close()
+                },
                 tokenStore = EncryptedNativeTokenStore(context),
                 refreshClient = HttpHermesNativeRefreshClient(httpClient),
                 chatConnector = chatConnector,
                 projectConnector = projectConnector,
+                relaySessionFactory = relaySessionFactory,
                 cacheRepository = EncryptedOfflineCacheRepository(context),
                 attachmentReader = ContentAttachmentByteReader(context),
                 appForegroundStates = HermesAppForeground.states,
@@ -6073,6 +6541,61 @@ object HermesAppForeground {
         mutableStates.value = foreground
     }
 }
+
+private fun parseRelaySessionRows(result: JsonObject): List<SessionSummary> =
+    (result["sessions"] as? JsonArray)
+        .orEmpty()
+        .take(MAX_RELAY_SESSIONS)
+        .mapNotNull { element ->
+            val row = element as? JsonObject ?: return@mapNotNull null
+            fun string(name: String): String? =
+                (row[name] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
+            val id = string("id") ?: string("session_key") ?: return@mapNotNull null
+            runCatching {
+                SessionSummary(
+                    id = DurableSessionId(id.take(256)),
+                    title = string("title")?.take(MAX_SESSION_TITLE_CHARS) ?: "Untitled session",
+                    workspacePath = string("cwd")?.take(4_096),
+                    preview = string("preview")?.take(HERMES_CHAT_MAX_MESSAGE_TEXT_CHARS),
+                    lastActiveEpochSeconds = (row["last_active"] as? JsonPrimitive)?.doubleOrNull,
+                    messageCount = (row["message_count"] as? JsonPrimitive)?.intOrNull?.coerceAtLeast(0),
+                    model = string("model")?.take(512),
+                    provider = (string("provider") ?: string("billing_provider"))?.take(128),
+                    profile = string("profile")?.take(64),
+                    pinned = (row["pinned"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                    archived = (row["archived"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                )
+            }.getOrNull()
+        }
+        .distinctBy(SessionSummary::id)
+
+private fun parseRelayTranscriptRows(result: JsonObject): List<ChatMessage> =
+    (result["messages"] as? JsonArray)
+        .orEmpty()
+        .take(100)
+        .mapNotNull { element ->
+            val row = element as? JsonObject ?: return@mapNotNull null
+            val role = when ((row["role"] as? JsonPrimitive)?.contentOrNull?.lowercase()) {
+                "user" -> ChatMessageRole.User
+                "assistant" -> ChatMessageRole.Assistant
+                "system" -> ChatMessageRole.System
+                "tool" -> ChatMessageRole.Tool
+                else -> return@mapNotNull null
+            }
+            val text = when (role) {
+                ChatMessageRole.Tool -> row.transcriptToolText()
+                else -> (row["content"] as? JsonPrimitive)?.contentOrNull
+                    ?: (row["text"] as? JsonPrimitive)?.contentOrNull
+            }
+            val reasoning = if (role == ChatMessageRole.Assistant) row.assistantReasoningText() else null
+            if (text == null && reasoning == null) return@mapNotNull null
+            if (role == ChatMessageRole.Assistant &&
+                text != null && InterruptSentinel.isInterruptSentinel(text)
+            ) {
+                return@mapNotNull null
+            }
+            ChatMessage(role = role, text = text.orEmpty(), reasoningText = reasoning.orEmpty())
+        }
 
 private fun JsonObject.assistantReasoningText(): String? =
     sequenceOf("reasoning", "reasoning_content", "reasoning_details")

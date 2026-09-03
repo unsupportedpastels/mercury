@@ -204,8 +204,8 @@ internal fun HermesCloudConnectPanel(
     }
 }
 
-/** The two connect modes surfaced at the top of the Servers settings section. */
-internal enum class ConnectMode { Cloud, ServerUrl }
+/** Connection modes surfaced at the top of the Servers settings section. */
+internal enum class ConnectMode { Cloud, Relay, ServerUrl }
 
 /**
  * Remembers which connect mode is showing. Defaults to Cloud when a Cloud

@@ -449,6 +449,14 @@ fun interface HermesChatConnector {
 interface HermesChatSession {
     val events: Flow<HermesChatEvent>
 
+    /** Relay-owned metadata RPCs carried over the same admitted Hermes channel. */
+    suspend fun relayRequest(method: String, params: JsonObject): JsonObject =
+        throw HermesChatMethodNotFoundException(method)
+
+    /** Profiles visible to this ordinary gateway client. */
+    suspend fun loadProfiles(): List<String> =
+        throw HermesChatMethodNotFoundException("profiles.list")
+
     suspend fun resume(
         durableSessionId: DurableSessionId,
         profile: String? = null,
@@ -603,6 +611,10 @@ interface HermesChatSession {
     suspend fun loadModelOptions(runtimeSessionId: RuntimeSessionId): ModelOptions =
         throw HermesChatProtocolException("Model selection is not available")
 
+    /** Profile-default model options without creating or resuming a runtime. */
+    suspend fun loadProfileModelOptions(): ModelOptions =
+        throw HermesChatMethodNotFoundException("model.options")
+
     suspend fun setModel(
         runtimeSessionId: RuntimeSessionId,
         provider: String,
@@ -691,6 +703,28 @@ class HermesChatConnection internal constructor(
     private val maxFrameBytes: Int,
     parentScope: CoroutineScope,
 ) : HermesChatSession {
+    override suspend fun relayRequest(method: String, params: JsonObject): JsonObject {
+        if (!method.startsWith("relay.")) throw HermesChatProtocolException("Unsafe relay method")
+        return request(method, params)
+    }
+
+    override suspend fun loadProfiles(): List<String> {
+        val result = request(
+            "profiles.list",
+            buildJsonObject { put("include_sessions", false) },
+        )
+        return (result["profiles"] as? JsonArray)
+            .orEmpty()
+            .mapNotNull { element ->
+                val row = element as? JsonObject ?: return@mapNotNull null
+                (row["name"] as? JsonPrimitive)
+                    ?.contentOrNull
+                    ?.takeIf { it.matches(Regex("^[a-z0-9][a-z0-9_-]{0,63}$")) }
+            }
+            .distinct()
+            .take(64)
+    }
+
     override suspend fun loadDelegationStatus(): DelegationStatus {
         val result = request("delegation.status", buildJsonObject {})
         val active = (result["active"] as? JsonArray)
@@ -1136,7 +1170,20 @@ class HermesChatConnection internal constructor(
             put("explicit_only", true)
             put("include_unconfigured", false)
         }
-        val result = request("model.options", params)
+        return parseModelOptions(request("model.options", params))
+    }
+
+    override suspend fun loadProfileModelOptions(): ModelOptions = parseModelOptions(
+        request(
+            "model.options",
+            buildJsonObject {
+                put("explicit_only", true)
+                put("include_unconfigured", false)
+            },
+        ),
+    )
+
+    private fun parseModelOptions(result: JsonObject): ModelOptions {
         val providers = (result["providers"] as? JsonArray)
             .orEmpty()
             .take(MAX_MODEL_PROVIDERS)

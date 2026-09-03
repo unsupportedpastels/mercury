@@ -99,11 +99,13 @@ dependencies {
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.serialization.json)
   implementation(libs.androidx.datastore.preferences)
+  implementation(libs.androidx.fragment.ktx)
   implementation(libs.ktor.client.core)
   implementation(libs.ktor.client.cio)
   implementation(libs.ktor.client.content.negotiation)
   implementation(libs.ktor.client.websockets)
   implementation(libs.ktor.serialization.kotlinx.json)
+  implementation(libs.play.services.code.scanner)
   implementation(libs.tink.android)
 
   // Arch Components

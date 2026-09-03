@@ -275,6 +275,8 @@ import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
 import com.unsupportedpastels.hermesandroid.gateway.ModelSwitchResult
 import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
 import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
+import com.unsupportedpastels.hermesandroid.relay.RelayUiState
+import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
 import com.unsupportedpastels.hermesandroid.gateway.SlashCompletionItem
 import com.unsupportedpastels.hermesandroid.gateway.ValidReasoningEfforts
 import com.unsupportedpastels.hermesandroid.files.HostFileContent
@@ -429,6 +431,13 @@ fun HermesApp(
         Result.failure(UnsupportedOperationException("Removing servers is unavailable"))
     },
     cloudState: com.unsupportedpastels.hermesandroid.connection.CloudConnectState? = null,
+    relayState: RelayUiState = RelayUiState(),
+    onRelayScan: () -> Unit = {},
+    onRelayPair: (String) -> Unit = {},
+    onRelayConnect: (RelayPairedTarget) -> Unit = {},
+    onRelayRemove: (RelayPairedTarget) -> Unit = {},
+    onRelayCancelPairing: () -> Unit = {},
+    onRelayRetry: () -> Unit = {},
     onCloudSignIn: () -> Unit = {},
     onCloudRefresh: () -> Unit = {},
     onCloudSignOut: () -> Unit = {},
@@ -532,6 +541,9 @@ fun HermesApp(
         .sortedByDescending { it.lastActiveEpochSeconds ?: Double.NEGATIVE_INFINITY }
         .take(HOME_RECENT_SESSION_PREVIEW_LIMIT)
     val serverOrigin = (serverSettingsState as? ServerSettingsState.Ready)?.activeOrigin
+    val connectionScopeKey = snapshot.relayTargetId?.let { "relay:$it" }
+        ?: serverOrigin?.value?.let { "direct:$it" }
+        ?: "unconfigured"
     val effectiveServerCatalog = when (val ready = serverSettingsState) {
         is ServerSettingsState.Ready -> if (serverCatalog.entries.isEmpty()) ready.catalog else serverCatalog
         else -> serverCatalog
@@ -664,7 +676,7 @@ fun HermesApp(
     }
     val stageShareIntoSession = { sessionId: DurableSessionId ->
         sharePayload?.let { payload ->
-            val draftKey = "${serverOrigin?.value.orEmpty()}\u0000${sessionId.value}"
+            val draftKey = "$connectionScopeKey\u0000${sessionId.value}"
             val currentDraft = drafts[draftKey].orEmpty()
             drafts[draftKey] = listOf(currentDraft, payload.text)
                 .filter(String::isNotBlank)
@@ -856,6 +868,13 @@ fun HermesApp(
                     visibleSections = setOf(section),
                     title = section.title,
                     cloudState = cloudState,
+                    relayState = relayState,
+                    onRelayScan = onRelayScan,
+                    onRelayPair = onRelayPair,
+                    onRelayConnect = onRelayConnect,
+                    onRelayRemove = onRelayRemove,
+                    onRelayCancelPairing = onRelayCancelPairing,
+                    onRelayRetry = onRelayRetry,
                     onCloudSignIn = onCloudSignIn,
                     onCloudRefresh = onCloudRefresh,
                     onCloudSignOut = onCloudSignOut,
@@ -869,7 +888,7 @@ fun HermesApp(
                     .fillMaxSize()
                     .onSizeChanged { workspaceWidthPx = it.width },
             ) {
-                key(serverOrigin?.value.orEmpty()) {
+                key(connectionScopeKey) {
                     NavDisplay(
         backStack = backStack,
         modifier = Modifier.fillMaxSize(),
@@ -971,7 +990,7 @@ fun HermesApp(
                 if (session == null) {
                     MissingSessionScreen()
                 } else {
-                    val draftKey = "${serverOrigin?.value.orEmpty()}\u0000${session.id.value}"
+                    val draftKey = "$connectionScopeKey\u0000${session.id.value}"
                     val stagedHostReferences = hostReferences[draftKey]
                         .orEmpty()
                         .lineSequence()
@@ -2426,8 +2445,11 @@ private fun SessionListScreen(
             onRefreshDurableSessions(archivedOnly)
         }
     }
-    LaunchedEffect(serverOrigin, snapshot.selectedProfile) {
-        val scopeKey = "${serverOrigin?.value.orEmpty()}\u0000${snapshot.selectedProfile}"
+    LaunchedEffect(serverOrigin, snapshot.relayTargetId, snapshot.selectedProfile) {
+        val connectionScope = snapshot.relayTargetId?.let { "relay:$it" }
+            ?: serverOrigin?.value?.let { "direct:$it" }
+            ?: "unconfigured"
+        val scopeKey = "$connectionScope\u0000${snapshot.selectedProfile}"
         if (observedFilterScopeKey != null && observedFilterScopeKey != scopeKey) {
             searchQuery = ""
             searchOpen = false
@@ -2474,7 +2496,7 @@ private fun SessionListScreen(
                             },
                         ) {
                             Text(
-                                serverHostnameLabel(serverOrigin),
+                                snapshot.relayTargetLabel ?: serverHostnameLabel(serverOrigin),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 style = MaterialTheme.typography.titleLarge,
@@ -4043,6 +4065,13 @@ internal fun ServerSettingsScreen(
     visibleSections: Set<SettingsSection> = SettingsSection.entries.toSet(),
     title: String = "Hermes server",
     cloudState: com.unsupportedpastels.hermesandroid.connection.CloudConnectState? = null,
+    relayState: RelayUiState = RelayUiState(),
+    onRelayScan: () -> Unit = {},
+    onRelayPair: (String) -> Unit = {},
+    onRelayConnect: (RelayPairedTarget) -> Unit = {},
+    onRelayRemove: (RelayPairedTarget) -> Unit = {},
+    onRelayCancelPairing: () -> Unit = {},
+    onRelayRetry: () -> Unit = {},
     onCloudSignIn: () -> Unit = {},
     onCloudRefresh: () -> Unit = {},
     onCloudSignOut: () -> Unit = {},
@@ -4077,7 +4106,9 @@ internal fun ServerSettingsScreen(
     ) { mutableStateOf(emptyList<ModelSelection>()) }
     var expensiveMessage by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(serverOrigin, snapshot.authenticationState) {
-        if (serverOrigin != null && snapshot.authenticationState == AuthenticationState.Authenticated) {
+        if (serverOrigin != null && snapshot.relayTargetId == null &&
+            snapshot.authenticationState == AuthenticationState.Authenticated
+        ) {
             onLoadManagementSettings(snapshot.selectedProfile)
             onRefreshCronJobs()
         }
@@ -4155,16 +4186,34 @@ internal fun ServerSettingsScreen(
                             SegmentedButton(
                                 selected = connectMode == ConnectMode.Cloud,
                                 onClick = { connectMode = ConnectMode.Cloud },
-                                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 3),
                             ) { Text("Hermes Cloud") }
+                            SegmentedButton(
+                                selected = connectMode == ConnectMode.Relay,
+                                onClick = { connectMode = ConnectMode.Relay },
+                                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3),
+                            ) { Text("Mercury Relay") }
                             SegmentedButton(
                                 selected = connectMode == ConnectMode.ServerUrl,
                                 onClick = { connectMode = ConnectMode.ServerUrl },
-                                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                                shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3),
                             ) { Text("Server URL") }
                         }
                     }
-                    if (cloudState != null && connectMode == ConnectMode.Cloud) {
+                    if (connectMode == ConnectMode.Relay) {
+                        RelayConnectPanel(
+                            state = relayState,
+                            onScan = onRelayScan,
+                            onPair = onRelayPair,
+                            onConnect = { target ->
+                                onRelayConnect(target)
+                                onBack()
+                            },
+                            onRemove = onRelayRemove,
+                            onCancelPairing = onRelayCancelPairing,
+                            onRetry = onRelayRetry,
+                        )
+                    } else if (cloudState != null && connectMode == ConnectMode.Cloud) {
                         HermesCloudConnectPanel(
                             state = cloudState,
                             onSignIn = onCloudSignIn,

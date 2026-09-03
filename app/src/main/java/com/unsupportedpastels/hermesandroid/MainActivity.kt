@@ -44,6 +44,10 @@ import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
 import com.unsupportedpastels.hermesandroid.notifications.NotificationNavigationInbox
 import com.unsupportedpastels.hermesandroid.notifications.SessionNotificationVisibilityRegistry
 import com.unsupportedpastels.hermesandroid.notifications.synchronizeVisibleSessionNotifications
+import com.unsupportedpastels.hermesandroid.relay.RelayCodeScanner
+import com.unsupportedpastels.hermesandroid.relay.RelayUiState
+import com.unsupportedpastels.hermesandroid.relay.RelayViewModel
+import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
 import com.unsupportedpastels.hermesandroid.session.SavedSessionFilter
 import com.unsupportedpastels.hermesandroid.share.SharePayload
 import com.unsupportedpastels.hermesandroid.share.nextShareRequestId
@@ -80,6 +84,10 @@ class MainActivity : ComponentActivity() {
     private val cloudViewModel by viewModels<com.unsupportedpastels.hermesandroid.connection.HermesCloudViewModel> {
         com.unsupportedpastels.hermesandroid.connection.HermesCloudViewModel.Factory(this)
     }
+    private val relayViewModel by viewModels<RelayViewModel> {
+        RelayViewModel.ProductionFactory(applicationContext)
+    }
+    private val relayScanner by lazy { RelayCodeScanner(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -92,6 +100,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             HermesAndroidTheme {
                 val snapshot by connectionViewModel.snapshots.collectAsStateWithLifecycle()
+                val relayState by relayViewModel.state.collectAsStateWithLifecycle()
                 val transcriptCachingEnabled by connectionViewModel.transcriptCachingEnabled
                     .collectAsStateWithLifecycle()
                 val notificationRequest by NotificationNavigationInbox.requests.collectAsStateWithLifecycle()
@@ -120,6 +129,21 @@ class MainActivity : ComponentActivity() {
                     projectIconViewModel = projectIconViewModel,
                     paneLayoutPreferencesViewModel = paneLayoutPreferencesViewModel,
                     snapshot = snapshot,
+                    relayState = relayState,
+                    onRelayScan = {
+                        relayScanner.scan(
+                            onResult = { relayViewModel.beginPairing(it) },
+                            onUnavailable = { relayViewModel.scannerUnavailable() },
+                        )
+                    },
+                    onRelayPair = { relayViewModel.beginPairing(it) },
+                    onRelayConnect = { connectionViewModel.connectRelay(it) },
+                    onRelayRemove = { target ->
+                        if (snapshot.relayTargetId == target.id) connectionViewModel.leaveRelayMode()
+                        relayViewModel.removeTarget(target)
+                    },
+                    onRelayCancelPairing = relayViewModel::cancelPairing,
+                    onRelayRetry = relayViewModel::resetFailure,
                     transcriptCachingEnabled = transcriptCachingEnabled,
                     onTranscriptCachingChanged = { enabled ->
                         connectionViewModel.setTranscriptCachingEnabled(enabled)
@@ -220,6 +244,13 @@ internal fun HermesAppHost(
     projectIconViewModel: ProjectIconViewModel? = null,
     paneLayoutPreferencesViewModel: PaneLayoutPreferencesViewModel? = null,
     snapshot: HermesGatewaySnapshot,
+    relayState: RelayUiState = RelayUiState(),
+    onRelayScan: () -> Unit = {},
+    onRelayPair: (String) -> Unit = {},
+    onRelayConnect: (RelayPairedTarget) -> Unit = {},
+    onRelayRemove: (RelayPairedTarget) -> Unit = {},
+    onRelayCancelPairing: () -> Unit = {},
+    onRelayRetry: () -> Unit = {},
     transcriptCachingEnabled: Boolean = false,
     onTranscriptCachingChanged: (Boolean) -> Unit = {},
     onClearOfflineCache: () -> Unit = {},
@@ -263,6 +294,26 @@ internal fun HermesAppHost(
     val currentServerOrigin = (serverSettingsState as? ServerSettingsState.Ready)?.activeOrigin
     val currentServerCatalog = (serverSettingsState as? ServerSettingsState.Ready)?.catalog
         ?: com.unsupportedpastels.hermesandroid.connection.ServerCatalog.empty()
+    var relayAutoConnectAttemptedId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(serverSettingsState, relayState.targets, snapshot.relayTargetId) {
+        if (serverSettingsState !is ServerSettingsState.Ready || currentServerOrigin != null) {
+            return@LaunchedEffect
+        }
+        if (snapshot.relayTargetId != null) return@LaunchedEffect
+        val target = relayState.targets
+            .asSequence()
+            .filter { it.status == com.unsupportedpastels.mercury.core.relay.RelayTargetStatus.Approved }
+            .maxWithOrNull(
+                compareBy<RelayPairedTarget>(
+                    { it.lastUsedEpochSeconds ?: Long.MIN_VALUE },
+                    { it.createdAtEpochSeconds },
+                ),
+            )
+            ?: return@LaunchedEffect
+        if (relayAutoConnectAttemptedId == target.id) return@LaunchedEffect
+        relayAutoConnectAttemptedId = target.id
+        onRelayConnect(target)
+    }
     val projectIcons = (projectIconAssignments as? ProjectIconAssignmentsState.Ready)
         ?.assignments
         .orEmpty()
@@ -364,13 +415,29 @@ internal fun HermesAppHost(
         onVisibleSessionChanged = onVisibleSessionChanged,
         serverSettingsState = serverSettingsState,
         serverCatalog = currentServerCatalog,
+        relayState = relayState,
+        onRelayScan = onRelayScan,
+        onRelayPair = onRelayPair,
+        onRelayConnect = onRelayConnect,
+        onRelayRemove = onRelayRemove,
+        onRelayCancelPairing = onRelayCancelPairing,
+        onRelayRetry = onRelayRetry,
         transcriptCachingEnabled = transcriptCachingEnabled,
         onTranscriptCachingChanged = onTranscriptCachingChanged,
         onClearOfflineCache = onClearOfflineCache,
-        onSaveServerOrigin = { origin -> viewModel.save(origin).await() },
-        onSaveServerEntry = { entry -> viewModel.save(entry).await() },
+        onSaveServerOrigin = { origin ->
+            connectionViewModel?.leaveRelayMode()
+            viewModel.save(origin).await()
+        },
+        onSaveServerEntry = { entry ->
+            connectionViewModel?.leaveRelayMode()
+            viewModel.save(entry).await()
+        },
         onUpdateServerLabel = { entry -> viewModel.updateLabel(entry).await() },
-        onSelectServerOrigin = { origin -> viewModel.select(origin).await() },
+        onSelectServerOrigin = { origin ->
+            connectionViewModel?.leaveRelayMode()
+            viewModel.select(origin).await()
+        },
         onRemoveServerOrigin = { origin -> viewModel.remove(origin).await() },
         cloudState = cloudConnectState,
         onCloudSignIn = onCloudSignIn,
@@ -387,6 +454,7 @@ internal fun HermesAppHost(
             }.getOrElse {
                 return@HermesApp Result.failure(it)
             }
+            connectionViewModel?.leaveRelayMode()
             viewModel.save(origin).await()
         },
         onLoadManagementSettings = { profile -> connectionViewModel?.loadManagementSettings(profile) },

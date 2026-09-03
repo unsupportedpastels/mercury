@@ -11,6 +11,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.unsupportedpastels.hermesandroid.connection.ServerCatalog
 import com.unsupportedpastels.hermesandroid.connection.ServerCatalogEntry
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.hermesandroid.connection.CloudConnectState
 import com.unsupportedpastels.hermesandroid.gateway.HermesGatewaySnapshot
 import com.unsupportedpastels.hermesandroid.theme.HermesAndroidTheme
 
@@ -75,5 +76,25 @@ class ServerSettingsCatalogTest {
         composeRule.onNodeWithText("Remove server?").assertIsDisplayed()
         composeRule.onNodeWithText("Remove").performClick()
         composeRule.runOnIdle { assertEquals(second, removed) }
+    }
+
+    @Test
+    fun relayModeExposesQrAndPastePairing() {
+        composeRule.setContent {
+            HermesAndroidTheme {
+                ServerSettingsScreen(
+                    serverOrigin = null,
+                    snapshot = HermesGatewaySnapshot(),
+                    showBack = true,
+                    onBack = {},
+                    onSave = { Result.success(Unit) },
+                    cloudState = CloudConnectState.SignedOut,
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Mercury Relay").performClick()
+        composeRule.onNodeWithText("Scan QR code").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Relay pairing code input").assertIsDisplayed()
     }
 }

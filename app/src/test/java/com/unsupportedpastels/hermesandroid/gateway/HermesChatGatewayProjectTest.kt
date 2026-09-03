@@ -19,6 +19,62 @@ import org.junit.Test
 
 class HermesChatGatewayProjectTest {
     @Test
+    fun profileModelOptionsDoNotRequireARuntime() = runTest {
+        val socket = MetadataSocket()
+        socket.onSend = { frame ->
+            val request = Json.parseToJsonElement(frame).jsonObject
+            assertEquals("model.options", request["method"]!!.jsonPrimitive.content)
+            val params = request["params"]!!.jsonObject
+            assertFalse(params.containsKey("session_id"))
+            assertTrue(params["explicit_only"]!!.jsonPrimitive.content.toBoolean())
+            socket.offer(
+                """{"jsonrpc":"2.0","id":${request["id"]!!.jsonPrimitive.content},"result":{"provider":"nous","model":"relay-model","providers":[{"slug":"nous","name":"Nous","authenticated":true,"models":["relay-model"],"capabilities":{"relay-model":{"reasoning":true,"fast":true}}}]}}""",
+            )
+        }
+        val connection = HermesChatGateway(
+            origin = ServerOrigin.parse("https://hermes.example"),
+            accessToken = "access-token",
+            ticketClient = object : WsTicketClient {
+                override suspend fun mintTicket(origin: ServerOrigin, accessToken: String) =
+                    WsTicket("ticket", 30)
+            },
+            socketFactory = object : ChatWebSocketFactory { override suspend fun connect(url: String) = socket },
+            parentScope = backgroundScope,
+        ).connect()
+
+        val options = connection.loadProfileModelOptions()
+        assertEquals(ModelSelection("nous", "relay-model"), options.current)
+        assertEquals(ModelCapabilities(reasoning = true, fast = true), options.capabilitiesFor(options.current))
+        connection.close()
+    }
+
+    @Test
+    fun profileListUsesReadOnlyRpcAndBoundsNames() = runTest {
+        val socket = MetadataSocket()
+        socket.onSend = { frame ->
+            val request = Json.parseToJsonElement(frame).jsonObject
+            assertEquals("profiles.list", request["method"]!!.jsonPrimitive.content)
+            assertFalse(request["params"]!!.jsonObject["include_sessions"]!!.jsonPrimitive.content.toBoolean())
+            socket.offer(
+                """{"jsonrpc":"2.0","id":${request["id"]!!.jsonPrimitive.content},"result":{"profiles":[{"name":"default"},{"name":"work"},{"name":"../invalid"},{"name":"work"}]}}""",
+            )
+        }
+        val connection = HermesChatGateway(
+            origin = ServerOrigin.parse("https://hermes.example"),
+            accessToken = "access-token",
+            ticketClient = object : WsTicketClient {
+                override suspend fun mintTicket(origin: ServerOrigin, accessToken: String) =
+                    WsTicket("ticket", 30)
+            },
+            socketFactory = object : ChatWebSocketFactory { override suspend fun connect(url: String) = socket },
+            parentScope = backgroundScope,
+        ).connect()
+
+        assertEquals(listOf("default", "work"), connection.loadProfiles())
+        connection.close()
+    }
+
+    @Test
     fun todoPayloadInOfficialToolEventIsParsedAsBoundedLiveState() = runTest {
         val socket = MetadataSocket()
         val connection = HermesChatGateway(
