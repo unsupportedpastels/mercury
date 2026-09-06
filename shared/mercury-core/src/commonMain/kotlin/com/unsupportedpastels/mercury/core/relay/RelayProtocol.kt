@@ -25,6 +25,7 @@ object RelayProtocolPolicy {
     const val maxOriginCharacters = 256
     const val maxEnvelopeBytes = 512
     const val maxProfileCharacters = 128
+    const val maxChannelCharacters = 64
     const val maxRoutingTokenCharacters = 1_024
     const val maxExpirySkewSeconds = 900L
     const val fingerprintHexCharacters = 16
@@ -258,6 +259,21 @@ object RelayAdmissionEnvelope {
         profile: String,
         resumeCursor: Long?,
         recoveryVersion: Int?,
+    ): ByteArray = controllerOpen(deviceId, profile, resumeCursor, recoveryVersion, channel = null)
+
+    /**
+     * Names the lease channel. The host keeps one lease per (device, channel),
+     * so a client that opens one channel per session can run several Hermes
+     * sessions at once; null is the legacy default channel and keeps the
+     * one-lease-per-device supersede rule and the exact legacy bytes.
+     */
+    @Throws(RelayProtocolException::class)
+    fun controllerOpen(
+        deviceId: String,
+        profile: String,
+        resumeCursor: Long?,
+        recoveryVersion: Int?,
+        channel: String?,
     ): ByteArray {
         if (recoveryVersion != null && recoveryVersion != 1) invalid()
         if (RelayBase64.urlSafeDecodeExact(deviceId, RelayProtocolPolicy.deviceIdBytes) == null) invalid()
@@ -267,7 +283,10 @@ object RelayAdmissionEnvelope {
             invalid()
         }
         if (resumeCursor != null && resumeCursor < 0) invalid()
-        var envelope = "{\"device_id\":\"$deviceId\",\"profile\":\"$profile\""
+        if (channel != null && !isValidChannel(channel)) invalid()
+        var envelope = "{"
+        if (channel != null) envelope += "\"channel\":\"$channel\","
+        envelope += "\"device_id\":\"$deviceId\",\"profile\":\"$profile\""
         if (resumeCursor != null) envelope += ",\"resume_cursor\":$resumeCursor"
         envelope += ",\"type\":\"controller.open\""
         if (recoveryVersion != null) envelope += ",\"recovery_version\":$recoveryVersion"
@@ -276,6 +295,23 @@ object RelayAdmissionEnvelope {
             if (it.size > RelayProtocolPolicy.maxEnvelopeBytes) invalid()
         }
     }
+
+    /**
+     * The lease channel for one client-side session key (a durable or draft
+     * session id). Deterministic on both platforms so a reconnect reattaches
+     * the same lease: unsupported characters map to "_" and the result is
+     * bounded to the plugin's limit.
+     */
+    fun channelForSession(sessionKey: String): String {
+        val body = sessionKey.map { if (it.isAsciiLetterOrDigit() || it == '-' || it == '_') it else '_' }
+            .joinToString("")
+        return ("s-" + body).take(RelayProtocolPolicy.maxChannelCharacters)
+    }
+
+    /** Channel names: 1..64 of [A-Za-z0-9_-]; the plugin rejects anything else. */
+    fun isValidChannel(channel: String): Boolean =
+        channel.isNotEmpty() && channel.length <= RelayProtocolPolicy.maxChannelCharacters &&
+            channel.all { it.isAsciiLetterOrDigit() || it == '-' || it == '_' }
 
     private fun Char.isAsciiLetterOrDigit(): Boolean =
         this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9'

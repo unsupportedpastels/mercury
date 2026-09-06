@@ -193,11 +193,15 @@ class RelayConnectionViewModelTest {
     }
 
     @Test
-    fun competingSendCannotEvictAttachmentStagingController() = pendingSendCannotBeEvicted(false)
+    fun competingSendOpensItsOwnChannelBesideAttachmentStagingController() = pendingSendCannotBeEvicted(false)
 
     @Test
-    fun competingSendCannotEvictConnectingControllerDuringMetadata() = pendingSendCannotBeEvicted(true)
+    fun competingSendOpensItsOwnChannelBesideConnectingControllerDuringMetadata() = pendingSendCannotBeEvicted(true)
 
+    /**
+     * A second session on the same phone never waits for, evicts, or closes
+     * the first: it opens its own lease channel and its send is accepted.
+     */
     private fun pendingSendCannotBeEvicted(connecting: Boolean) = runTest(dispatcher) {
         val sessions = mutableListOf<FakeRelaySession>()
         val viewModel = relayViewModel { FakeRelaySession().also { sessions += it } }
@@ -225,7 +229,9 @@ class RelayConnectionViewModelTest {
         val count = sessions.size
         viewModel.sendMessage(DurableSessionId("relay-session-2"), "competing").join()
         assertEquals("pending controller must not be closed", 0, controller.closeCalls)
-        assertEquals(count, sessions.size)
+        assertEquals("competing send opens its own channel", count + 1, sessions.size)
+        assertEquals("competing", sessions.last().lastSubmitted)
+        assertEquals(1L, viewModel.snapshots.value.chatSessions.getValue(DurableSessionId("relay-session-2")).acceptedSubmissionCount)
         barrier.complete(Unit)
         first.join()
         assertEquals(1, controller.submitCalls)
@@ -430,7 +436,7 @@ class RelayConnectionViewModelTest {
             override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo = error("no direct probe")
         },
         attachmentReader = com.unsupportedpastels.hermesandroid.attachment.AttachmentByteReader { "hello".toByteArray() },
-        relaySessionFactory = { _, _ -> factory() },
+        relaySessionFactory = { _, _, _ -> factory() },
     )
 
     @Test
@@ -441,7 +447,7 @@ class RelayConnectionViewModelTest {
             client = object : HermesConnectionClient {
                 override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo = error("no direct probe")
             },
-            relaySessionFactory = { _, _ -> session },
+            relaySessionFactory = { _, _, _ -> session },
         )
         advanceUntilIdle()
         viewModel.connectRelay(target()).join()
@@ -465,7 +471,7 @@ class RelayConnectionViewModelTest {
             client = object : HermesConnectionClient {
                 override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo = error("no direct probe")
             },
-            relaySessionFactory = { _, _ -> session },
+            relaySessionFactory = { _, _, _ -> session },
         )
         advanceUntilIdle()
         viewModel.connectRelay(target()).join()
@@ -499,7 +505,7 @@ class RelayConnectionViewModelTest {
             client = object : HermesConnectionClient {
                 override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo = error("no direct probe")
             },
-            relaySessionFactory = { _, _ -> FakeRelaySession().also { sessions += it } },
+            relaySessionFactory = { _, _, _ -> FakeRelaySession().also { sessions += it } },
         )
         advanceUntilIdle()
         viewModel.connectRelay(target()).join()
@@ -516,28 +522,38 @@ class RelayConnectionViewModelTest {
     }
 
     @Test
-    fun transcriptReaderDoesNotOpenASecondAdmittedRelaySocket() = runTest(dispatcher) {
+    fun readersBorrowTheAdmittedSocketAndSessionsGetTheirOwnChannels() = runTest(dispatcher) {
         val sessions = mutableListOf<FakeRelaySession>()
+        val channels = mutableListOf<String?>()
         val viewModel = HermesConnectionViewModel(
             settingsStates = MutableStateFlow(ServerSettingsState.Ready(ServerCatalog.empty())),
             client = object : HermesConnectionClient {
                 override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo = error("no direct probe")
             },
-            relaySessionFactory = { _, _ -> FakeRelaySession().also { sessions += it } },
+            relaySessionFactory = { _, _, channel -> channels += channel; FakeRelaySession().also { sessions += it } },
         )
         advanceUntilIdle()
         viewModel.connectRelay(target()).join()
         viewModel.openSession(DurableSessionId("relay-session-1")).join()
         val count = sessions.size
+        // Reads and metadata borrow the open controller instead of admitting again.
         viewModel.loadRecentSessions().join()
         viewModel.openProject(ProjectId("relay-project-1")).join()
-        viewModel.sendMessage(DurableSessionId("relay-session-1"), "active turn").join()
-        viewModel.openSession(DurableSessionId("relay-session-2")).join()
-        viewModel.sendMessage(DurableSessionId("relay-session-2"), "must not evict active turn").join()
         assertEquals(count, sessions.size)
-        assertEquals(0, sessions.last().closeCalls)
-        assertEquals("active turn", sessions.last().lastSubmitted)
-        assertEquals(true, viewModel.snapshots.value.chatSessions.getValue(DurableSessionId("relay-session-2")).error != null)
+        viewModel.sendMessage(DurableSessionId("relay-session-1"), "active turn").join()
+        val first = sessions.last()
+        // A second session opens its own lease channel and does not disturb the first.
+        viewModel.openSession(DurableSessionId("relay-session-2")).join()
+        viewModel.sendMessage(DurableSessionId("relay-session-2"), "second session").join()
+        assertEquals(count + 1, sessions.size)
+        assertEquals(0, first.closeCalls)
+        assertEquals("active turn", first.lastSubmitted)
+        assertEquals("second session", sessions.last().lastSubmitted)
+        assertEquals(null, viewModel.snapshots.value.chatSessions.getValue(DurableSessionId("relay-session-2")).error)
+        // Connect and reads use the default channel; each session its own.
+        assertEquals(null, channels.first())
+        assertEquals("s-relay-session-1", channels[channels.size - 2])
+        assertEquals("s-relay-session-2", channels.last())
     }
 
     @Test
@@ -549,7 +565,7 @@ class RelayConnectionViewModelTest {
             client = object : HermesConnectionClient {
                 override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo = error("no direct probe")
             },
-            relaySessionFactory = { _, _ ->
+            relaySessionFactory = { _, _, _ ->
                 connections += 1
                 if (connections == 3) blocked else FakeRelaySession()
             },
@@ -584,7 +600,7 @@ class RelayConnectionViewModelTest {
         val viewModel = HermesConnectionViewModel(
             settingsStates = settings,
             client = client,
-            relaySessionFactory = { _, _ -> FakeRelaySession() },
+            relaySessionFactory = { _, _, _ -> FakeRelaySession() },
         )
         advanceUntilIdle()
         viewModel.connectRelay(target()).join()
@@ -618,7 +634,7 @@ class RelayConnectionViewModelTest {
                     error("direct server offline")
                 }
             },
-            relaySessionFactory = { _, _ -> FakeRelaySession() },
+            relaySessionFactory = { _, _, _ -> FakeRelaySession() },
         )
         advanceUntilIdle()
         viewModel.connectRelay(target()).join()
@@ -644,7 +660,7 @@ class RelayConnectionViewModelTest {
                 override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo =
                     error("direct probe must not run")
             },
-            relaySessionFactory = { _, _ ->
+            relaySessionFactory = { _, _, _ ->
                 attempts += 1
                 if (attempts == 1) error("temporary relay failure")
                 FakeRelaySession()
@@ -674,7 +690,7 @@ class RelayConnectionViewModelTest {
         val viewModel = HermesConnectionViewModel(
             settingsStates = MutableStateFlow(ServerSettingsState.Ready(ServerCatalog.empty())),
             client = client,
-            relaySessionFactory = { _, _ -> relaySession },
+            relaySessionFactory = { _, _, _ -> relaySession },
         )
         advanceUntilIdle()
 
@@ -771,7 +787,7 @@ class RelayConnectionViewModelTest {
             client = object : HermesConnectionClient {
                 override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo = error("No direct HTTP")
             },
-            relaySessionFactory = { _, _ -> factories++; imageSession },
+            relaySessionFactory = { _, _, _ -> factories++; imageSession },
         )
         advanceUntilIdle()
         viewModel.connectRelay(target()).join()

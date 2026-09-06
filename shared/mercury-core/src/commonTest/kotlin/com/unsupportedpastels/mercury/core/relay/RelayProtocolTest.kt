@@ -51,6 +51,23 @@ class RelayProtocolTest {
         assertFailsWith<RelayProtocolException> {
             RelayAdmissionEnvelope.controllerOpen(deviceId, "bad profile")
         }
+        // Channel-scoped leases: the field leads (sorted-key order) and the
+        // legacy bytes above are untouched when no channel is given.
+        assertEquals(
+            "{\"channel\":\"s_1-A\",\"device_id\":\"$deviceId\",\"profile\":\"default\"," +
+                "\"type\":\"controller.open\",\"recovery_version\":1}",
+            RelayAdmissionEnvelope.controllerOpen(deviceId, "default", null, 1, "s_1-A").decodeToString(),
+        )
+        assertEquals("s-20260906_034455_bfd2a6", RelayAdmissionEnvelope.channelForSession("20260906_034455_bfd2a6"))
+        assertEquals("s-draft-1", RelayAdmissionEnvelope.channelForSession("draft-1"))
+        assertEquals("s-a_b_c", RelayAdmissionEnvelope.channelForSession("a/b c"))
+        assertEquals(64, RelayAdmissionEnvelope.channelForSession("x".repeat(100)).length)
+        assertTrue(RelayAdmissionEnvelope.isValidChannel(RelayAdmissionEnvelope.channelForSession("\u00fc/?")))
+        for (bad in listOf("", "has space", "a/b", "x".repeat(65), "\u00fc")) {
+            assertFailsWith<RelayProtocolException> {
+                RelayAdmissionEnvelope.controllerOpen(deviceId, "default", null, null, bad)
+            }
+        }
         assertTrue(RelayApprovalProbe.isSuccessfulGatewayPing(
             "{\"jsonrpc\":\"2.0\",\"id\":\"pairing-probe\",\"result\":{\"ok\":true}}"
         ))

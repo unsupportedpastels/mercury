@@ -60,6 +60,8 @@ object RelayConnector {
         recoveryVersion: Int? = null,
         deterministicEphemeralPrivateKey: ByteArray? = null,
         diagnostics: RelayDiagnostics = RelayDiagnostics.shared,
+        /** Lease channel; null is the legacy default channel (one lease per device). */
+        leaseChannel: String? = null,
     ): RelayConnectedChannel {
         val attempt = diagnostics.beginAttempt(RelayDiagnosticOperation.Connection)
         val url = RelayPairingPayload.deviceSocketUrl(target.relayOrigin, target.installationId)
@@ -104,7 +106,7 @@ object RelayConnector {
                 phase = RelayDiagnosticPhase.Admission
                 socket.send(createdChannel.writeHandshake())
                 val envelope = RelayAdmissionEnvelope.controllerOpen(
-                    target.deviceId, profile, resumeCursor, recoveryVersion,
+                    target.deviceId, profile, resumeCursor, recoveryVersion, leaseChannel,
                 )
                 socket.send(createdChannel.encrypt(envelope))
                 attempt.recordSuccess(RelayDiagnosticPhase.Admission)
