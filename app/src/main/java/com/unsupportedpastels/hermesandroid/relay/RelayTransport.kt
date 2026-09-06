@@ -120,6 +120,7 @@ object RelayConnector {
                 socket.send(createdChannel.writeHandshake())
                 val envelope = RelayAdmissionEnvelope.controllerOpen(
                     target.deviceId, profile, resumeCursor, recoveryVersion, leaseChannel,
+                    RelayDeviceIdentity.name,
                 )
                 socket.send(createdChannel.encrypt(envelope))
                 attempt.recordSuccess(RelayDiagnosticPhase.Admission)

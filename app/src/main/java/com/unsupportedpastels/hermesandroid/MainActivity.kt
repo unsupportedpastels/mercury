@@ -91,6 +91,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.unsupportedpastels.hermesandroid.relay.RelayDeviceIdentity.initialize(applicationContext)
         consumeIncomingShare(intent)
         enableEdgeToEdge()
         window.isNavigationBarContrastEnforced = false

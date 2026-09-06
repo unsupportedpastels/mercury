@@ -26,6 +26,7 @@ object RelayProtocolPolicy {
     const val maxEnvelopeBytes = 512
     const val maxProfileCharacters = 128
     const val maxChannelCharacters = 64
+    const val maxDeviceNameCharacters = 64
     const val maxRoutingTokenCharacters = 1_024
     const val maxExpirySkewSeconds = 900L
     const val fingerprintHexCharacters = 16
@@ -274,6 +275,21 @@ object RelayAdmissionEnvelope {
         resumeCursor: Long?,
         recoveryVersion: Int?,
         channel: String?,
+    ): ByteArray = controllerOpen(deviceId, profile, resumeCursor, recoveryVersion, channel, deviceName = null)
+
+    /**
+     * Also names the device. The host records it against this device's
+     * key (pending or authorized) so the dashboard shows the phone by name;
+     * an unusable name is simply omitted.
+     */
+    @Throws(RelayProtocolException::class)
+    fun controllerOpen(
+        deviceId: String,
+        profile: String,
+        resumeCursor: Long?,
+        recoveryVersion: Int?,
+        channel: String?,
+        deviceName: String?,
     ): ByteArray {
         if (recoveryVersion != null && recoveryVersion != 1) invalid()
         if (RelayBase64.urlSafeDecodeExact(deviceId, RelayProtocolPolicy.deviceIdBytes) == null) invalid()
@@ -284,9 +300,12 @@ object RelayAdmissionEnvelope {
         }
         if (resumeCursor != null && resumeCursor < 0) invalid()
         if (channel != null && !isValidChannel(channel)) invalid()
+        val cleanName = deviceName?.let(::cleanDeviceName)
         var envelope = "{"
         if (channel != null) envelope += "\"channel\":\"$channel\","
-        envelope += "\"device_id\":\"$deviceId\",\"profile\":\"$profile\""
+        envelope += "\"device_id\":\"$deviceId\""
+        if (cleanName != null) envelope += ",\"device_name\":" + Json.encodeToString(JsonPrimitive(cleanName))
+        envelope += ",\"profile\":\"$profile\""
         if (resumeCursor != null) envelope += ",\"resume_cursor\":$resumeCursor"
         envelope += ",\"type\":\"controller.open\""
         if (recoveryVersion != null) envelope += ",\"recovery_version\":$recoveryVersion"
@@ -306,6 +325,13 @@ object RelayAdmissionEnvelope {
         val body = sessionKey.map { if (it.isAsciiLetterOrDigit() || it == '-' || it == '_') it else '_' }
             .joinToString("")
         return ("s-" + body).take(RelayProtocolPolicy.maxChannelCharacters)
+    }
+
+    /** Collapses whitespace, strips control characters, bounds to 64 chars; null when nothing is left. */
+    fun cleanDeviceName(name: String): String? {
+        val collapsed = name.split(' ', '\t', '\n', '\r').filter { it.isNotEmpty() }.joinToString(" ")
+        if (collapsed.any { it.code < 0x20 || it.code == 0x7f }) return null
+        return collapsed.take(RelayProtocolPolicy.maxDeviceNameCharacters).trim().ifEmpty { null }
     }
 
     /** Channel names: 1..64 of [A-Za-z0-9_-]; the plugin rejects anything else. */

@@ -187,6 +187,7 @@ enum RelayConnector {
         resumeCursor: Int64? = nil,
         recoveryVersion: Int32? = nil,
         channel leaseChannel: String? = nil,
+        deviceName: String? = RelayDeviceIdentity.name,
         socketFactory: any RelayBinarySocketFactorying = URLSessionRelaySocketFactory()
     ) async throws -> RelayConnectedChannel {
         guard let url = RelayPairingPayload.deviceSocketURL(
@@ -218,7 +219,8 @@ enum RelayConnector {
                 profile: profile,
                 resumeCursor: resumeCursor,
                 recoveryVersion: recoveryVersion,
-                channel: leaseChannel
+                channel: leaseChannel,
+                deviceName: deviceName
             )
             try await socket.send(channel.encrypt(envelope))
             try Task.checkCancellation()

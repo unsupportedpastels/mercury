@@ -50,7 +50,7 @@ final class RelayTransportTests: XCTestCase {
 
         async let hostSide = admit(socket: host)
         let connected = try await RelayConnector.connect(
-            target: target, profile: "default", resumeCursor: 7, socketFactory: factory
+            target: target, profile: "default", resumeCursor: 7, deviceName: nil, socketFactory: factory
         )
         let admitted = try await hostSide
         XCTAssertEqual(

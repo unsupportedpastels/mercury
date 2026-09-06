@@ -58,6 +58,13 @@ class RelayProtocolTest {
                 "\"type\":\"controller.open\",\"recovery_version\":1}",
             RelayAdmissionEnvelope.controllerOpen(deviceId, "default", null, 1, "s_1-A").decodeToString(),
         )
+        assertEquals(
+            "{\"device_id\":\"$deviceId\",\"device_name\":\"Mark's Fold \\\"8\\\"\",\"profile\":\"default\",\"type\":\"controller.open\"}",
+            RelayAdmissionEnvelope.controllerOpen(deviceId, "default", null, null, null, "  Mark's  Fold \"8\" ").decodeToString(),
+        )
+        assertEquals(null, RelayAdmissionEnvelope.cleanDeviceName("  \t "))
+        assertEquals(null, RelayAdmissionEnvelope.cleanDeviceName("bad\u0001name"))
+        assertEquals(64, RelayAdmissionEnvelope.cleanDeviceName("x".repeat(90))!!.length)
         assertEquals("s-20260906_034455_bfd2a6", RelayAdmissionEnvelope.channelForSession("20260906_034455_bfd2a6"))
         assertEquals("s-draft-1", RelayAdmissionEnvelope.channelForSession("draft-1"))
         assertEquals("s-a_b_c", RelayAdmissionEnvelope.channelForSession("a/b c"))
