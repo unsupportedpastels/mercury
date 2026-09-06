@@ -205,7 +205,7 @@ final class NativePKCEFlow {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await HermesURLSession.noRedirects.data(for: request)
         let httpResponse = try Self.requireHTTP(response)
         debug("token-http-\(httpResponse.statusCode)")
 

@@ -355,7 +355,8 @@ struct ConnectView: View {
         guard canContinue else { return }
         validationError = nil
         guard let canonical = ServerOrigin.normalize(originText, useTls: useTls) else {
-            validationError = "That doesn't look like a server address. Try something like hermes.example.com or 192.168.1.20:8080."
+            validationError = ServerOrigin.validationFailure(originText, useTls: useTls)
+                ?? "That doesn't look like a server address. Try something like hermes.example.com or 192.168.1.20:8080."
             return
         }
         Task { await appModel.probeSelfHosted(origin: canonical) }

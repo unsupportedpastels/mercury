@@ -356,14 +356,7 @@ final class ConnectionController {
             "relay.sessions.list",
             params: ["profile": profile, "limit": limit, "offset": offset]
         )
-        guard let rawRows = result["sessions"] as? [[String: Any]] else {
-            return SessionPage(rows: [], total: 0, hasMore: false)
-        }
-        let data = try JSONSerialization.data(withJSONObject: rawRows)
-        let rows = (try? JSONDecoder().decode([SessionRow].self, from: data)) ?? []
-        let total = result["total"] as? Int
-        let hasMore = total.map { offset + rows.count < $0 } ?? (rows.count == limit)
-        return SessionPage(rows: rows, total: total, hasMore: hasMore)
+        return try RelaySessionPage.decode(result, offset: offset, limit: limit)
     }
 
     // MARK: - Sessions

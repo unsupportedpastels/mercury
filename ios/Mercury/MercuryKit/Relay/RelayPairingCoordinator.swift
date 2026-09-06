@@ -164,34 +164,55 @@ actor RelayPairingCoordinator {
     /// One approval probe: a fresh handshake plus admission envelope, proven
     /// by a `gateway.ping` round trip. Pending or revoked devices see the
     /// host close the socket instead.
+    ///
+    /// The router allows one device socket per installation, so the probe's
+    /// socket is closed and awaited on every exit path (approved, rejected,
+    /// early EOF, thrown error, cancellation) before this returns. A caller
+    /// that opens the chat right after a probe must never race a socket that
+    /// is still being torn down.
     func probeApproval(target: RelayPairedTarget, profile: String) async -> Bool {
+        let connected: RelayConnectedChannel
         do {
-            let connected = try await RelayConnector.connect(
+            connected = try await RelayConnector.connect(
                 target: target,
                 profile: profile,
                 socketFactory: socketFactory
             )
-            let chatSocket = RelayChatSocket(connected: connected)
-            defer { Task { await chatSocket.close() } }
+        } catch {
+            // RelayConnector closes its own socket on every failure.
+            return false
+        }
+        let chatSocket = RelayChatSocket(connected: connected)
+        let approved = await withTaskCancellationHandler {
+            await Self.runProbe(on: chatSocket)
+        } onCancel: {
+            Task { await chatSocket.close() }
+        }
+        await chatSocket.close()
+        guard approved else { return false }
+        try? await store.markApproved(id: target.id)
+        return true
+    }
+
+    /// The ping round trip only; never touches the store or closes the socket.
+    private static func runProbe(on chatSocket: RelayChatSocket) async -> Bool {
+        do {
             try await chatSocket.sendText(
                 #"{"jsonrpc":"2.0","id":"pairing-probe","method":"gateway.ping","params":{}}"#
             )
-            var approved = false
             for _ in 0..<32 {
+                try Task.checkCancellation()
                 guard let reply = try await chatSocket.receiveText() else { return false }
                 switch RelayApprovalProbe.evaluateGatewayPing(reply) {
                 case .approved:
-                    approved = true
+                    return true
                 case .rejected:
                     return false
                 case .ignore:
                     continue
                 }
-                break
             }
-            guard approved else { return false }
-            try? await store.markApproved(id: target.id)
-            return true
+            return false
         } catch {
             return false
         }

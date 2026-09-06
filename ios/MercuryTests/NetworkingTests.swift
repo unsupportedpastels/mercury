@@ -31,6 +31,15 @@ final class MockURLProtocol: URLProtocol {
         }
         do {
             let (response, data) = try handler(request)
+            // Simulate a real redirect: hand the session the new request so
+            // its redirect policy (delegate) decides whether to follow.
+            if (300...399).contains(response.statusCode),
+               let location = response.value(forHTTPHeaderField: "Location"),
+               let target = URL(string: location, relativeTo: request.url) {
+                var redirected = request
+                redirected.url = target.absoluteURL
+                client?.urlProtocol(self, wasRedirectedTo: redirected, redirectResponse: response)
+            }
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
             // URLProtocol does not persist Set-Cookie into HTTPCookieStorage on
@@ -80,7 +89,7 @@ final class NetworkingTests: XCTestCase {
         config.protocolClasses = [MockURLProtocol.self]
         config.httpCookieStorage = HTTPCookieStorage.shared
         config.httpShouldSetCookies = true
-        return HermesHTTPClient(origin: origin, session: URLSession(configuration: config))
+        return HermesHTTPClient(origin: origin, session: HermesURLSession.make(config))
     }
 
     private func makeProbe(origin: String = "https://hermes.test") -> StatusProbe {
@@ -99,6 +108,44 @@ final class NetworkingTests: XCTestCase {
     }
 
     // MARK: - Tests
+
+    /// Redirects are never followed (Android `followRedirects = false`
+    /// parity): a bearer token scoped to the configured origin must not be
+    /// forwarded to another host. The 3xx surfaces to the caller as-is.
+    func testHermesSessionRefusesCrossOriginRedirect() async throws {
+        MockURLProtocol.handler = { request in
+            if request.url?.host == "hermes.test" {
+                return self.response(
+                    302, headers: ["Location": "https://evil.test/steal"], for: request
+                )
+            }
+            return self.response(200, for: request)
+        }
+        let client = makeClient()
+        client.bearerToken = "secret-token"
+        let (_, http) = try await client.get(path: "/api/status")
+        XCTAssertEqual(http.statusCode, 302)
+        XCTAssertEqual(MockURLProtocol.receivedRequests.map { $0.url?.host }, ["hermes.test"])
+    }
+
+    /// Control for the test above: the mock really does redirect when the
+    /// session has no refusing delegate, so the assertion is meaningful.
+    func testControlPlainSessionFollowsTheSameRedirect() async throws {
+        MockURLProtocol.handler = { request in
+            if request.url?.host == "hermes.test" {
+                return self.response(
+                    302, headers: ["Location": "https://evil.test/steal"], for: request
+                )
+            }
+            return self.response(200, for: request)
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let client = HermesHTTPClient(origin: "https://hermes.test", session: URLSession(configuration: config))
+        let (_, http) = try await client.get(path: "/api/status")
+        XCTAssertEqual(http.statusCode, 200)
+        XCTAssertEqual(MockURLProtocol.receivedRequests.map { $0.url?.host }, ["hermes.test", "evil.test"])
+    }
 
     func testBearerTokenIsSentWhenSet() async throws {
         MockURLProtocol.handler = { request in

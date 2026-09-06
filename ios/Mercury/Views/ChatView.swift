@@ -1930,7 +1930,9 @@ struct ChatView: View {
             }
 
         case .approvalExpire, .clarifyExpire:
-            if pendingRequest != nil { pendingRequest = nil }
+            // The reducer clears only an exact kind + request-id match; a
+            // stale or unrelated expiry must not dismiss a newer prompt.
+            if transcript.pendingRequest == nil, pendingRequest != nil { pendingRequest = nil }
 
         case .sessionTitle:
             if let adopted = transcript.adoptedTitle {

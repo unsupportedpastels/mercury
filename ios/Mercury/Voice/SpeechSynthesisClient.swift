@@ -142,7 +142,7 @@ struct RESTSpeechSynthesizer: SpeechSynthesizing {
         self.transport = transport
     }
 
-    init(origin: URL, accessToken: String, profile: String, session: URLSession = .shared) {
+    init(origin: URL, accessToken: String, profile: String, session: URLSession = HermesURLSession.noRedirects) {
         self.init(origin: origin, accessToken: accessToken, profile: profile) { request in
             do {
                 let (data, response) = try await session.data(for: request)
