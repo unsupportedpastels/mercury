@@ -22,6 +22,8 @@ enum ConnectionPhase: Equatable {
 @MainActor
 @Observable
 final class AppModel {
+    /// In-memory last-known child evidence, isolated by origin/profile/durable session.
+    var backgroundTasksBySession: [String: BackgroundTasks] = [:]
 
     // MARK: - Published state
 
@@ -33,6 +35,7 @@ final class AppModel {
     /// origin-scoped REST features guard on `serverOrigin` and quietly stand
     /// down because it stays nil.
     private(set) var activeRelayTarget: RelayPairedTarget?
+    private(set) var relaySelectionGeneration: UInt64 = 0
     private(set) var hermesVersion: String?
     var profiles: [String] = ["default"]
     var sessions: [SessionRow] = []
@@ -598,6 +601,12 @@ final class AppModel {
 
     /// Switches the active profile and reloads the session list from offset 0.
     func switchProfile(_ profile: String) async {
+        relaySelectionGeneration &+= 1
+        let token = relaySelectionGeneration
+        if let target = activeRelayTarget {
+            await RelayConnectionPool.shared.select(target: target, profile: profile)
+            guard relaySelectionGeneration == token else { return }
+        }
         setActiveProfile(profile)
         await controller.loadSessions()
     }
@@ -847,8 +856,11 @@ final class AppModel {
     func fireTestNotification() async {
         let origin = serverOrigin ?? "https://simulator.test"
         notificationCoordinator.configure(origin: origin)
+        // Each invocation represents a new synthetic session. Reusing the same
+        // completed session correctly hits persisted notification deduplication
+        // on subsequent UI-test runs and therefore produces no banner.
         let event = ChatEvent.messageComplete(
-            sessionID: "sim-test-session",
+            sessionID: "sim-test-session-\(UUID().uuidString)",
             text: "Simulator test — your task finished.",
             status: "finished",
             error: nil,
@@ -944,11 +956,21 @@ final class AppModel {
 
     // MARK: - Local transitions
 
+    private func endRelaySelection() {
+        relaySelectionGeneration &+= 1
+        let token = relaySelectionGeneration
+        Task { @MainActor in
+            guard relaySelectionGeneration == token else { return }
+            await RelayConnectionPool.shared.select(target: nil, profile: activeProfile)
+        }
+    }
+
     func connect() {
         connectionPhase = .connecting
     }
 
     func disconnect() {
+        endRelaySelection()
         activeRelayTarget = nil
         connectionPhase = .disconnected
     }
@@ -956,6 +978,7 @@ final class AppModel {
     /// Connects through a paired, approved Mercury Relay target and enters
     /// the normal connected experience.
     func connectRelay(_ target: RelayPairedTarget) async {
+        relaySelectionGeneration &+= 1
         await controller.connectRelay(target: target)
     }
 
@@ -974,6 +997,7 @@ final class AppModel {
 
     /// Clears transient connection state without touching stored credentials.
     func reset() {
+        endRelaySelection()
         activeRelayTarget = nil
         serverOrigin = nil
         hermesVersion = nil

@@ -30,36 +30,46 @@ struct ConnectView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Spacer()
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
 
-            Text("Connect to Hermes")
-                .font(.largeTitle.bold())
-                .foregroundStyle(Color.primary)
+                    Text("Connect to Hermes")
+                        .font(.largeTitle.bold())
+                        .foregroundStyle(Color.primary)
 
-            Text("Mercury is a companion for the Hermes agent you already run — self-hosted or on Hermes Cloud. Official Hermes endpoints only.")
-                .font(.subheadline)
-                .foregroundStyle(Color.secondary)
+                    Text("Connect to the Hermes agent you already run.")
+                        .font(.subheadline)
+                        .foregroundStyle(Color.secondary)
 
-            Picker("Connection type", selection: $mode) {
-                ForEach(ConnectionMode.allCases) { m in
-                    Text(m.title).tag(m)
+                    Picker("Connection type", selection: $mode) {
+                        ForEach(ConnectionMode.allCases) { m in
+                            Text(m.title).tag(m)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text("Relay pairs with your Hermes host by scanning a QR code.")
+                        .font(.footnote)
+                        .foregroundStyle(Color.secondary)
+
+                    switch mode {
+                    case .selfHosted:
+                        selfHostedSection
+                    case .hermesCloud:
+                        cloudSection
+                    case .mercuryRelay:
+                        relaySection
+                    }
                 }
+                .frame(maxWidth: 520, alignment: .leading)
+                .padding(.horizontal, 24)
+                .padding(.top, max(24, geometry.size.height * 0.20))
+                .padding(.bottom, 24)
+                .frame(maxWidth: .infinity)
             }
-            .pickerStyle(.segmented)
-
-            switch mode {
-            case .selfHosted:
-                selfHostedSection
-            case .hermesCloud:
-                cloudSection
-            case .mercuryRelay:
-                relaySection
-            }
-
-            Spacer()
+            .scrollDismissesKeyboard(.interactively)
         }
-        .padding(24)
         .amoledScreen()
         .task { await relay.loadTargets() }
         .sheet(isPresented: $showRelayPairing, onDismiss: {
@@ -91,26 +101,37 @@ struct ConnectView: View {
             errorBanner(bannerMessage)
         }
 
-        TextField("hermes.example.com", text: $originText)
-            .keyboardType(.URL)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .textContentType(.URL)
-            .padding(12)
-            .background(Color.surfaceLow, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(
-                        validationError == nil ? Color.separatorSubtle : Color.statusAlert.opacity(0.6)
-                    )
-            )
-            .submitLabel(.go)
-            .onSubmit(continueTapped)
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Server address")
+                .font(.subheadline.weight(.semibold))
+
+            TextField("Server address", text: $originText,
+                      prompt: Text("hermes.example.com").foregroundStyle(Color.secondary))
+                .foregroundStyle(Color.primary)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textContentType(.URL)
+                .padding(12)
+                .background(Color.surfaceMid, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(
+                            validationError == nil ? Color.separatorSubtle : Color.statusAlert.opacity(0.6)
+                        )
+                )
+                .submitLabel(.go)
+                .onSubmit(continueTapped)
+
+            Text("Example: hermes.example.com or host:port")
+                .font(.footnote)
+                .foregroundStyle(Color.secondary)
+        }
 
         Toggle(isOn: $useTls) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Use HTTPS")
-                Text("Connect securely — turn off only for plain-HTTP servers")
+                Text("Turn off only for a plain HTTP server")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -136,16 +157,12 @@ struct ConnectView: View {
         }
         .buttonStyle(.borderedProminent)
         .tint(Color.accentPrimary)
-        .disabled(isBusy)
+        .disabled(!canContinue)
 
         if !appModel.serverCatalog.entries.isEmpty {
             Button("Saved servers") { showSavedServers = true }
                 .buttonStyle(.bordered)
         }
-
-        Label(mode.subtitle, systemImage: mode.icon)
-            .font(.caption)
-            .foregroundStyle(Color.secondary)
     }
 
     // MARK: - Hermes Cloud
@@ -330,7 +347,12 @@ struct ConnectView: View {
 
     // MARK: - Actions
 
+    private var canContinue: Bool {
+        !isBusy && !originText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private func continueTapped() {
+        guard canContinue else { return }
         validationError = nil
         guard let canonical = ServerOrigin.normalize(originText, useTls: useTls) else {
             validationError = "That doesn't look like a server address. Try something like hermes.example.com or 192.168.1.20:8080."

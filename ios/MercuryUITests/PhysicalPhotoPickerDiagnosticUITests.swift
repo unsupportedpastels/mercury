@@ -1,6 +1,16 @@
 import XCTest
 
 final class PhysicalPhotoPickerDiagnosticUITests: XCTestCase {
+    override func setUpWithError() throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Physical-device picker diagnostics are not simulator tests")
+        #else
+        guard ProcessInfo.processInfo.environment["MERCURY_PHYSICAL_PICKER_DIAGNOSTICS"] == "1" else {
+            throw XCTSkip("Set MERCURY_PHYSICAL_PICKER_DIAGNOSTICS=1 to inspect an authorized physical-device session")
+        }
+        #endif
+    }
+
     func testPhotoPickerPresentationOnPhysicalIPhone() throws {
         let app = try launchComposer()
         attach("Physical iPhone chat before photo picker")

@@ -94,12 +94,24 @@ class MainActivity : ComponentActivity() {
         consumeIncomingShare(intent)
         enableEdgeToEdge()
         window.isNavigationBarContrastEnforced = false
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
         setContent {
             HermesAndroidTheme {
                 val snapshot by connectionViewModel.snapshots.collectAsStateWithLifecycle()
+                NotificationPermissionEffect(snapshot) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        val preferences = getSharedPreferences("notification_permission", MODE_PRIVATE)
+                        val granted = checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                            android.content.pm.PackageManager.PERMISSION_GRANTED
+                        if (!granted &&
+                            !shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS) &&
+                            !preferences.getBoolean("requested", false)
+                        ) {
+                            // Persist before launching: denial and Activity recreation must not reprompt.
+                            preferences.edit().putBoolean("requested", true).apply()
+                            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                    }
+                }
                 val relayState by relayViewModel.state.collectAsStateWithLifecycle()
                 val transcriptCachingEnabled by connectionViewModel.transcriptCachingEnabled
                     .collectAsStateWithLifecycle()
@@ -231,6 +243,22 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@Composable
+internal fun NotificationPermissionEffect(snapshot: HermesGatewaySnapshot, request: () -> Unit) {
+    var requested by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    val ready = snapshot.connectionState == com.unsupportedpastels.hermesandroid.gateway.ConnectionState.Connected &&
+        snapshot.authenticationState in setOf(
+            com.unsupportedpastels.hermesandroid.gateway.AuthenticationState.Authenticated,
+            com.unsupportedpastels.hermesandroid.gateway.AuthenticationState.NotRequired,
+        )
+    LaunchedEffect(ready) {
+        if (ready && !requested) {
+            requested = true
+            request()
+        }
+    }
+}
+
 private const val VOICE_SCREEN_OFF_PREF = "screen_off_continuation"
 
 internal fun voiceScreenOffPreferenceKey(origin: ServerOrigin?): String =
@@ -351,7 +379,7 @@ internal fun HermesAppHost(
     // Re-probe voice contracts whenever the connection or selected profile
     // changes; refreshVoiceCapabilities is fail-closed so an unauthenticated or
     // older server simply leaves the mic hidden.
-    LaunchedEffect(connectionViewModel, snapshot.authenticationState, snapshot.selectedProfile) {
+    LaunchedEffect(connectionViewModel, currentServerOrigin, snapshot.relayTargetId, snapshot.authenticationState, snapshot.selectedProfile) {
         connectionViewModel?.refreshVoiceCapabilities()
     }
 
@@ -541,6 +569,9 @@ internal fun HermesAppHost(
         },
         voiceSettings = if (voiceCapabilities.audioRoutesPresent && voiceViewModel != null) {
             VoiceSettings(
+                identity = com.unsupportedpastels.hermesandroid.voice.VoiceSettingsIdentity(
+                    currentServerOrigin, snapshot.relayTargetId, snapshot.selectedProfile,
+                ),
                 capabilities = voiceCapabilities,
                 config = voiceServerConfig,
                 setAutoTts = { enabled -> voiceViewModel.setVoiceAutoTts(enabled) },

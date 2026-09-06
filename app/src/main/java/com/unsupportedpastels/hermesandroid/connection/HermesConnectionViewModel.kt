@@ -38,6 +38,7 @@ import com.unsupportedpastels.hermesandroid.cache.OfflineCacheRepository
 import com.unsupportedpastels.hermesandroid.files.HostFileContent
 import com.unsupportedpastels.hermesandroid.files.HostFileListing
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
+import com.unsupportedpastels.hermesandroid.gateway.ChatConnectionPhase
 import com.unsupportedpastels.hermesandroid.gateway.ActiveRuntimeSession
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessageRole
@@ -111,6 +112,9 @@ import com.unsupportedpastels.hermesandroid.session.toggleBulkSelection
 import com.unsupportedpastels.hermesandroid.relay.TlsRelayBinarySocketFactory
 import com.unsupportedpastels.hermesandroid.relay.RelayConnector
 import com.unsupportedpastels.hermesandroid.relay.RelayHermesChatSocket
+import com.unsupportedpastels.hermesandroid.relay.RelayLeaseCheckpoint
+import com.unsupportedpastels.hermesandroid.relay.RelayLeaseRecoverySocket
+import com.unsupportedpastels.hermesandroid.relay.recoverRelayTasks
 import com.unsupportedpastels.hermesandroid.ui.isSlashCommandContext
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -135,6 +139,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -241,12 +247,6 @@ sealed interface ModelPickerState {
     ) : ModelPickerState
 }
 
-private data class ActiveTokenRecord(
-    val origin: ServerOrigin,
-    val generation: Long,
-    val tokens: NativeTokenSet,
-)
-
 private data class OperationalStatusFetch(
     val origin: ServerOrigin,
     val generation: Long,
@@ -274,37 +274,6 @@ private data class RelayProjectSnapshot(
     val state: ProjectLoadState,
     val activeProjectId: ProjectId? = null,
     val scopedSessionIds: Set<DurableSessionId> = emptySet(),
-)
-
-private class ChatRecoveryState(
-    val operationGeneration: Long,
-    var remaining: Int = MAX_CHAT_RECOVERIES_PER_OPERATION,
-    var activeAttempt: ChatRecoveryAttempt? = null,
-)
-
-private class ChatRecoveryAttempt(
-    val state: ChatRecoveryState,
-)
-
-private data class LiveChatController(
-    val durableSessionId: DurableSessionId,
-    val session: HermesChatSession,
-    val runtimeSessionId: RuntimeSessionId,
-    var operationGeneration: Long,
-    var eventJob: Job? = null,
-    var recoveryState: ChatRecoveryState? = null,
-)
-
-private data class ControllerOperation(
-    val durableSessionId: DurableSessionId,
-    val session: HermesChatSession,
-    val runtimeSessionId: RuntimeSessionId,
-    val origin: ServerOrigin,
-    val originGeneration: Long,
-    val chatOperationGeneration: Long,
-    val requestId: String? = null,
-    val advertisedChoices: List<String> = emptyList(),
-    val blockingKind: UnsupportedBlockingKind? = null,
 )
 
 private fun HermesGatewaySnapshot.mapSession(
@@ -354,6 +323,7 @@ class HermesConnectionViewModel(
     private val attachmentReader: AttachmentByteReader =
         AttachmentByteReader { throw AttachmentReadException("Attachment reading is not available") },
     private val appForegroundStates: StateFlow<Boolean> = MutableStateFlow(true),
+    private val relayNetworkAvailable: StateFlow<Boolean> = MutableStateFlow(true),
     private val notifications: TurnNotificationController = NoOpTurnNotificationController,
     private val sessionFilterRepository: SessionFilterRepository? = null,
     private val speechStreamConnector: SpeechStreamConnector? = null,
@@ -374,76 +344,103 @@ class HermesConnectionViewModel(
     val transcriptCachingEnabled: StateFlow<Boolean> = cacheRepository?.transcriptCachingEnabled
         ?: MutableStateFlow(false)
 
-    private var cacheLoadJob: Job? = null
-    private var profileGeneration = 0L
-    private var activeOrigin: ServerOrigin? = null
-    private var activeRelayTarget: RelayPairedTarget? = null
-    private var activeTokens: ActiveTokenRecord? = null
+    private val connectionCoordinator = ConnectionCoordinator()
+    private val sessionControllerRegistry = PerSessionControllerRegistry()
+    // Fixed-size stripes bound lock retention; Relay admission is target-wide.
+    private val controllerConnectionLocks = List(32) { kotlinx.coroutines.sync.Mutex() }
+    private val relayConnectionLock = kotlinx.coroutines.sync.Mutex()
 
-    // Serializes token refresh: concurrent callers that all observe an expired access
-    // token must not each spend the same single-use rotated refresh token, and a stale
-    // refresh result must never overwrite a newer persisted token set.
-    private val tokenRefreshMutex = Mutex()
-    private var generation = 0L
-    private var connectionJob: Job? = null
-    private var projectLoadJob: Job? = null
-    private var refreshHomeJob: Job? = null
-    private var recentSessionsJob: Job? = null
-    private var recentSessionsScopeKey: String? = null
-    private var managementJob: Job? = null
-    private var managementRequestGeneration = 0L
-    private var operationalStatusJob: Job? = null
+    private fun controllerConnectionLock(id: DurableSessionId) =
+        if (activeRelayTarget != null) relayConnectionLock
+        else controllerConnectionLocks[(id.hashCode() and Int.MAX_VALUE) % controllerConnectionLocks.size]
+
+    // Compatibility façade for existing VM operations. The mutable values live in
+    // the native owners above; callers still observe the same public snapshot API.
+    private var cacheLoadJob: Job?
+        get() = connectionCoordinator.cacheLoadJob
+        set(value) { connectionCoordinator.cacheLoadJob = value }
+    private var activeOrigin: ServerOrigin?
+        get() = connectionCoordinator.activeOrigin
+        set(value) { connectionCoordinator.activeOrigin = value }
+    private var activeRelayTarget: RelayPairedTarget?
+        get() = connectionCoordinator.activeRelayTarget
+        set(value) { connectionCoordinator.activeRelayTarget = value }
+    private var activeTokens: ActiveTokenRecord?
+        get() = connectionCoordinator.activeTokens
+        set(value) { connectionCoordinator.activeTokens = value }
+    private var generation: Long
+        get() = connectionCoordinator.generation
+        set(value) { connectionCoordinator.generation = value }
+    private var profileGeneration: Long
+        get() = connectionCoordinator.profileGeneration
+        set(value) { connectionCoordinator.profileGeneration = value }
+    private var connectionJob: Job?
+        get() = connectionCoordinator.connectionJob
+        set(value) { connectionCoordinator.connectionJob = value }
+    private var projectLoadJob: Job?
+        get() = connectionCoordinator.projectLoadJob
+        set(value) { connectionCoordinator.projectLoadJob = value }
+    private var refreshHomeJob: Job?
+        get() = connectionCoordinator.refreshHomeJob
+        set(value) { connectionCoordinator.refreshHomeJob = value }
+    private var recentSessionsJob: Job?
+        get() = connectionCoordinator.recentSessionsJob
+        set(value) { connectionCoordinator.recentSessionsJob = value }
+    private var recentSessionsScopeKey: String?
+        get() = connectionCoordinator.recentSessionsScopeKey
+        set(value) { connectionCoordinator.recentSessionsScopeKey = value }
+    private var managementJob: Job?
+        get() = connectionCoordinator.managementJob
+        set(value) { connectionCoordinator.managementJob = value }
+    private var managementRequestGeneration: Long
+        get() = connectionCoordinator.managementRequestGeneration
+        set(value) { connectionCoordinator.managementRequestGeneration = value }
+    private var operationalStatusJob: Job?
+        get() = connectionCoordinator.operationalStatusJob
+        set(value) { connectionCoordinator.operationalStatusJob = value }
     private var lastOperationalStatusFetch: OperationalStatusFetch? = null
-    // The active Home filter's archived mode: durable-session reloads (management
-    // settings, Home refresh) must honor it so archived rows do not vanish while
-    // an `is:archived` filter is selected, and must not leak into the normal list.
+    // The active Home filter's archived mode is publication state, not controller state.
     private var activeSessionArchivedFilter = false
     private var lastDurableSessionsFetchKey: DurableSessionsFetchKey? = null
-    private var searchJob: Job? = null
-    private val projectSessionJobs = mutableMapOf<ProjectId, Job>()
-    private val projectSessionGenerations = mutableMapOf<ProjectId, Long>()
-    private var nextProjectSessionGeneration = 0L
     private val projectMetadataLock = Any()
     private var activeProjectMetadataSession: ProjectMetadataSessionRecord? = null
-    private var signInJob: Job? = null
-    private var nextChatOperationGeneration = 0L
-    // The most recent Ready settings, kept so a transient connection failure can be
-    // retried (manual "Retry" or automatic on app foreground) without waiting for a
-    // settings change. Cleared only when the active origin actually changes.
-    private var lastReadySettings: ServerSettingsState.Ready? = null
-    private var foregroundReconnectJob: Job? = null
-    // Consecutive auth-provider-unavailable (HTTP 503) failures on the connect
-    // path. A single 503 is a transient upstream-IDP blip worth a silent retry,
-    // but a *persistent* 503 is indistinguishable, from the client, from a
-    // server that will never validate this session's token again. After
-    // MAX_AUTH_503_BEFORE_SIGN_IN consecutive 503s we stop looping "reconnecting"
-    // and surface a recoverable sign-in prompt so the user can obtain a fresh
-    // token. Reset on any successful connect or a terminal auth outcome.
-    private var consecutiveAuthProviderUnavailable = 0
-    private val chatJobs = mutableMapOf<DurableSessionId, Job>()
-    private val chatOperationGenerations = mutableMapOf<DurableSessionId, Long>()
-    private val liveControllers = mutableMapOf<DurableSessionId, LiveChatController>()
-    private val activeTurnIds = mutableSetOf<DurableSessionId>()
-    private var lastPublishedActiveTurnCount = 0
-    // Selected-session compatibility state. Live event ownership is held by
-    // [liveControllers], so changing the visible session does not close peers.
-    private var chatJob: Job? = null
-    private var chatOperationGeneration = 0L
-    private var eventJob: Job? = null
-    private var activeChatSession: HermesChatSession? = null
-    private var activeChatDurableId: DurableSessionId? = null
-    private var activeRuntimeSessionId: RuntimeSessionId? = null
-    private var chatRecoveryState: ChatRecoveryState? = null
-    private val controllerLock = Any()
+    private var searchJob: Job?
+        get() = connectionCoordinator.searchJob
+        set(value) { connectionCoordinator.searchJob = value }
+    private var foregroundReconnectJob: Job?
+        get() = connectionCoordinator.foregroundReconnectJob
+        set(value) { connectionCoordinator.foregroundReconnectJob = value }
+    private var signInJob: Job?
+        get() = connectionCoordinator.signInJob
+        set(value) { connectionCoordinator.signInJob = value }
+    private val tokenRefreshMutex: Mutex
+        get() = connectionCoordinator.tokenRefreshMutex
+    private var lastReadySettings: ServerSettingsState.Ready?
+        get() = connectionCoordinator.lastReadySettings
+        set(value) { connectionCoordinator.lastReadySettings = value }
+    private var consecutiveAuthProviderUnavailable: Int
+        get() = connectionCoordinator.consecutiveAuthProviderUnavailable
+        set(value) { connectionCoordinator.consecutiveAuthProviderUnavailable = value }
+
+    private val liveControllers: MutableMap<DurableSessionId, PerSessionController>
+        get() = sessionControllerRegistry.controllers
+    private val activeTurnIds: MutableSet<DurableSessionId>
+        get() = sessionControllerRegistry.activeTurnIds
+    private val controllerLock: Any
+        get() = sessionControllerRegistry.lock
 
     private val mutableSlashCompletions =
         MutableStateFlow<Map<DurableSessionId, SlashCompletionState>>(emptyMap())
     val slashCompletions: StateFlow<Map<DurableSessionId, SlashCompletionState>> =
         mutableSlashCompletions.asStateFlow()
-    private val slashCompletionJobs = mutableMapOf<DurableSessionId, Job>()
-    private val slashCompletionGenerations = mutableMapOf<DurableSessionId, Long>()
-    private val sessionInsightsJobs = mutableMapOf<DurableSessionId, Job>()
-    private val sessionInsightsGenerations = mutableMapOf<DurableSessionId, Long>()
+    private val slashCompletionJobs: MutableMap<DurableSessionId, Job>
+        get() = sessionControllerRegistry.slashCompletionJobs
+    private val slashCompletionGenerations: MutableMap<DurableSessionId, Long>
+        get() = sessionControllerRegistry.slashCompletionGenerations
+    private val sessionInsightsJobs: MutableMap<DurableSessionId, Job>
+        get() = sessionControllerRegistry.sessionInsightsJobs
+    private val sessionInsightsGenerations: MutableMap<DurableSessionId, Long>
+        get() = sessionControllerRegistry.sessionInsightsGenerations
 
     private val mutableModelPickerState = MutableStateFlow<ModelPickerState>(ModelPickerState.Closed)
     val modelPickerState: StateFlow<ModelPickerState> = mutableModelPickerState.asStateFlow()
@@ -456,13 +453,23 @@ class HermesConnectionViewModel(
     val attachments: StateFlow<Map<DurableSessionId, List<ComposerAttachment>>> =
         mutableAttachments.asStateFlow()
 
-    /** Which `/api/audio/…` contracts the connected server advertises (fail-closed). */
-    private val mutableVoiceCapabilities = MutableStateFlow(VoiceCapabilities.NONE)
-    val voiceCapabilities: StateFlow<VoiceCapabilities> = mutableVoiceCapabilities.asStateFlow()
-
-    /** Server-authoritative `voice` config (recording cap, silence, stop phrases). */
-    private val mutableVoiceServerConfig = MutableStateFlow(VoiceServerConfig.DEFAULT)
-    val voiceServerConfig: StateFlow<VoiceServerConfig> = mutableVoiceServerConfig.asStateFlow()
+    private val operationGuard = ConnectionOperationGuard(::currentConnectionOperationScope)
+    private val voiceSettingsOwner = VoiceSettingsController(
+        guard = operationGuard,
+        probe = { scope -> withHermesRestOperation(scope) { origin, token ->
+            val capabilities = client.probeVoiceCapabilities(origin, token.orEmpty(), scope.profile)
+            operationGuard.ensureCurrent(scope)
+            capabilities to client.loadVoiceServerConfig(origin, token.orEmpty(), scope.profile)
+        } },
+        write = { scope, payload -> withHermesRestOperation(scope) { origin, token ->
+            client.updateServerConfig(origin, token.orEmpty(), scope.profile, payload)
+        } },
+        voices = { scope -> withHermesRestOperation(scope) { origin, token ->
+            client.listElevenLabsVoices(origin, token.orEmpty(), scope.profile)
+        } },
+    )
+    val voiceCapabilities: StateFlow<VoiceCapabilities> = voiceSettingsOwner.capabilities
+    val voiceServerConfig: StateFlow<VoiceServerConfig> = voiceSettingsOwner.config
 
     /** Maps local draft IDs to the canonical durable IDs returned by session.create. */
     private val serverDurableIds = mutableMapOf<DurableSessionId, DurableSessionId>()
@@ -516,59 +523,44 @@ class HermesConnectionViewModel(
 
     init {
         viewModelScope.launch {
+            snapshots.collect { voiceSettingsOwner.onScopeChanged() }
+        }
+        viewModelScope.launch {
             var hasAppliedReadySettings = false
             settingsStates.collect { settingsState ->
                 val nextOrigin = (settingsState as? ServerSettingsState.Ready)?.activeOrigin
+                // Relay mode is an explicit transport selection. Direct settings remain passive
+                // until a direct-server action calls leaveRelayMode() first; transient Loading /
+                // Ready emissions must not clear the relay and start a competing direct connect.
+                if (activeRelayTarget != null) {
+                    if (settingsState is ServerSettingsState.Ready) {
+                        lastReadySettings = settingsState
+                    }
+                    return@collect
+                }
                 // Label edits and catalog metadata updates must not tear down a live transport when
                 // the active origin is unchanged. Only an actual active-origin transition resets
                 // client state and starts a new connection generation.
                 val directOriginUnchanged = settingsState is ServerSettingsState.Ready &&
-                    (
-                        nextOrigin == activeOrigin ||
-                            (activeRelayTarget != null && nextOrigin == lastReadySettings?.activeOrigin)
-                    )
+                    nextOrigin == activeOrigin
                 if (hasAppliedReadySettings && directOriginUnchanged) {
                     lastReadySettings = settingsState
                     return@collect
                 }
                 hasAppliedReadySettings = settingsState is ServerSettingsState.Ready
-                val currentGeneration = ++generation
-                val previousOrigin = activeOrigin
+                val transition = connectionCoordinator.beginDirectTransition(nextOrigin)
+                val currentGeneration = transition.generation
+                val previousOrigin = transition.previousOrigin
                 if (previousOrigin != null && previousOrigin != nextOrigin) {
                     viewModelScope.launch {
                         cacheRepository?.clearTranscriptTailsForOrigin(previousOrigin)
                     }
                 }
-                cacheLoadJob?.cancel()
-                connectionJob?.cancel()
-                projectLoadJob?.cancel()
-                projectLoadJob = null
-                refreshHomeJob?.cancel()
-                refreshHomeJob = null
-                recentSessionsJob?.cancel()
-                recentSessionsJob = null
-                recentSessionsScopeKey = null
-                managementJob?.cancel()
-                managementJob = null
-                managementRequestGeneration += 1
-                operationalStatusJob?.cancel()
-                operationalStatusJob = null
                 lastOperationalStatusFetch = null
                 activeSessionArchivedFilter = false
                 lastDurableSessionsFetchKey = null
-                searchJob?.cancel()
-                searchJob = null
-                projectSessionJobs.values.forEach(Job::cancel)
-                projectSessionJobs.clear()
-                projectSessionGenerations.clear()
-                nextChatOperationGeneration += 1
+                sessionControllerRegistry.invalidateOperations()
                 signInJob?.cancel()
-                chatJobs.values.forEach(Job::cancel)
-                chatJobs.clear()
-                chatOperationGenerations.clear()
-                sessionInsightsJobs.values.forEach(Job::cancel)
-                sessionInsightsJobs.clear()
-                sessionInsightsGenerations.clear()
                 modelPickerGeneration += 1
                 modelPickerJob?.cancel()
                 modelPickerJob = null
@@ -579,12 +571,8 @@ class HermesConnectionViewModel(
                 pendingDraftSessions.clear()
                 serverDurableIds.clear()
                 mutableAttachments.value = emptyMap()
-                activeTokens = null
-                activeRelayTarget = null
                 setSessionFilterScope(null, null)
-                activeOrigin = nextOrigin
                 lastReadySettings = settingsState as? ServerSettingsState.Ready
-                profileGeneration += 1
                 when (settingsState) {
                     ServerSettingsState.Loading -> {
                         mutableSnapshots.value = HermesGatewaySnapshot()
@@ -646,22 +634,13 @@ class HermesConnectionViewModel(
         val relayOrigin = runCatching { ServerOrigin.parse(target.relayOrigin) }.getOrNull()
             ?: return viewModelScope.launch { }
         val boundedProfile = profile.trim().take(64).ifEmpty { "default" }
-        val currentGeneration = ++generation
-        connectionJob?.cancel()
-        cacheLoadJob?.cancel()
-        projectLoadJob?.cancel()
-        nextChatOperationGeneration += 1
-        chatJobs.values.forEach(Job::cancel)
-        chatJobs.clear()
-        chatOperationGenerations.clear()
+        val transition = connectionCoordinator.beginRelayTransition(target, relayOrigin)
+        val currentGeneration = transition.generation
+        sessionControllerRegistry.invalidateChatOperations()
         val cleanupJob = viewModelScope.launch {
             disconnectProjectMetadata()
             disconnectChat()
         }
-        activeTokens = null
-        activeRelayTarget = target
-        activeOrigin = relayOrigin
-        profileGeneration += 1
         mutableSnapshots.value = HermesGatewaySnapshot(
             connectionState = ConnectionState.Connecting,
             relayTargetId = target.id,
@@ -670,8 +649,12 @@ class HermesConnectionViewModel(
         )
         return viewModelScope.launch {
             var session: HermesChatSession? = null
+            var admissionLocked = false
             try {
                 cleanupJob.join()
+                relayConnectionLock.lock()
+                admissionLocked = true
+                if (generation != currentGeneration || activeRelayTarget?.id != target.id) return@launch
                 session = factory(target, boundedProfile)
                 val profiles = try {
                     session.loadProfiles()
@@ -721,17 +704,17 @@ class HermesConnectionViewModel(
                     connectionError = "The relay or host is unreachable. Check that the host is online, then retry.",
                 )
             } finally {
-                closeChatSessionNonCancellably(session)
+                try {
+                    closeChatSessionNonCancellably(session)
+                } finally {
+                    if (admissionLocked) relayConnectionLock.unlock()
+                }
             }
         }.also { connectionJob = it }
     }
 
     fun leaveRelayMode() {
-        if (activeRelayTarget == null) return
-        ++generation
-        activeRelayTarget = null
-        activeOrigin = null
-        connectionJob?.cancel()
+        if (connectionCoordinator.leaveRelayTransition() == null) return
         viewModelScope.launch {
             disconnectProjectMetadata()
             disconnectChat()
@@ -744,9 +727,12 @@ class HermesConnectionViewModel(
         val expectedGeneration = generation
         val factory = relaySessionFactory ?: return viewModelScope.launch { }
         return viewModelScope.launch {
+            relayConnectionLock.lock()
             var session: HermesChatSession? = null
+            val borrowed = liveControllers.values.firstOrNull()?.session
             try {
-                session = factory(target, mutableSnapshots.value.selectedProfile)
+                if (generation != expectedGeneration || activeRelayTarget?.id != target.id) return@launch
+                session = borrowed ?: factory(target, mutableSnapshots.value.selectedProfile)
                 val result = session.relayRequest(
                     "relay.sessions.list",
                     buildJsonObject {
@@ -782,7 +768,11 @@ class HermesConnectionViewModel(
                     connectionError = "The relay host could not be reached. Pull to retry.",
                 )
             } finally {
-                closeChatSessionNonCancellably(session)
+                try {
+                    if (borrowed == null) closeChatSessionNonCancellably(session)
+                } finally {
+                    relayConnectionLock.unlock()
+                }
             }
         }
     }
@@ -847,8 +837,7 @@ class HermesConnectionViewModel(
         // to complete sign-in to mint a fresh token. Leave the sign-in state in
         // place; the sign-in flow drives the next connect.
         if (mutableSnapshots.value.authenticationState == AuthenticationState.SignInRequired) return
-        val currentGeneration = ++generation
-        connectionJob?.cancel()
+        val currentGeneration = connectionCoordinator.beginReconnect()
         val job = viewModelScope.launch {
             connect(settings.activeOrigin, currentGeneration)
         }
@@ -1235,118 +1224,49 @@ class HermesConnectionViewModel(
         }
     }
 
+    private fun isCurrentRestOperation(
+        serverOrigin: ServerOrigin,
+        originGeneration: Long,
+    ): Boolean {
+        val scope = currentConnectionOperationScope() ?: return false
+        return scope.origin == serverOrigin &&
+            scope.generation == originGeneration &&
+            isCurrentRestOperation(scope)
+    }
+
+    private fun isCurrentRestOperation(scope: ConnectionOperationScope): Boolean {
+        val authenticationState = mutableSnapshots.value.authenticationState
+        return scope.relayTargetId == null &&
+            operationGuard.isCurrent(scope) &&
+            (authenticationState == AuthenticationState.Authenticated ||
+                authenticationState == AuthenticationState.NotRequired)
+    }
+    private fun currentConnectionOperationScope(): ConnectionOperationScope? {
+        val snapshot = mutableSnapshots.value
+        val authenticated = snapshot.authenticationState == AuthenticationState.Authenticated ||
+            snapshot.authenticationState == AuthenticationState.NotRequired
+        return connectionCoordinator.currentScope(snapshot.selectedProfile, authenticated)
+    }
+
     private suspend fun <T> withHermesRestOperation(
+        scope: ConnectionOperationScope = operationGuard.currentScope()
+            ?: throw HermesConnectionException("Hermes Serve is not connected"),
         block: suspend (ServerOrigin, String?) -> T,
     ): T {
-        val serverOrigin = activeOrigin
-            ?: throw HermesConnectionException("Hermes Serve is not connected")
-        val originGeneration = generation
-        if (!isCurrentRestOperation(serverOrigin, originGeneration)) {
-            throw HermesConnectionException("Hermes host files are unavailable")
-        }
-        val accessToken = accessTokenForRequest(serverOrigin, originGeneration)
-        if (
-            mutableSnapshots.value.authenticationState == AuthenticationState.Authenticated &&
-            accessToken == null
-        ) {
+        if (scope.relayTargetId != null) throw HermesConnectionException("Direct host operations are unavailable over relay")
+        operationGuard.ensureCurrent(scope)
+        val accessToken = accessTokenForRequest(scope.origin, scope.generation)
+        operationGuard.ensureCurrent(scope)
+        if (mutableSnapshots.value.authenticationState == AuthenticationState.Authenticated && accessToken == null) {
             throw HermesConnectionException("Hermes host files require authentication")
         }
-        val result = block(serverOrigin, accessToken)
-        currentCoroutineContext().ensureActive()
-        if (!isCurrentRestOperation(serverOrigin, originGeneration)) {
-            throw CancellationException("Server origin was replaced")
-        }
-        return result
+        return operationGuard.run(scope) { block(scope.origin, accessToken) }
     }
 
-    /**
-     * Refresh which `/api/audio/…` contracts the connected server advertises and
-     * its authoritative `voice` config. Fail-closed: any transport error leaves
-     * capabilities at [VoiceCapabilities.NONE], so the mic stays hidden.
-     */
-    suspend fun refreshVoiceCapabilities() {
-        if (activeRelayTarget != null) {
-            mutableVoiceCapabilities.value = VoiceCapabilities.NONE
-            mutableVoiceServerConfig.value = VoiceServerConfig.DEFAULT
-            return
-        }
-        val probe = runCatching {
-            withHermesRestOperation { origin, token ->
-                val profile = mutableSnapshots.value.selectedProfile
-                val caps = client.probeVoiceCapabilities(origin, token.orEmpty(), profile)
-                val config = client.loadVoiceServerConfig(origin, token.orEmpty(), profile)
-                caps to config
-            }
-        }.getOrNull()
-        if (probe == null) {
-            mutableVoiceCapabilities.value = VoiceCapabilities.NONE
-            return
-        }
-        mutableVoiceCapabilities.value = probe.first
-        mutableVoiceServerConfig.value = probe.second
-    }
-
-    /**
-     * Write `voice.auto_tts` through profile-scoped `PUT /api/config` (server
-     * deep-merges). Optimistic local update; rolled back on failure. Returns
-     * whether the server accepted the write.
-     */
-    suspend fun setVoiceAutoTts(enabled: Boolean): Boolean {
-        val previous = mutableVoiceServerConfig.value
-        mutableVoiceServerConfig.value = previous.copy(autoTts = enabled)
-        val accepted = runCatching {
-            withHermesRestOperation { origin, token ->
-                client.updateServerConfig(
-                    origin,
-                    token.orEmpty(),
-                    mutableSnapshots.value.selectedProfile,
-                    buildJsonObject {
-                        put("voice", buildJsonObject { put("auto_tts", enabled) })
-                    },
-                )
-            }
-        }.getOrDefault(false)
-        if (!accepted) mutableVoiceServerConfig.value = previous
-        return accepted
-    }
-
-    /** Write `tts.elevenlabs.voice_id`; optimistic with rollback like auto-TTS. */
-    suspend fun setElevenLabsVoice(voiceId: String): Boolean {
-        val trimmed = voiceId.trim().take(128)
-        if (trimmed.isEmpty()) return false
-        val previous = mutableVoiceServerConfig.value
-        mutableVoiceServerConfig.value = previous.copy(elevenLabsVoiceId = trimmed)
-        val accepted = runCatching {
-            withHermesRestOperation { origin, token ->
-                client.updateServerConfig(
-                    origin,
-                    token.orEmpty(),
-                    mutableSnapshots.value.selectedProfile,
-                    buildJsonObject {
-                        put(
-                            "tts",
-                            buildJsonObject {
-                                put("elevenlabs", buildJsonObject { put("voice_id", trimmed) })
-                            },
-                        )
-                    },
-                )
-            }
-        }.getOrDefault(false)
-        if (!accepted) mutableVoiceServerConfig.value = previous
-        return accepted
-    }
-
-    /** ElevenLabs voices for the settings picker; empty on any failure. */
-    suspend fun loadElevenLabsVoices(): List<ElevenLabsVoice> = runCatching {
-        withHermesRestOperation { origin, token ->
-            client.listElevenLabsVoices(
-                origin,
-                token.orEmpty(),
-                mutableSnapshots.value.selectedProfile,
-            )
-        }
-    }.getOrDefault(emptyList())
+    suspend fun refreshVoiceCapabilities() = voiceSettingsOwner.refresh()
+    suspend fun setVoiceAutoTts(enabled: Boolean): Boolean = voiceSettingsOwner.setAutoTts(enabled)
+    suspend fun setElevenLabsVoice(voiceId: String): Boolean = voiceSettingsOwner.setElevenLabsVoice(voiceId)
+    suspend fun loadElevenLabsVoices(): List<ElevenLabsVoice> = voiceSettingsOwner.loadVoices()
 
     /** Transcribe a dictation recording via the server's audited STT chain. */
     suspend fun transcribeDictation(dataUrl: String, mimeType: String?): TranscriptionResult =
@@ -1367,9 +1287,21 @@ class HermesConnectionViewModel(
      */
     suspend fun openSpeechStream(): SpeechStreamSocket? {
         val connector = speechStreamConnector ?: return null
-        if (!mutableVoiceCapabilities.value.canStreamSpeech) return null
-        return withHermesRestOperation { origin, token ->
-            connector.connect(origin, token.orEmpty(), mutableSnapshots.value.selectedProfile)
+        if (!voiceCapabilities.value.canStreamSpeech) return null
+        var candidate: SpeechStreamSocket? = null
+        return try {
+            withHermesRestOperation { origin, token ->
+                connector.connect(origin, token.orEmpty(), mutableSnapshots.value.selectedProfile)
+                    .also { candidate = it }
+            }
+        } catch (cancelled: CancellationException) {
+            // The REST guard can reject the handoff after connect() returns when
+            // origin/profile changes during the suspend. The caller never received
+            // the socket, so close this unpublished candidate non-cancellably.
+            withContext(NonCancellable) {
+                runCatching { candidate?.close() }
+            }
+            throw cancelled
         }
     }
 
@@ -1383,19 +1315,6 @@ class HermesConnectionViewModel(
                 text,
             )
         }
-
-    private fun isCurrentRestOperation(
-        serverOrigin: ServerOrigin,
-        originGeneration: Long,
-    ): Boolean {
-        val authenticationState = mutableSnapshots.value.authenticationState
-        return activeOrigin == serverOrigin &&
-            generation == originGeneration &&
-            (
-                authenticationState == AuthenticationState.Authenticated ||
-                    authenticationState == AuthenticationState.NotRequired
-                )
-    }
 
     /**
      * Opens an unpublished observer candidate. The caller owns it until
@@ -1610,9 +1529,7 @@ class HermesConnectionViewModel(
      * only call `projects.project_sessions`; it never resumes or creates a runtime.
      */
     fun openProject(projectId: ProjectId, profile: String = "default"): Job {
-        projectSessionJobs[projectId]?.cancel()
-        val requestGeneration = ++nextProjectSessionGeneration
-        projectSessionGenerations[projectId] = requestGeneration
+        val requestGeneration = connectionCoordinator.nextProjectSessionGeneration(projectId)
         val serverOrigin = activeOrigin
         val originGeneration = generation
         val connector = projectConnector
@@ -1642,10 +1559,10 @@ class HermesConnectionViewModel(
                 projectState = ProjectSessionLoadState.Loading,
             )
             return viewModelScope.launch {
-                var session: HermesChatSession? = null
                 try {
-                    session = factory(relayTarget, profile)
-                    val result = session.loadProjectSessions(projectId = projectId, profile = profile)
+                    val result = withRelayReader(relayTarget, profile) { session ->
+                        session.loadProjectSessions(projectId = projectId, profile = profile)
+                    }
                     if (!isCurrentProjectSession(
                             projectId,
                             serverOrigin,
@@ -1690,10 +1607,8 @@ class HermesConnectionViewModel(
                                 ?: "Could not load project sessions",
                         ),
                     )
-                } finally {
-                    closeChatSessionNonCancellably(session)
                 }
-            }.also { projectSessionJobs[projectId] = it }
+            }.also { connectionCoordinator.setProjectSessionJob(projectId, it) }
         }
 
         if (serverOrigin == null || connector == null ||
@@ -1793,13 +1708,10 @@ class HermesConnectionViewModel(
                     ),
                 )
             } finally {
-                if (projectSessionGenerations[projectId] == requestGeneration) {
-                    projectSessionJobs.remove(projectId)
-                    projectSessionGenerations.remove(projectId)
-                }
+                connectionCoordinator.finishProjectSession(projectId, requestGeneration)
             }
         }
-        projectSessionJobs[projectId] = job
+        connectionCoordinator.setProjectSessionJob(projectId, job)
         return job
     }
 
@@ -1821,7 +1733,12 @@ class HermesConnectionViewModel(
         val origin = activeOrigin
         val expectedGeneration = generation
         val boundedProfile = profile.trim().take(64).ifEmpty { "default" }
-        if (origin == null || !isCurrentOperationalScope(origin, expectedGeneration, boundedProfile)) {
+        val operationScope = currentConnectionOperationScope()?.takeIf {
+            it.relayTargetId == null && it.origin == origin && it.profile == boundedProfile
+        }
+        if (origin == null || operationScope == null ||
+            !isCurrentOperationalScope(origin, expectedGeneration, boundedProfile)
+        ) {
             return viewModelScope.launch { }
         }
         val now = nowEpochSeconds()
@@ -1843,12 +1760,16 @@ class HermesConnectionViewModel(
         val previous = mutableSnapshots.value.operationalStatusState.lastGoodOrNull()
             ?.takeIf { it.origin == origin.value && it.profile == boundedProfile }
         val job = viewModelScope.launch {
-            if (!isCurrentOperationalScope(origin, expectedGeneration, boundedProfile)) return@launch
+            if (!isCurrentOperationalScope(origin, expectedGeneration, boundedProfile) ||
+                !operationGuard.isCurrent(operationScope)
+            ) return@launch
             mutableSnapshots.value = mutableSnapshots.value.copy(
                 operationalStatusState = OperationalStatusState.Loading(previous),
             )
             try {
-                val status = client.loadOperationalStatus(origin, boundedProfile)
+                val status = operationGuard.run(operationScope) {
+                    client.loadOperationalStatus(operationScope.origin, operationScope.profile)
+                }
                 currentCoroutineContext().ensureActive()
                 if (isCurrentOperationalScope(origin, expectedGeneration, boundedProfile)) {
                     mutableSnapshots.value = mutableSnapshots.value.copy(
@@ -2013,7 +1934,7 @@ class HermesConnectionViewModel(
         val expectedGeneration = generation
         val previousProfile = mutableSnapshots.value.selectedProfile
         if (previousProfile != boundedProfile) {
-            profileGeneration += 1
+            connectionCoordinator.advanceProfileGeneration()
             // The Home list clears its filter when the scope changes; reloads for
             // the new profile must start from the unfiltered (exclude) list.
             activeSessionArchivedFilter = false
@@ -2359,12 +2280,7 @@ class HermesConnectionViewModel(
         profile: String,
         limit: Int,
         offset: Int,
-    ): SessionPage {
-        val factory = relaySessionFactory
-            ?: throw HermesConnectionException("Mercury Relay sessions are unavailable")
-        var session: HermesChatSession? = null
-        return try {
-            session = factory(target, profile)
+    ): SessionPage = withRelayReader(target, profile) { session ->
             val result = session.relayRequest(
                 "relay.sessions.list",
                 buildJsonObject {
@@ -2379,9 +2295,6 @@ class HermesConnectionViewModel(
                 limit = limit,
                 offset = offset,
             )
-        } finally {
-            closeChatSessionNonCancellably(session)
-        }
     }
 
     private fun isCurrentManagementRequest(
@@ -2687,7 +2600,7 @@ class HermesConnectionViewModel(
         requestGeneration: Long,
     ): Boolean =
         isCurrentProjectLoad(serverOrigin, originGeneration) &&
-            projectSessionGenerations[projectId] == requestGeneration
+            connectionCoordinator.projectSessionGeneration(projectId) == requestGeneration
 
     private fun publishProjectSessionStateIfCurrent(
         projectId: ProjectId,
@@ -2871,10 +2784,35 @@ class HermesConnectionViewModel(
         client.createHostDirectory(serverOrigin, accessToken, parentPath, name)
     }
 
-    suspend fun downloadManagedImage(path: String): ByteArray =
-        withHermesRestOperation { serverOrigin, accessToken ->
-            client.downloadManagedImage(serverOrigin, accessToken, path)
+    private val relayImageReader = com.unsupportedpastels.hermesandroid.relay.RelayImageReader()
+
+    suspend fun downloadManagedImage(path: String): ByteArray = withContext(Dispatchers.Main.immediate) {
+        val expectedGeneration = generation
+        val target = activeRelayTarget
+        val profile = mutableSnapshots.value.selectedProfile
+        val bytes = if (target != null) {
+            // Reuse the admitted live channel. A second socket would evict the active controller.
+            val session = liveControllers.values.firstOrNull()?.session
+                ?: throw HermesConnectionException("Connect the Relay chat to load images")
+            relayImageReader.read(profile, path) { method, params ->
+                currentCoroutineContext().ensureActive()
+                if (generation != expectedGeneration || activeRelayTarget?.id != target.id ||
+                    mutableSnapshots.value.selectedProfile != profile ||
+                    liveControllers.values.none { it.session === session }
+                ) throw CancellationException("Image connection changed")
+                session.relayRequest(method, params)
+            }
+        } else {
+            withHermesRestOperation { serverOrigin, accessToken ->
+                client.downloadManagedImage(serverOrigin, accessToken, path)
+            }
         }
+        currentCoroutineContext().ensureActive()
+        if (generation != expectedGeneration || activeRelayTarget?.id != target?.id ||
+            mutableSnapshots.value.selectedProfile != profile
+        ) throw CancellationException("Image connection changed")
+        bytes
+    }
 
     suspend fun createProject(
         name: String,
@@ -3034,16 +2972,8 @@ class HermesConnectionViewModel(
     private suspend fun loadRelayProfileModelOptions(
         target: RelayPairedTarget,
         profile: String,
-    ): ModelOptions {
-        val factory = relaySessionFactory
-            ?: throw HermesConnectionException("Mercury Relay model options are unavailable")
-        var session: HermesChatSession? = null
-        return try {
-            session = factory(target, profile)
-            session.loadProfileModelOptions()
-        } finally {
-            closeChatSessionNonCancellably(session)
-        }
+    ): ModelOptions = withRelayReader(target, profile) { session ->
+        session.loadProfileModelOptions()
     }
 
     /**
@@ -3099,12 +3029,9 @@ class HermesConnectionViewModel(
         target: RelayPairedTarget,
         durableSessionId: DurableSessionId,
         profile: String,
-    ): List<ChatMessage> {
-        val factory = relaySessionFactory
-            ?: throw HermesConnectionException("Mercury Relay chat is unavailable")
-        var session: HermesChatSession? = null
-        return try {
-            session = factory(target, profile)
+    ): List<ChatMessage> = withRelayReader(target, profile) { session ->
+            val expectedGeneration = generation
+            val expectedOperation = sessionControllerRegistry.operationGeneration(durableSessionId)
             val result = session.relayRequest(
                 "relay.session.transcript",
                 buildJsonObject {
@@ -3115,9 +3042,39 @@ class HermesConnectionViewModel(
                     put("order", "latest")
                 },
             )
+            if (generation != expectedGeneration || activeRelayTarget?.id != target.id ||
+                mutableSnapshots.value.selectedProfile != profile ||
+                sessionControllerRegistry.operationGeneration(durableSessionId) != expectedOperation) {
+                throw CancellationException("Relay transcript owner changed")
+            }
+            session.relayLeaseSnapshot?.let { snapshot ->
+                updateChat(durableSessionId) { current -> current.copy(
+                    backgroundTasks = current.backgroundTasks.recoverRelayTasks(
+                        snapshot, serverDurableId(durableSessionId).value, profile),
+                ) }
+            }
             parseRelayTranscriptRows(result)
+    }
+
+    /** Metadata borrows a controller, never replaces its admitted device channel. */
+    private suspend fun <T> withRelayReader(
+        target: RelayPairedTarget,
+        profile: String,
+        read: suspend (HermesChatSession) -> T,
+    ): T = relayConnectionLock.withLock {
+        val expectedGeneration = generation
+        if (activeRelayTarget?.id != target.id) throw CancellationException("Relay target changed")
+        val borrowed = liveControllers.values.firstOrNull()?.session
+        val session = borrowed ?: relaySessionFactory?.invoke(target, profile)
+            ?: throw HermesConnectionException("Mercury Relay chat is unavailable")
+        try {
+            currentCoroutineContext().ensureActive()
+            if (generation != expectedGeneration || activeRelayTarget?.id != target.id) {
+                throw CancellationException("Relay target changed")
+            }
+            read(session)
         } finally {
-            closeChatSessionNonCancellably(session)
+            if (borrowed == null) closeChatSessionNonCancellably(session)
         }
     }
 
@@ -3158,15 +3115,15 @@ class HermesConnectionViewModel(
         }
 
     fun openSession(durableSessionId: DurableSessionId): Job {
+        sessionControllerRegistry.chatJobs[durableSessionId]?.takeIf { it.isActive }?.let { return it }
         if (durableSessionId in pendingDraftSessions) {
             return openDraftSession(durableSessionId)
         }
         if (liveControllers[durableSessionId] != null) {
             return viewModelScope.launch { }
         }
-        val operationGeneration = ++nextChatOperationGeneration
-        chatOperationGenerations[durableSessionId] = operationGeneration
-        chatJobs.remove(durableSessionId)?.cancel()
+        val operationGeneration = sessionControllerRegistry.nextOperationGeneration(durableSessionId)
+        sessionControllerRegistry.cancelOperationJob(durableSessionId)
         val job = viewModelScope.launch {
             val origin = activeOrigin ?: return@launch
             var originGeneration = generation
@@ -3248,6 +3205,7 @@ class HermesConnectionViewModel(
                 if (
                     accessToken != null &&
                     (chatConnector != null || (relayTarget != null && relaySessionFactory != null)) &&
+                    (relayTarget == null || liveControllers.isEmpty()) &&
                     mutableSnapshots.value.authenticationState == AuthenticationState.Authenticated
                 ) {
                     ensureLiveSession(
@@ -3292,7 +3250,7 @@ class HermesConnectionViewModel(
                 }
             }
         }
-        chatJobs[durableSessionId] = job
+        sessionControllerRegistry.setOperationJob(durableSessionId, job)
         return job
     }
 
@@ -3305,9 +3263,18 @@ class HermesConnectionViewModel(
         rawText: String,
         interrupted: Boolean = false,
     ): Job {
+        if (mutableSnapshots.value.chatSessions[durableSessionId]?.connectionPhase?.let {
+                it == ChatConnectionPhase.Connecting || it == ChatConnectionPhase.Submitting
+            } == true) {
+            rejectSubmission(durableSessionId, rawText.trim(), "A submission is already pending")
+            return viewModelScope.launch { }
+        }
         val text = rawText.trim()
         val hasAttachments = mutableAttachments.value[durableSessionId].orEmpty().isNotEmpty()
-        if (text.isEmpty() && !hasAttachments) return viewModelScope.launch { }
+        if (text.isEmpty() && !hasAttachments) {
+            rejectSubmission(durableSessionId, text, "Message cannot be blank")
+            return viewModelScope.launch { }
+        }
         val draft = localDraftSession(durableSessionId)
         if (
             draft?.projectId != null &&
@@ -3317,19 +3284,26 @@ class HermesConnectionViewModel(
             updateChat(durableSessionId) {
                 it.copy(isLoading = false, isSending = false, error = "No workspace")
             }
+            rejectSubmission(durableSessionId, text, "No workspace")
             return viewModelScope.launch { }
         }
-        val operationGeneration = ++nextChatOperationGeneration
-        chatOperationGenerations[durableSessionId] = operationGeneration
-        chatJobs.remove(durableSessionId)?.cancel()
+        val operationGeneration = sessionControllerRegistry.nextOperationGeneration(durableSessionId)
+        sessionControllerRegistry.cancelOperationJob(durableSessionId)
         clearSendingState(durableSessionId)
-        updateChat(durableSessionId) { it.copy(runState = RunEventState()) }
+        updateChat(durableSessionId) {
+            it.copy(runState = RunEventState(), connectionPhase = ChatConnectionPhase.Connecting)
+        }
         val job = viewModelScope.launch {
-            val origin = activeOrigin ?: return@launch
+            val origin = activeOrigin ?: run {
+                updateChat(durableSessionId) { it.copy(connectionPhase = ChatConnectionPhase.Idle, error = "Not connected") }
+                rejectSubmission(durableSessionId, text, "Not connected")
+                return@launch
+            }
             val originGeneration = generation
             if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return@launch
             var promptStaged = false
             var stagingFailed = false
+            var accepted = false
             try {
                 val accessToken = if (activeRelayTarget != null) {
                     ""
@@ -3355,6 +3329,9 @@ class HermesConnectionViewModel(
                     operationGeneration = operationGeneration,
                 )
 
+                currentCoroutineContext().ensureActive()
+                if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return@launch
+                updateChat(durableSessionId) { it.copy(connectionPhase = ChatConnectionPhase.Submitting) }
                 // Stage attachments on the host BEFORE the optimistic bubble: bytes
                 // live on this device, so nothing can be sent without uploading
                 // them first, and chips must survive a staging failure.
@@ -3377,6 +3354,8 @@ class HermesConnectionViewModel(
                     }
                 }
 
+                currentCoroutineContext().ensureActive()
+                if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return@launch
                 updateChat(durableSessionId) { current ->
                     current.copy(
                         messages = current.messages +
@@ -3391,7 +3370,38 @@ class HermesConnectionViewModel(
                 }
                 promptStaged = true
                 yield()
-                session.submitPrompt(runtimeId, submittedText, interrupted)
+                currentCoroutineContext().ensureActive()
+                if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return@launch
+                if (liveControllers[durableSessionId]?.session !== session) {
+                    throw HermesChatTransportException("Connection closed before submission")
+                }
+                if (activeRelayTarget != null) {
+                    // Host SessionLease accepts params.submission_id (1..128 chars).
+                    // IDs are lease-local; never retry an ambiguously accepted prompt.
+                    session.submitPrompt(runtimeId, submittedText, interrupted, java.util.UUID.randomUUID().toString())
+                } else {
+                    session.submitPrompt(runtimeId, submittedText, interrupted)
+                }
+                currentCoroutineContext().ensureActive()
+                if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return@launch
+                updateChat(durableSessionId) {
+                    it.copy(
+                        acceptedSubmissionCount = it.acceptedSubmissionCount + 1,
+                        acceptedSubmissionText = text,
+                        connectionPhase = ChatConnectionPhase.Idle,
+                    )
+                }
+                accepted = true
+                // Commit accepted prompt state before any auxiliary suspension. A
+                // replacement/steer may cancel this job while metadata is loading.
+                markTurnActive(durableSessionId)
+                markDraftPersisted(
+                    durableSessionId,
+                    origin,
+                    originGeneration,
+                    operationGeneration,
+                )
+                if (pendingAttachments.isNotEmpty()) clearAttachments(durableSessionId)
                 // A prompt can launch background processes, so refresh the activity
                 // stack only after the turn is accepted: the pre-submit snapshot
                 // cannot contain processes created by this turn.
@@ -3403,16 +3413,6 @@ class HermesConnectionViewModel(
                     originGeneration = originGeneration,
                     operationGeneration = operationGeneration,
                 )
-                // Only count the turn once the prompt was accepted; a rejected or failed
-                // submission must not leave a phantom active turn (foreground service).
-                markTurnActive(durableSessionId)
-                markDraftPersisted(
-                    durableSessionId,
-                    origin,
-                    originGeneration,
-                    operationGeneration,
-                )
-                if (pendingAttachments.isNotEmpty()) clearAttachments(durableSessionId)
             } catch (cancelled: CancellationException) {
                 if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                     clearSendingState(durableSessionId)
@@ -3470,6 +3470,13 @@ class HermesConnectionViewModel(
                         } finally {
                             finishChatRecovery(recoveryAttempt)
                         }
+                        if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration) &&
+                            mutableSnapshots.value.chatSessions[durableSessionId]?.isSending != true
+                        ) {
+                            updateChat(durableSessionId) {
+                                it.copy(error = it.error ?: "Submission was not confirmed. Check the transcript before retrying.")
+                            }
+                        }
                     } else if (!isChatRecoveryInProgress(durableSessionId, operationGeneration)) {
                         clearSendingState(durableSessionId)
                         updateChat(durableSessionId) {
@@ -3484,10 +3491,34 @@ class HermesConnectionViewModel(
                         )
                     }
                 }
+            } finally {
+                val currentOperation = sessionControllerRegistry.operationGeneration(durableSessionId)
+                if (isCurrentOrigin(origin, originGeneration) &&
+                    (currentOperation == operationGeneration || currentOperation == null) &&
+                    durableSessionId in mutableSnapshots.value.chatSessions
+                ) {
+                    updateChat(durableSessionId) { it.copy(connectionPhase = ChatConnectionPhase.Idle) }
+                    if (!accepted) {
+                        rejectSubmission(durableSessionId, text,
+                            mutableSnapshots.value.chatSessions[durableSessionId]?.error
+                                ?: "Submission was not confirmed. Check the transcript before retrying.")
+                    }
+                }
             }
         }
-        chatJobs[durableSessionId] = job
+        sessionControllerRegistry.setOperationJob(durableSessionId, job)
         return job
+    }
+
+    /** A local failure acknowledgment is not proof that an ambiguous RPC was rejected remotely. */
+    private fun rejectSubmission(durableSessionId: DurableSessionId, text: String, error: String) {
+        updateChat(durableSessionId) {
+            it.copy(
+                rejectedSubmissionCount = it.rejectedSubmissionCount + 1,
+                rejectedSubmissionText = text,
+                error = error,
+            )
+        }
     }
 
     /** Responds to the currently displayed clarification for exactly one live runtime. */
@@ -3939,11 +3970,15 @@ class HermesConnectionViewModel(
         val origin = activeOrigin
         val originGeneration = generation
         val profile = mutableSnapshots.value.selectedProfile.take(64).ifBlank { "default" }
+        val operationScope = currentConnectionOperationScope()?.takeIf {
+            it.relayTargetId == null && it.origin == origin && it.profile == profile
+        }
         val scope = origin?.let { CronJobScope(it.value, profile, jobId) }
         if (
             origin == null ||
+                operationScope == null ||
                 scope == null ||
-                !isCurrentRestOperation(origin, originGeneration) ||
+                !isCurrentRestOperation(operationScope) ||
                 mutableSnapshots.value.cronTriggerCapability == CronRestCapability.Unsupported
         ) {
             return viewModelScope.launch { }
@@ -3955,11 +3990,15 @@ class HermesConnectionViewModel(
         )
         return viewModelScope.launch {
             try {
-                val token = accessTokenForRequest(origin, originGeneration)
-                    ?: throw HermesConnectionException("Cron job controls require authentication")
-                client.triggerCronJob(origin, token, profile, jobId)
+                val token = operationGuard.run(operationScope) {
+                    accessTokenForRequest(operationScope.origin, operationScope.generation)
+                        ?: throw HermesConnectionException("Cron job controls require authentication")
+                }
+                operationGuard.run(operationScope) {
+                    client.triggerCronJob(operationScope.origin, token, operationScope.profile, jobId)
+                }
                 currentCoroutineContext().ensureActive()
-                if (!isCurrentRestOperation(origin, originGeneration)) return@launch
+                if (!isCurrentRestOperation(operationScope)) return@launch
                 mutableSnapshots.value = mutableSnapshots.value.copy(
                     cronTriggerCapability = CronRestCapability.Supported,
                     cronRunLoadingScopes = mutableSnapshots.value.cronRunLoadingScopes - scope,
@@ -3969,7 +4008,7 @@ class HermesConnectionViewModel(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: HermesCronRestUnsupportedException) {
-                if (isCurrentRestOperation(origin, originGeneration)) {
+                if (isCurrentRestOperation(operationScope)) {
                     mutableSnapshots.value = mutableSnapshots.value.copy(
                         cronTriggerCapability = CronRestCapability.Unsupported,
                         cronRunLoadingScopes = mutableSnapshots.value.cronRunLoadingScopes - scope,
@@ -3977,7 +4016,7 @@ class HermesConnectionViewModel(
                     )
                 }
             } catch (_: HermesCronRestLegacyUnsupportedException) {
-                if (isCurrentRestOperation(origin, originGeneration)) {
+                if (isCurrentRestOperation(operationScope)) {
                     mutableSnapshots.value = mutableSnapshots.value.copy(
                         cronTriggerCapability = CronRestCapability.Unsupported,
                         cronRunLoadingScopes = mutableSnapshots.value.cronRunLoadingScopes - scope,
@@ -3985,7 +4024,7 @@ class HermesConnectionViewModel(
                     )
                 }
             } catch (_: HermesCronJobClaimedException) {
-                if (isCurrentRestOperation(origin, originGeneration)) {
+                if (isCurrentRestOperation(operationScope)) {
                     mutableSnapshots.value = mutableSnapshots.value.copy(
                         cronRunLoadingScopes = mutableSnapshots.value.cronRunLoadingScopes - scope,
                         cronRunErrors = mutableSnapshots.value.cronRunErrors + (
@@ -3994,7 +4033,7 @@ class HermesConnectionViewModel(
                     )
                 }
             } catch (_: Exception) {
-                if (isCurrentRestOperation(origin, originGeneration)) {
+                if (isCurrentRestOperation(operationScope)) {
                     mutableSnapshots.value = mutableSnapshots.value.copy(
                         cronRunLoadingScopes = mutableSnapshots.value.cronRunLoadingScopes - scope,
                         cronRunErrors = mutableSnapshots.value.cronRunErrors + (
@@ -4011,11 +4050,15 @@ class HermesConnectionViewModel(
         val origin = activeOrigin
         val originGeneration = generation
         val profile = mutableSnapshots.value.selectedProfile.take(64).ifBlank { "default" }
+        val operationScope = currentConnectionOperationScope()?.takeIf {
+            it.relayTargetId == null && it.origin == origin && it.profile == profile
+        }
         val scope = origin?.let { CronJobScope(it.value, profile, jobId) }
         if (
             origin == null ||
+                operationScope == null ||
                 scope == null ||
-                !isCurrentRestOperation(origin, originGeneration) ||
+                !isCurrentRestOperation(operationScope) ||
                 mutableSnapshots.value.cronHistoryCapability == CronRestCapability.Unsupported
         ) {
             return viewModelScope.launch { }
@@ -4044,16 +4087,20 @@ class HermesConnectionViewModel(
                 )
                 viewModelScope.launch {
                     try {
-                        val token = accessTokenForRequest(origin, originGeneration)
-                            ?: throw HermesConnectionException("Cron history requires authentication")
-                        val runs = client.loadCronJobRuns(
-                            serverOrigin = origin,
-                            accessToken = token,
-                            profile = profile,
-                            jobId = jobId,
-                        )
+                        val token = operationGuard.run(operationScope) {
+                            accessTokenForRequest(operationScope.origin, operationScope.generation)
+                                ?: throw HermesConnectionException("Cron history requires authentication")
+                        }
+                        val runs = operationGuard.run(operationScope) {
+                            client.loadCronJobRuns(
+                                serverOrigin = operationScope.origin,
+                                accessToken = token,
+                                profile = operationScope.profile,
+                                jobId = jobId,
+                            )
+                        }
                         currentCoroutineContext().ensureActive()
-                        if (!isCurrentRestOperation(origin, originGeneration)) return@launch
+                        if (!isCurrentRestOperation(operationScope)) return@launch
                         mutableSnapshots.value = mutableSnapshots.value.copy(
                             cronHistoryCapability = CronRestCapability.Supported,
                             cronRunsByScope = mutableSnapshots.value.cronRunsByScope +
@@ -4062,7 +4109,7 @@ class HermesConnectionViewModel(
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (_: HermesCronRestUnsupportedException) {
-                        if (isCurrentRestOperation(origin, originGeneration)) {
+                        if (isCurrentRestOperation(operationScope)) {
                             mutableSnapshots.value = mutableSnapshots.value.copy(
                                 cronHistoryCapability = CronRestCapability.Unsupported,
                                 cronRunsByScope = mutableSnapshots.value.cronRunsByScope +
@@ -4070,7 +4117,7 @@ class HermesConnectionViewModel(
                             )
                         }
                     } catch (_: HermesCronRestLegacyUnsupportedException) {
-                        if (isCurrentRestOperation(origin, originGeneration)) {
+                        if (isCurrentRestOperation(operationScope)) {
                             mutableSnapshots.value = mutableSnapshots.value.copy(
                                 cronHistoryCapability = CronRestCapability.Unsupported,
                                 cronRunsByScope = mutableSnapshots.value.cronRunsByScope +
@@ -4078,7 +4125,7 @@ class HermesConnectionViewModel(
                             )
                         }
                     } catch (_: Exception) {
-                        if (isCurrentRestOperation(origin, originGeneration)) {
+                        if (isCurrentRestOperation(operationScope)) {
                             mutableSnapshots.value = mutableSnapshots.value.copy(
                                 cronRunsByScope = mutableSnapshots.value.cronRunsByScope +
                                     (scope to CronJobRunsState.Error("Could not load job runs")),
@@ -4166,9 +4213,7 @@ class HermesConnectionViewModel(
             }
         }
         val operationGeneration = liveControllers[durableSessionId]?.operationGeneration
-            ?: (++nextChatOperationGeneration).also {
-                chatOperationGenerations[durableSessionId] = it
-            }
+            ?: sessionControllerRegistry.nextOperationGeneration(durableSessionId)
         val job = viewModelScope.launch {
             val origin = activeOrigin
             if (origin == null) {
@@ -4211,7 +4256,6 @@ class HermesConnectionViewModel(
                 }
             }
         }
-        chatJob = job
         return job
     }
 
@@ -4223,9 +4267,7 @@ class HermesConnectionViewModel(
             }
         }
         val operationGeneration = liveControllers[durableSessionId]?.operationGeneration
-            ?: (++nextChatOperationGeneration).also {
-                chatOperationGenerations[durableSessionId] = it
-            }
+            ?: sessionControllerRegistry.nextOperationGeneration(durableSessionId)
         val job = viewModelScope.launch {
             val origin = activeOrigin
             if (origin == null) {
@@ -4271,7 +4313,6 @@ class HermesConnectionViewModel(
                 }
             }
         }
-        chatJob = job
         return job
     }
 
@@ -4280,9 +4321,7 @@ class HermesConnectionViewModel(
         modelPickerJob?.cancel()
         mutableModelPickerState.value = ModelPickerState.Loading(durableSessionId)
         val operationGeneration = liveControllers[durableSessionId]?.operationGeneration
-            ?: (++nextChatOperationGeneration).also {
-                chatOperationGenerations[durableSessionId] = it
-            }
+            ?: sessionControllerRegistry.nextOperationGeneration(durableSessionId)
         val job = viewModelScope.launch {
             val origin = activeOrigin
             if (origin == null) {
@@ -4500,16 +4539,18 @@ class HermesConnectionViewModel(
         durableSessionId: DurableSessionId,
         session: HermesChatSession,
         runtimeSessionId: RuntimeSessionId,
-    ): Boolean {
-        val controller = liveControllers[durableSessionId] ?: return false
-        return controller.session === session &&
-            controller.runtimeSessionId == runtimeSessionId &&
+    ): Boolean = sessionControllerRegistry.isExactControllerRuntime(
+        durableSessionId = durableSessionId,
+        session = session,
+        runtimeSessionId = runtimeSessionId,
+        isPublishedControllerRuntime = { id, runtime ->
             mutableSnapshots.value.activeRuntimes.any {
-                it.durableSessionId == durableSessionId &&
-                    it.runtimeSessionId == runtimeSessionId &&
+                it.durableSessionId == id &&
+                    it.runtimeSessionId == runtime &&
                     it.access == RuntimeAccess.Controller
             }
-    }
+        },
+    )
 
     private suspend fun loadProcessRowsIfCurrent(
         durableSessionId: DurableSessionId,
@@ -4531,7 +4572,9 @@ class HermesConnectionViewModel(
             operationGeneration = operationGeneration,
         )
         val rows = try {
-            session.loadProcessList(runtimeSessionId)
+            // Optional activity metadata must never hold the composer hostage.
+            // A local deadline keeps the previous snapshot and leaves chat attached.
+            withTimeoutOrNull(5_000L) { session.loadProcessList(runtimeSessionId) } ?: return
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -4569,17 +4612,43 @@ class HermesConnectionViewModel(
         durableSessionId: DurableSessionId,
         closeWhenIdle: Boolean = false,
     ): HermesChatSession {
-        val existingController = liveControllers[durableSessionId]
+        val previousPhase = mutableSnapshots.value.chatSessions[durableSessionId]?.connectionPhase ?: ChatConnectionPhase.Idle
+        if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
+            updateChat(durableSessionId) { it.copy(connectionPhase = ChatConnectionPhase.Connecting) }
+        }
+        try {
+            return withTimeoutOrNull(30_000L) {
+                controllerConnectionLock(durableSessionId).withLock {
+                    ensureLiveSessionLocked(origin, originGeneration, operationGeneration, accessToken, durableSessionId, closeWhenIdle)
+                }
+            } ?: throw HermesChatTransportException("Timed out connecting to session")
+        } finally {
+            if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
+                updateChat(durableSessionId) {
+                    // Send retains its lock until staging/ack; open/control releases it.
+                    if (previousPhase == ChatConnectionPhase.Idle) it.copy(connectionPhase = ChatConnectionPhase.Idle) else it
+                }
+            }
+        }
+    }
+
+    private suspend fun ensureLiveSessionLocked(
+        origin: ServerOrigin,
+        originGeneration: Long,
+        operationGeneration: Long,
+        accessToken: String,
+        durableSessionId: DurableSessionId,
+        closeWhenIdle: Boolean = false,
+    ): HermesChatSession {
+        currentCoroutineContext().ensureActive()
+        if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
+            throw CancellationException("Chat operation was replaced")
+        }
+        val existingController = sessionControllerRegistry.controller(durableSessionId)
         if (existingController != null) {
             val existing = existingController.session
             val runtimeId = existingController.runtimeSessionId
-            existingController.operationGeneration = operationGeneration
-            existingController.recoveryState = ChatRecoveryState(operationGeneration)
-            activeChatSession = existing
-            activeChatDurableId = durableSessionId
-            activeRuntimeSessionId = runtimeId
-            chatOperationGeneration = operationGeneration
-            chatRecoveryState = existingController.recoveryState
+            sessionControllerRegistry.prepareExistingController(durableSessionId, operationGeneration)
             publishActiveRuntime(durableSessionId, runtimeId)
             collectEvents(
                 existing,
@@ -4593,6 +4662,24 @@ class HermesConnectionViewModel(
         }
         val relayTarget = activeRelayTarget
             ?.takeIf { activeOrigin == origin && generation == originGeneration }
+        if (relayTarget != null) {
+            // Pending metadata/attachment staging owns admission just like an active turn.
+            // Only genuinely idle controllers may be replaced by an explicit Send.
+            val others = liveControllers.values.filter { it.durableSessionId != durableSessionId }
+            if (others.any {
+                    val chat = mutableSnapshots.value.chatSessions[it.durableSessionId]
+                    chat?.isSending == true || chat?.connectionPhase == ChatConnectionPhase.Connecting ||
+                        chat?.connectionPhase == ChatConnectionPhase.Submitting
+                }) {
+                throw HermesConnectionException("Another Relay session is active. Wait for it to finish before sending here.")
+            }
+            for (other in others) {
+                other.eventJob?.cancel()
+                sessionControllerRegistry.replaceControllerForRecovery(other.durableSessionId, other.session)
+                removeActiveRuntime(other.runtimeSessionId)
+                closeChatSessionNonCancellably(other.session)
+            }
+        }
         val connector = chatConnector
         if (relayTarget == null && connector == null) {
             throw HermesConnectionException("Live chat is unavailable")
@@ -4609,6 +4696,10 @@ class HermesConnectionViewModel(
             connector!!.connect(origin, accessToken)
         }
         try {
+            currentCoroutineContext().ensureActive()
+            if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
+                throw CancellationException("Chat operation was replaced")
+            }
             val creatingDraft = durableSessionId in pendingDraftSessions
             val resumed = if (creatingDraft) {
                 session.createSession(
@@ -4619,7 +4710,8 @@ class HermesConnectionViewModel(
                         ?.let(::validProjectWorkspacePath),
                 )
             } else {
-                session.resume(serverDurableId(durableSessionId), profile = "default")
+                session.resume(serverDurableId(durableSessionId), profile =
+                    if (relayTarget != null) mutableSnapshots.value.selectedProfile else "default")
             }
             if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                 throw CancellationException("Chat operation was replaced")
@@ -4643,22 +4735,25 @@ class HermesConnectionViewModel(
                     }
                 }
             }
-            if (closeWhenIdle && !resumed.running) {
+            currentCoroutineContext().ensureActive()
+            if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
+                throw CancellationException("Chat operation was replaced")
+            }
+            // Relay permits one admitted device socket. Keep its idle channel for
+            // capability-gated image reads; opening a second reader would evict chat.
+            if (closeWhenIdle && !resumed.running && relayTarget == null) {
                 session.close()
                 return session
             }
-            liveControllers[durableSessionId] = LiveChatController(
-                durableSessionId = durableSessionId,
-                session = session,
-                runtimeSessionId = resumed.runtimeSessionId,
-                operationGeneration = operationGeneration,
-                recoveryState = ChatRecoveryState(operationGeneration),
+            sessionControllerRegistry.activateController(
+                PerSessionController(
+                    durableSessionId = durableSessionId,
+                    session = session,
+                    runtimeSessionId = resumed.runtimeSessionId,
+                    operationGeneration = operationGeneration,
+                    recoveryState = ChatRecoveryState(operationGeneration),
+                ),
             )
-            activeChatSession = session
-            activeChatDurableId = durableSessionId
-            activeRuntimeSessionId = resumed.runtimeSessionId
-            chatOperationGeneration = operationGeneration
-            chatRecoveryState = liveControllers[durableSessionId]?.recoveryState
             publishActiveRuntime(durableSessionId, resumed.runtimeSessionId)
             // A turn already running on the server (started by another client or before
             // an app restart) is an active turn from this client's perspective too: it
@@ -4813,19 +4908,55 @@ class HermesConnectionViewModel(
         origin: ServerOrigin,
         originGeneration: Long,
         operationGeneration: Long,
+        previousRuntimeSessionId: RuntimeSessionId = runtimeSessionId,
     ) {
-        val controller = liveControllers[durableSessionId] ?: return
-        controller.eventJob?.cancel()
-        controller.eventJob = viewModelScope.launch {
-            session.events.collect { event ->
+        val controller = sessionControllerRegistry.controller(durableSessionId) ?: return
+        if (controller.session !== session || controller.eventJob?.isActive == true) return
+        session.relayLeaseSnapshot?.let { snapshot ->
+            updateChat(durableSessionId) { current ->
+                current.copy(backgroundTasks = current.backgroundTasks.recoverRelayTasks(
+                    snapshot, serverDurableId(durableSessionId).value,
+                    mutableSnapshots.value.selectedProfile, runtimeSessionId,
+                ))
+            }
+        }
+        if (mutableSnapshots.value.chatSessions[durableSessionId]?.backgroundTasks?.rows?.isNotEmpty() == true) {
+            viewModelScope.launch {
+                try {
+                    val status = session.loadDelegationStatus()
+                    if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration) &&
+                        liveControllers[durableSessionId]?.session === session) {
+                        updateChat(durableSessionId) {
+                            it.copy(backgroundTasks = it.backgroundTasks.reconcile(status, runtimeSessionId, previousRuntimeSessionId))
+                        }
+                    }
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { /* Retain last known rows; absence is not success. */ }
+            }
+        }
+        val eventJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            session.events.catch { error ->
+                if (error is CancellationException) throw error
+                // An exceptional close is the same ownership fence as normal EOF.
+            }.collect { event ->
+                val operationGeneration = controller.operationGeneration
                 if (
                     !isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration) ||
                     event.sessionId != runtimeSessionId ||
                     liveControllers[durableSessionId]?.session !== session
                 ) {
+                    (event as? com.unsupportedpastels.hermesandroid.gateway.BackgroundTaskEvent)?.let {
+                        session.acknowledgeRelayEvent(it.eventId)
+                    }
                     return@collect
                 }
                 when (event) {
+                    is com.unsupportedpastels.hermesandroid.gateway.BackgroundTaskEvent -> {
+                        updateChat(durableSessionId) {
+                            it.copy(backgroundTasks = it.backgroundTasks.reduce(event, runtimeSessionId, System.currentTimeMillis()))
+                        }
+                        session.acknowledgeRelayEvent(event.eventId)
+                    }
                     is HermesChatEvent.MessageStart,
                     is HermesChatEvent.MessageDelta,
                     is HermesChatEvent.ReasoningDelta,
@@ -4845,6 +4976,7 @@ class HermesConnectionViewModel(
                                 model = event.model ?: current.model,
                                 provider = event.provider ?: current.provider,
                                 reasoningEffort = event.reasoningEffort ?: current.reasoningEffort,
+                                fastMode = event.fastMode?.let { if (it) "fast" else "normal" } ?: current.fastMode,
                                 isSending = event.running ?: current.isSending,
                             )
                         }
@@ -4906,6 +5038,7 @@ class HermesConnectionViewModel(
                         updateChat(durableSessionId) {
                             it.applyTranscriptEvent(event).copy(
                                 isSending = false,
+                                connectionPhase = ChatConnectionPhase.Idle,
                                 error = event.message.take(160),
                                 runState = it.runState.reduce(event),
                             )
@@ -4954,15 +5087,20 @@ class HermesConnectionViewModel(
                     is HermesChatEvent.UnsupportedBlockingExpire -> updateRunState(durableSessionId, event)
                 }
             }
+            val operationGeneration = controller.operationGeneration
+            val recoverBackground = activeRelayTarget != null &&
+                mutableSnapshots.value.chatSessions[durableSessionId]?.backgroundTasks?.rows?.any { !it.terminal } == true
             if (liveControllers[durableSessionId]?.session === session) {
+                updateChat(durableSessionId) { it.copy(backgroundTasks = it.backgroundTasks.unavailable()) }
                 removeActiveRuntime(runtimeSessionId)
-                if (mutableSnapshots.value.chatSessions[durableSessionId]?.isSending != true) {
-                    detachController(durableSessionId, session, closeSession = false)
+                if (mutableSnapshots.value.chatSessions[durableSessionId]?.isSending != true && !recoverBackground) {
+                    sessionControllerRegistry.replaceControllerForRecovery(durableSessionId, session)
+                    closeChatSessionNonCancellably(session)
                 }
             }
             if (
                 isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration) &&
-                mutableSnapshots.value.chatSessions[durableSessionId]?.isSending == true
+                (mutableSnapshots.value.chatSessions[durableSessionId]?.isSending == true || recoverBackground)
             ) {
                 val recoveryAttempt = startChatRecovery(durableSessionId, operationGeneration)
                 if (recoveryAttempt != null) {
@@ -4985,37 +5123,54 @@ class HermesConnectionViewModel(
                 }
             }
         }
+        sessionControllerRegistry.setEventJob(durableSessionId, session, eventJob)
+        eventJob.start()
     }
 
     private fun startChatRecovery(
         durableSessionId: DurableSessionId,
         operationGeneration: Long,
-    ): ChatRecoveryAttempt? {
-        val state = liveControllers[durableSessionId]?.recoveryState
-            ?.takeIf { it.operationGeneration == operationGeneration }
-            ?: return null
-        if (state.activeAttempt != null || state.remaining <= 0) return null
-        state.remaining -= 1
-        return ChatRecoveryAttempt(state).also { state.activeAttempt = it }
-    }
+    ): ChatRecoveryAttempt? = sessionControllerRegistry.startRecovery(
+        durableSessionId,
+        operationGeneration,
+    )
 
     private fun finishChatRecovery(attempt: ChatRecoveryAttempt) {
-        if (liveControllers.values.any { it.recoveryState === attempt.state } &&
-            attempt.state.activeAttempt === attempt
-        ) {
-            attempt.state.activeAttempt = null
-        }
+        sessionControllerRegistry.finishRecovery(attempt)
     }
 
     private fun isChatRecoveryInProgress(
         durableSessionId: DurableSessionId,
         operationGeneration: Long,
-    ): Boolean =
-        liveControllers[durableSessionId]?.recoveryState
-            ?.takeIf { it.operationGeneration == operationGeneration }
-            ?.activeAttempt != null
+    ): Boolean = sessionControllerRegistry.isRecoveryInProgress(
+        durableSessionId,
+        operationGeneration,
+    )
 
     private suspend fun recoverChat(
+        durableSessionId: DurableSessionId,
+        origin: ServerOrigin,
+        originGeneration: Long,
+        operationGeneration: Long,
+        recoveryAttempt: ChatRecoveryAttempt,
+    ) {
+        if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
+        updateChat(durableSessionId) { it.copy(connectionPhase = ChatConnectionPhase.Reconnecting) }
+        val recoveryJob = checkNotNull(currentCoroutineContext()[Job])
+        sessionControllerRegistry.setRecoveryJob(durableSessionId, recoveryJob)
+        try {
+            controllerConnectionLock(durableSessionId).withLock {
+                recoverChatLocked(durableSessionId, origin, originGeneration, operationGeneration, recoveryAttempt)
+            }
+        } finally {
+            sessionControllerRegistry.clearRecoveryJob(durableSessionId, recoveryJob)
+            if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
+                updateChat(durableSessionId) { it.copy(connectionPhase = ChatConnectionPhase.Idle) }
+            }
+        }
+    }
+
+    private suspend fun recoverChatLocked(
         durableSessionId: DurableSessionId,
         origin: ServerOrigin,
         originGeneration: Long,
@@ -5026,15 +5181,23 @@ class HermesConnectionViewModel(
         val relayTarget = activeRelayTarget
         val connector = chatConnector
         if (relayTarget == null && connector == null) return
-        val previous = liveControllers[durableSessionId]
-        closeChatSessionNonCancellably(previous?.session)
-        liveControllers.remove(durableSessionId)
+        val previous = sessionControllerRegistry.controller(durableSessionId)
+        if (previous != null) {
+            sessionControllerRegistry.replaceControllerForRecovery(durableSessionId, previous.session)
+            removeActiveRuntime(previous.runtimeSessionId)
+            closeChatSessionNonCancellably(previous.session)
+        }
         clearProcessRows(durableSessionId)
 
         for (backoffMillis in listOf(500L, 1_000L, 2_000L)) {
+            // Offline time is not a failed attempt. Keep one suspended owner;
+            // Android's validated default-network callback wakes it on return.
+            // Direct mode retains its existing recovery contract.
+            if (relayTarget != null) relayNetworkAvailable.first { it }
             appForegroundStates.first { it }
             if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
             delay(backoffMillis)
+            if (relayTarget != null) relayNetworkAvailable.first { it }
             appForegroundStates.first { it }
             if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
             var candidate: HermesChatSession? = null
@@ -5054,10 +5217,42 @@ class HermesConnectionViewModel(
                     closeChatSessionNonCancellably(candidate)
                     return
                 }
-                val resumed = candidate.resume(
-                    serverDurableId(durableSessionId),
-                    profile = "default",
-                )
+                // An open socket is not proof that resume will ever answer. Keep
+                // each reconciliation attempt bounded; never replay prompt.submit.
+                val recoverySnapshot = candidate.relayLeaseSnapshot
+                val profile = if (relayTarget != null) mutableSnapshots.value.selectedProfile else "default"
+                if (recoverySnapshot != null && !recoverySnapshot.hasLiveBinding(
+                        serverDurableId(durableSessionId).value, profile)) {
+                    // Missing retained ownership is not permission to take over another
+                    // runtime. Reconcile durable evidence; only a later explicit Send
+                    // or Open may resume/create control after lease/process loss.
+                    val transcript = withTimeoutOrNull(30_000L) {
+                        candidate.relayRequest(
+                            "relay.session.transcript", buildJsonObject {
+                                put("profile", profile)
+                                put("session_id", serverDurableId(durableSessionId).value)
+                                put("limit", 100); put("offset", 0); put("order", "latest")
+                            },
+                        )
+                    } ?: throw HermesChatTransportException("Timed out reading recovery transcript")
+                    val messages = parseRelayTranscriptRows(transcript)
+                    if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
+                        closeChatSessionNonCancellably(candidate)
+                        return
+                    }
+                    clearSendingState(durableSessionId)
+                    updateChat(durableSessionId) { current -> current.copy(
+                        messages = messages,
+                        backgroundTasks = current.backgroundTasks.recoverRelayTasks(
+                            recoverySnapshot, serverDurableId(durableSessionId).value, profile),
+                        error = "Live session ownership was lost. Background status shows only recorded evidence.",
+                    ) }
+                    closeChatSessionNonCancellably(candidate)
+                    return
+                }
+                val resumed = withTimeoutOrNull(30_000L) {
+                    candidate.resume(serverDurableId(durableSessionId), profile = profile)
+                } ?: throw HermesChatTransportException("Timed out resuming session")
                 if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                     closeChatSessionNonCancellably(candidate)
                     return
@@ -5069,21 +5264,18 @@ class HermesConnectionViewModel(
                     operationGeneration,
                 )
                 applyResume(durableSessionId, resumed)
-                if (resumed.running) {
-                    liveControllers[durableSessionId] = LiveChatController(
-                        durableSessionId = durableSessionId,
-                        session = candidate,
-                        runtimeSessionId = resumed.runtimeSessionId,
-                        operationGeneration = operationGeneration,
-                        recoveryState = recoveryAttempt.state,
+                if (resumed.running || relayTarget != null) {
+                    sessionControllerRegistry.activateController(
+                        PerSessionController(
+                            durableSessionId = durableSessionId,
+                            session = candidate,
+                            runtimeSessionId = resumed.runtimeSessionId,
+                            operationGeneration = operationGeneration,
+                            recoveryState = recoveryAttempt.state,
+                        ),
                     )
-                    activeChatSession = candidate
-                    activeChatDurableId = durableSessionId
-                    activeRuntimeSessionId = resumed.runtimeSessionId
-                    chatOperationGeneration = operationGeneration
-                    chatRecoveryState = recoveryAttempt.state
                     publishActiveRuntime(durableSessionId, resumed.runtimeSessionId)
-                    markTurnActive(durableSessionId)
+                    if (resumed.running) markTurnActive(durableSessionId)
                     finishChatRecovery(recoveryAttempt)
                     collectEvents(
                         candidate,
@@ -5092,10 +5284,20 @@ class HermesConnectionViewModel(
                         origin,
                         originGeneration,
                         operationGeneration,
+                        previousRuntimeSessionId = previous?.runtimeSessionId ?: resumed.runtimeSessionId,
                     )
                 } else {
                     val messages = if (relayTarget != null) {
-                        loadRelayTranscript(relayTarget, durableSessionId, mutableSnapshots.value.selectedProfile)
+                        parseRelayTranscriptRows(candidate.relayRequest(
+                            "relay.session.transcript",
+                            buildJsonObject {
+                                put("profile", mutableSnapshots.value.selectedProfile)
+                                put("session_id", serverDurableId(durableSessionId).value)
+                                put("limit", 100)
+                                put("offset", 0)
+                                put("order", "latest")
+                            },
+                        ))
                     } else {
                         client.loadTranscript(origin, token, serverDurableId(durableSessionId))
                     }
@@ -5199,6 +5401,10 @@ class HermesConnectionViewModel(
                     ?: current.modelCapabilities,
             )
         }
+        // A retained idle runtime is still a controller, but not an active turn.
+        // Replay intentionally omits foreground events; authoritative running=false
+        // must provide the missing terminal fence without another explicit Send.
+        if (activeRelayTarget != null && !resumed.running) clearSendingState(durableSessionId)
     }
 
     private fun resolveModelCapabilities(
@@ -6152,10 +6358,14 @@ class HermesConnectionViewModel(
         origin: ServerOrigin,
         originGeneration: Long,
         operationGeneration: Long,
-    ): Boolean =
-        activeOrigin == origin &&
-            generation == originGeneration &&
-            chatOperationGenerations[durableSessionId] == operationGeneration
+    ): Boolean = sessionControllerRegistry.isCurrentChatOperation(
+        durableSessionId = durableSessionId,
+        origin = origin,
+        currentOrigin = activeOrigin,
+        originGeneration = originGeneration,
+        currentGeneration = generation,
+        operationGeneration = operationGeneration,
+    )
 
     private fun clearTransientChatStates() {
         val snapshot = mutableSnapshots.value
@@ -6231,21 +6441,19 @@ class HermesConnectionViewModel(
      * the ongoing "Hermes is working" notification.
      */
     private fun syncActiveTurnNotifications() {
-        val chatSessions = mutableSnapshots.value.chatSessions
-        activeTurnIds.retainAll { chatSessions[it]?.isSending == true }
-        if (activeTurnIds.size != lastPublishedActiveTurnCount) {
-            lastPublishedActiveTurnCount = activeTurnIds.size
-            notifications.activeCountChanged(activeTurnIds.size)
-        }
+        sessionControllerRegistry.syncActiveTurns(
+            isSending = { durableSessionId ->
+                mutableSnapshots.value.chatSessions[durableSessionId]?.isSending == true
+            },
+            onCountChanged = notifications::activeCountChanged,
+        )
     }
 
     private fun markTurnActive(durableSessionId: DurableSessionId) {
-        if (!activeTurnIds.add(durableSessionId)) return
-        lastPublishedActiveTurnCount = activeTurnIds.size
-        notifications.turnStarted(
-            durableSessionId,
-            sessionTitle(durableSessionId),
-            activeTurnIds.size,
+        sessionControllerRegistry.markTurnActive(
+            durableSessionId = durableSessionId,
+            title = sessionTitle(durableSessionId),
+            onStarted = notifications::turnStarted,
         )
     }
 
@@ -6349,7 +6557,7 @@ class HermesConnectionViewModel(
     private suspend fun closeChatSessionNonCancellably(session: HermesChatSession?) {
         if (session == null) return
         withContext(NonCancellable) {
-            runCatching { session.close() }
+            withTimeoutOrNull(5_000L) { runCatching { session.close() } }
         }
     }
 
@@ -6358,20 +6566,13 @@ class HermesConnectionViewModel(
         expectedSession: HermesChatSession,
         closeSession: Boolean,
     ) {
-        val controller = liveControllers[durableSessionId]
-            ?.takeIf { it.session === expectedSession }
+        val controller = sessionControllerRegistry.detachController(durableSessionId, expectedSession)
             ?: return
-        liveControllers.remove(durableSessionId)
-        chatOperationGenerations.remove(durableSessionId)
-        chatJobs.remove(durableSessionId)
+        updateChat(durableSessionId) {
+            it.copy(backgroundTasks = it.backgroundTasks.unavailable(), connectionPhase = ChatConnectionPhase.Idle)
+        }
         clearProcessRows(durableSessionId)
         syncActiveTurnNotifications()
-        if (activeChatSession === expectedSession) {
-            activeChatSession = null
-            activeChatDurableId = null
-            activeRuntimeSessionId = null
-            chatRecoveryState = null
-        }
         if (closeSession) {
             viewModelScope.launch { closeChatSessionNonCancellably(controller.session) }
         }
@@ -6379,41 +6580,23 @@ class HermesConnectionViewModel(
 
     private suspend fun disconnectChat() {
         clearAllSlashCompletions()
-        val controllers = liveControllers.values.toList()
-        liveControllers.clear()
-        chatOperationGenerations.clear()
-        chatJobs.values.forEach(Job::cancel)
-        chatJobs.clear()
+        val controllers = sessionControllerRegistry.detachAll()
         controllers.forEach { controller ->
-            controller.eventJob?.cancel()
             removeActiveRuntime(controller.runtimeSessionId)
             closeChatSessionNonCancellably(controller.session)
         }
         mutableSnapshots.value = mutableSnapshots.value.copy(
             chatSessions = mutableSnapshots.value.chatSessions.mapValues { (_, chat) ->
-                if (chat.processRows.isEmpty()) chat else chat.copy(processRows = emptyList())
+                chat.copy(processRows = emptyList(), backgroundTasks = chat.backgroundTasks.unavailable(), connectionPhase = ChatConnectionPhase.Idle)
             },
         )
-        activeTurnIds.clear()
-        lastPublishedActiveTurnCount = 0
         notifications.activeCountChanged(0)
-        activeChatSession = null
-        activeChatDurableId = null
-        activeRuntimeSessionId = null
-        chatRecoveryState = null
     }
 
     override fun onCleared() {
+        connectionCoordinator.cancelAll()
         signInJob?.cancel()
-        chatJobs.values.forEach(Job::cancel)
-        val controllerSessions = liveControllers.values.map { controller ->
-            controller.eventJob?.cancel()
-            controller.session
-        }
-        liveControllers.clear()
-        chatOperationGenerations.clear()
-        activeTurnIds.clear()
-        lastPublishedActiveTurnCount = 0
+        val controllerSessions = sessionControllerRegistry.detachAll().map { it.session }
         // The ViewModel is the only owner of the foreground service; without this the
         // ongoing notification survives the task being swiped away.
         notifications.activeCountChanged(0)
@@ -6488,17 +6671,34 @@ class HermesConnectionViewModel(
             val projectConnector = newConnector()
             val relayScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val relaySocketFactory = TlsRelayBinarySocketFactory()
+            val relayNetwork = com.unsupportedpastels.hermesandroid.relay.RelayNetworkAvailability(context)
+            val leaseCheckpoints = mutableMapOf<List<String>, RelayLeaseCheckpoint>()
+            // Shared monotonic IDs fence late inner-controller RPC replies across
+            // attachments; a random process prefix also fences Android relaunch.
+            val relayRequestIds = java.util.concurrent.atomic.AtomicLong(java.security.SecureRandom().nextLong().ushr(12))
             val relaySessionFactory: suspend (RelayPairedTarget, String) -> HermesChatSession = { target, profile ->
+                val checkpoint = synchronized(leaseCheckpoints) {
+                    val key = listOf(target.relayOrigin, target.id, target.deviceId, target.fingerprint, profile)
+                    leaseCheckpoints.getOrPut(key) {
+                        if (leaseCheckpoints.size >= 16) leaseCheckpoints.remove(leaseCheckpoints.keys.first())
+                        RelayLeaseCheckpoint()
+                    }
+                }
                 val connected = RelayConnector.connect(
                     target = target,
                     profile = profile,
                     socketFactory = relaySocketFactory,
+                    resumeCursor = checkpoint.cursor,
+                    recoveryVersion = 1,
                 )
-                HermesChatConnection(
-                    socket = RelayHermesChatSocket(connected),
-                    maxFrameBytes = HERMES_CHAT_MAX_FRAME_BYTES,
-                    parentScope = relayScope,
-                )
+                val socket = RelayLeaseRecoverySocket(RelayHermesChatSocket(connected), profile, checkpoint)
+                try {
+                    kotlinx.coroutines.withTimeout(15_000L) { socket.initialize() }
+                    HermesChatConnection(socket, HERMES_CHAT_MAX_FRAME_BYTES, relayScope, relayRequestIds)
+                } catch (error: Throwable) {
+                    withContext(NonCancellable) { socket.close() }
+                    throw error
+                }
             }
             return HermesConnectionViewModel(
                 settingsStates = settingsStates,
@@ -6511,6 +6711,7 @@ class HermesConnectionViewModel(
                 ),
                 passwordLogin = HttpHermesPasswordAuthClient(httpClient),
                 closeResources = {
+                    relayNetwork.close()
                     relayScope.cancel()
                     httpClient.close()
                 },
@@ -6522,6 +6723,7 @@ class HermesConnectionViewModel(
                 cacheRepository = EncryptedOfflineCacheRepository(context),
                 attachmentReader = ContentAttachmentByteReader(context),
                 appForegroundStates = HermesAppForeground.states,
+                relayNetworkAvailable = relayNetwork.available,
                 notifications = AndroidTurnNotificationController(context),
                 sessionFilterRepository = DataStoreSessionFilterRepository(context),
                 speechStreamConnector = StreamingSpeechTransport(

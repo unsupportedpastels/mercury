@@ -329,7 +329,7 @@ private extension ChatEvent {
             )
         case .approvalExpire(let sessionID, let requestID):
             return MercuryCore.ChatEventApprovalExpire(sessionId: sessionID, requestId: requestID)
-        case .sessionInfo, .unsupportedBlockingRequest, .unsupportedBlockingExpire:
+        case .backgroundTask, .sessionInfo, .unsupportedBlockingRequest, .unsupportedBlockingExpire:
             // Not modeled by the shared engine; no state change.
             return nil
         }

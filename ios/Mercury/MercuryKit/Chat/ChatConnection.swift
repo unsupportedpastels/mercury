@@ -25,16 +25,26 @@ final class ChatConnection: @unchecked Sendable {
     private let socket: any ChatSocketing
     private let maxFrameBytes: Int
 
+    var relaySocket: RelayChatSocket? { socket as? RelayChatSocket }
+    var isClosed: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return closed
+    }
+
     // MARK: Lifecycle state
 
     private let stateLock = NSLock()
     private var closed = false
     private var nextRequestID: Int64 = 1
+    private let requestNamespace: String?
+    private var readerStarted = false
 
     /// id → continuation for in-flight RPCs. Also mirrors method names so a
     /// -32601 failure can name the unsupported method.
-    private var pendingRequests: [Int64: CheckedContinuation<[String: Any], Error>] = [:]
-    private var pendingRequestMethods: [Int64: String] = [:]
+    private var pendingRequests: [String: CheckedContinuation<[String: Any], Error>] = [:]
+    private var pendingRequestMethods: [String: String] = [:]
+    private var pendingBindingParams: [String: [String: Any]] = [:]
 
     // MARK: Event stream
 
@@ -59,6 +69,7 @@ final class ChatConnection: @unchecked Sendable {
     init(socket: any ChatSocketing, maxFrameBytes configured: Int? = nil) throws {
         let resolvedLimit = try validatedMaxFrameBytes(configured ?? 36 * 1024 * 1024)
         self.socket = socket
+        self.requestNamespace = socket is RelayChatSocket ? UUID().uuidString : nil
         self.maxFrameBytes = resolvedLimit
     }
 
@@ -70,7 +81,7 @@ final class ChatConnection: @unchecked Sendable {
 
     /// Starts the read loop. Returns a multiplexed event stream; multiple
     /// consumers each receive every event. Call exactly once per connection.
-    func start() -> AsyncStream<ChatEvent> {
+    func start(replayBuffered: Bool = true) -> AsyncStream<ChatEvent> {
         let id = UUID()
         let stream = AsyncStream<ChatEvent>(bufferingPolicy: .unbounded) { continuation in
             let lock = self.stateLock
@@ -80,20 +91,46 @@ final class ChatConnection: @unchecked Sendable {
                 continuation.finish()
                 return
             }
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.stateLock.lock()
+                self.continuations.removeValue(forKey: id)
+                self.stateLock.unlock()
+            }
             self.continuations[id] = continuation
             // Replay anything already buffered so early events are not lost.
-            for event in self.eventBuffer.snapshot() {
-                continuation.yield(event)
+            for event in replayBuffered ? self.eventBuffer.snapshot() : [] {
+                if self.relaySocket != nil {
+                    guard case .backgroundTask(let session, var evidence) = event else { continue }
+                    // A newly attached presentation is replaying local evidence,
+                    // not observing fresh worker activity at this instant.
+                    evidence.historical = true
+                    continuation.yield(.backgroundTask(sessionID: session, evidence: evidence))
+                } else {
+                    continuation.yield(event)
+                }
             }
             lock.unlock()
         }
-        Task { await readLoop() }
+        startReading()
         return stream
+    }
+
+    func startReading() {
+        stateLock.lock()
+        let shouldStart = !readerStarted && !closed
+        readerStarted = true
+        stateLock.unlock()
+        if shouldStart { Task { await readLoop() } }
     }
 
     // MARK: - Public RPC surface (Android-parity subset)
 
-    func resume(durableSessionID: String, profile: String?) async throws -> ResumedChatSession {
+    func resume(durableSessionID: String, profile: String?, automaticRecovery: Bool = false) async throws -> ResumedChatSession {
+        if automaticRecovery, let relaySocket,
+           !(await relaySocket.canAutomaticallyResume(durable: durableSessionID, profile: profile)) {
+            throw ChatError.transport("Retained session unavailable")
+        }
         var params: [String: Any] = [
             "session_id": durableSessionID,
             "close_on_disconnect": false,
@@ -607,6 +644,17 @@ final class ChatConnection: @unchecked Sendable {
         try await request(method, params)
     }
 
+    /// Process-local registry: callers may only reconcile IDs already observed on their own runtime.
+    func backgroundTaskStatuses() async throws -> [String: String] {
+        let result = try await request("delegation.status", [:])
+        var statuses: [String: String] = [:]
+        for row in (result["active"] as? [[String: Any]] ?? []).prefix(64) {
+            if let id = row["subagent_id"] as? String, !id.isEmpty, id.count <= 256,
+               let status = row["status"] as? String, status.count <= 40 { statuses[id] = status }
+        }
+        return statuses
+    }
+
     func close() async {
         stateLock.lock()
         if closed {
@@ -617,6 +665,7 @@ final class ChatConnection: @unchecked Sendable {
         let pending = pendingRequests
         pendingRequests.removeAll()
         pendingRequestMethods.removeAll()
+        pendingBindingParams.removeAll()
         stateLock.unlock()
 
         let error = ChatError.transport("Hermes chat connection closed")
@@ -633,13 +682,14 @@ final class ChatConnection: @unchecked Sendable {
             stateLock.unlock()
             throw ChatError.transport("Hermes chat connection is closed")
         }
-        let id = nextRequestID
+        let number = nextRequestID
+        let id = requestNamespace.map { "\($0):\(number)" } ?? String(number)
         nextRequestID += 1
         stateLock.unlock()
 
         let frame: [String: Any] = [
             "jsonrpc": "2.0",
-            "id": id,
+            "id": requestNamespace == nil ? (number as Any) : (id as Any),
             "method": method,
             "params": params,
         ]
@@ -661,6 +711,9 @@ final class ChatConnection: @unchecked Sendable {
             }
             pendingRequests[id] = continuation
             pendingRequestMethods[id] = method
+            if method == "session.resume" || method == "session.create" {
+                pendingBindingParams[id] = params
+            }
             stateLock.unlock()
 
             Task {
@@ -670,6 +723,7 @@ final class ChatConnection: @unchecked Sendable {
                     self.stateLock.lock()
                     let registered = self.pendingRequests.removeValue(forKey: id)
                     self.pendingRequestMethods.removeValue(forKey: id)
+                    self.pendingBindingParams.removeValue(forKey: id)
                     self.stateLock.unlock()
                     if let registered {
                         registered.resume(throwing: ChatError.transport("Could not send Hermes chat request"))
@@ -702,7 +756,7 @@ final class ChatConnection: @unchecked Sendable {
             }
             do {
                 try ensureFrameSize(frame)
-                try handleFrame(frame)
+                try await handleFrame(frame)
             } catch {
                 failure = error
                 break
@@ -716,6 +770,7 @@ final class ChatConnection: @unchecked Sendable {
         let pending = pendingRequests
         pendingRequests.removeAll()
         pendingRequestMethods.removeAll()
+        pendingBindingParams.removeAll()
         stateLock.unlock()
 
         let error = failure ?? ChatError.transport("Hermes chat connection closed")
@@ -726,7 +781,7 @@ final class ChatConnection: @unchecked Sendable {
 
     // MARK: - Frame handling
 
-    private func handleFrame(_ frame: String) throws {
+    private func handleFrame(_ frame: String) async throws {
         let raw: Any
         do {
             raw = try JSONSerialization.jsonObject(with: Data(frame.utf8))
@@ -744,10 +799,11 @@ final class ChatConnection: @unchecked Sendable {
             return
         }
 
-        guard let id = int64Field("id", in: message) else { return }
+        guard let id = (message["id"] as? String) ?? int64Field("id", in: message).map(String.init) else { return }
         stateLock.lock()
         let continuation = pendingRequests.removeValue(forKey: id)
         let method = pendingRequestMethods.removeValue(forKey: id)
+        let bindingParams = pendingBindingParams.removeValue(forKey: id)
         stateLock.unlock()
         guard let continuation else { return }
 
@@ -766,12 +822,38 @@ final class ChatConnection: @unchecked Sendable {
             continuation.resume(throwing: ChatError.protocolError("Hermes response was incomplete"))
             return
         }
+        // Install the authenticated correlated binding before reading the next
+        // frame, not in the resumed caller (which races the pooled read loop).
+        if let relaySocket, let bindingParams {
+            if method == "session.resume", let durable = bindingParams["session_id"] as? String,
+               let resumed = try? parseResumeResult(result, requestedDurableSessionID: durable) {
+                await relaySocket.bindTaskRuntime(runtime: resumed.runtimeSessionID, durable: durable,
+                                                   profile: bindingParams["profile"] as? String)
+            } else if method == "session.create",
+                      let runtime = boundedRequiredField("session_id", in: result, maxChars: maxEventIDChars),
+                      let durable = boundedRequiredField("stored_session_id", in: result, maxChars: maxEventNameChars) {
+                await relaySocket.bindTaskRuntime(runtime: runtime, durable: durable,
+                                                   profile: bindingParams["profile"] as? String)
+            }
+        }
         continuation.resume(returning: result)
     }
 
     // MARK: - Event decoding
 
     private func handleSharedEvent(_ message: [String: Any]) {
+        if let params = message["params"] as? [String: Any],
+           let sessionID = boundedRequiredField("session_id", in: params, maxChars: maxEventIDChars),
+           let type = params["type"] as? String,
+           let payload = params["payload"] as? [String: Any],
+           var evidence = BackgroundTaskEvidence.decode(type: type, payload: payload) {
+            if relaySocket != nil {
+                evidence.eventID = params["relay_event_id"] as? String
+                evidence.historical = params["relay_replay"] as? Bool == true
+            }
+            emit(.backgroundTask(sessionID: sessionID, evidence: evidence))
+            return
+        }
         guard let params = message["params"] as? [String: Any],
               let sessionID = boundedRequiredField("session_id", in: params, maxChars: maxEventIDChars),
               let type = stringField("type", in: params),
@@ -783,8 +865,14 @@ final class ChatConnection: @unchecked Sendable {
                 sessionId: sessionID,
                 payloadJson: payloadJSON
               ),
-              let event = ChatEvent(shared: shared)
+              var event = ChatEvent(shared: shared)
         else { return }
+
+        if case .toolComplete(let session, let toolID, let name, _) = event, name == "delegate_task",
+           let result = payload["result"] as? [String: Any],
+           result["status"] as? String == "dispatched", result["mode"] as? String == "background" {
+            event = .toolComplete(sessionID: session, toolID: toolID, name: name, summary: "Started background tasks")
+        }
 
         switch event {
         case .approvalRequest(_, let requestID, let command, let description, let choices):

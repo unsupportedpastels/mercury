@@ -311,13 +311,18 @@ final class ConnectionController {
     /// in-process read, seeds the session list, and enters `.connected` with
     /// no server origin (origin-scoped REST features stand down on nil).
     func connectRelay(target: RelayPairedTarget) async {
+        let generation = appModel.relaySelectionGeneration
+        let profile = appModel.activeProfile
+        await RelayConnectionPool.shared.select(target: target, profile: profile)
+        guard appModel.relaySelectionGeneration == generation else { return }
         appModel.setActiveRelayTarget(nil)
         appModel.setServerOrigin(nil)
         appModel.setPhase(.connecting)
         do {
             let page = try await Self.relaySessionsPage(
-                target: target, profile: appModel.activeProfile, limit: 20, offset: 0
+                target: target, profile: profile, limit: 20, offset: 0
             )
+            guard appModel.relaySelectionGeneration == generation else { return }
             appModel.setActiveRelayTarget(target)
             appModel.sessions = page.rows
             appModel.setCanLoadMoreSessions(page.hasMore)
@@ -325,10 +330,12 @@ final class ConnectionController {
             appModel.setHermesVersion(nil)
             appModel.setPhase(.connected)
         } catch let error as RelayConnectionError where error == .notAuthorized {
+            guard appModel.relaySelectionGeneration == generation else { return }
             appModel.setPhase(.failed(
                 "The host hasn't approved this device — or it was revoked. Approve it on the host, then try again."
             ))
         } catch {
+            guard appModel.relaySelectionGeneration == generation else { return }
             appModel.setPhase(.failed(
                 "The relay or host is unreachable. Check that your Hermes host is online, then retry."
             ))
@@ -344,11 +351,7 @@ final class ConnectionController {
         limit: Int,
         offset: Int
     ) async throws -> SessionPage {
-        let connected = try await RelayConnector.connect(target: target, profile: profile)
-        let socket = RelayChatSocket(connected: connected)
-        let connection = try ChatConnection(socket: socket)
-        _ = connection.start()
-        defer { Task { await connection.close() } }
+        let connection = try await RelayConnectionPool.shared.acquire(target: target, profile: profile)
         let result = try await connection.relayRequest(
             "relay.sessions.list",
             params: ["profile": profile, "limit": limit, "offset": offset]

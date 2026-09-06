@@ -76,11 +76,20 @@ struct MercuryApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            Group {
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("-uitest-background-tasks") {
+                    BackgroundTaskFixtureView()
+                } else { RootView() }
+                #else
+                RootView()
+                #endif
+            }
                 .environment(appModel)
                 .preferredColorScheme(.dark)
                 .task {
                     #if DEBUG
+                    if ProcessInfo.processInfo.arguments.contains("-uitest-background-tasks") { return }
                     if ProcessInfo.processInfo.arguments.contains("-uitest-reset-local-state") {
                         await appModel.resetLocalStateForUITest()
                     }

@@ -23,9 +23,6 @@ final class NotificationDeliveryUITests: XCTestCase {
         // Grant the notification permission prompt (system alert on springboard).
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let allow = springboard.buttons["Allow"]
-        if allow.waitForExistence(timeout: 20) {
-            allow.tap()
-        }
 
         // The banner body/heading should now appear. Match on the distinctive
         // body text the DEBUG hook posts, falling back to the completion heading.
@@ -34,8 +31,13 @@ final class NotificationDeliveryUITests: XCTestCase {
         ).firstMatch
         let bannerByStatic = springboard.staticTexts["Mercury finished"]
 
-        let appeared = bannerBody.waitForExistence(timeout: 20)
-            || bannerByStatic.waitForExistence(timeout: 5)
+        // On an already-authorized simulator there is no Allow prompt. Waiting
+        // only for that alert lets the transient banner disappear before querying it.
+        let delivery = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            if allow.exists { allow.tap() }
+            return bannerBody.exists || bannerByStatic.exists
+        }, object: nil)
+        let appeared = XCTWaiter.wait(for: [delivery], timeout: 25) == .completed
 
         XCTAssertTrue(
             appeared,

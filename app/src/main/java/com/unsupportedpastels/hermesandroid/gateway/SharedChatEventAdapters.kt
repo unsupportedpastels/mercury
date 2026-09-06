@@ -37,6 +37,7 @@ internal fun SharedChatEvent.toAndroidEvent(todos: List<RunTodoItem>? = null): H
             reasoningEffort = reasoningEffort,
             title = title,
             running = running,
+            fastMode = fastMode,
         )
         is SharedChatEvent.Error -> HermesChatEvent.Error(runtimeId, message)
         is SharedChatEvent.ToolStart -> HermesChatEvent.ToolStart(runtimeId, toolId, name, context, todos)
@@ -86,6 +87,7 @@ internal fun HermesChatEvent.toSharedEvent(): SharedChatEvent? = when (this) {
         model,
         provider,
         reasoningEffort,
+        fastMode = fastMode,
         title = title,
         running = running,
     )

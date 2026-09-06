@@ -78,6 +78,19 @@ struct ChatView: View {
     // reconnect policy, and sheet presentation triggers.
 
     @State private var transcript = TranscriptState()
+    private var backgroundTaskScope: String {
+        let origin = appModel.activeRelayTarget.map { "relay:\($0.relayOrigin)|\($0.id)" }
+            ?? "direct:\(appModel.serverOrigin ?? "unconfigured")"
+        return "\(origin)|\(appModel.activeProfile)|\(durableID ?? sessionID)"
+    }
+    private var backgroundTasks: BackgroundTasks {
+        appModel.backgroundTasksBySession[backgroundTaskScope] ?? BackgroundTasks()
+    }
+    private func markBackgroundTasksUnavailable() {
+        var tasks = backgroundTasks
+        tasks.markUnavailable()
+        if !tasks.rows.isEmpty { appModel.backgroundTasksBySession[backgroundTaskScope] = tasks }
+    }
     @State private var loadError: String?
     @State private var draft = ""
     @State private var composerError: String?
@@ -165,6 +178,7 @@ struct ChatView: View {
     // MARK: Live connection
 
     @State private var connection: ChatConnection?
+    @State private var establishing = false
     @State private var connectionOwnership = ChatConnectionOwnership()
     @State private var runtimeSessionID: String?
     /// Durable session id adopted from `session.create`'s stored_session_id
@@ -187,6 +201,7 @@ struct ChatView: View {
     /// Scheduled reconnect attempt; cancelled on disappear so a pending
     /// timer never fires after the screen is gone.
     @State private var reconnectTask: Task<Void, Never>?
+    @State private var reconnectID = UUID()
     /// Set when close() was deliberate — peer drops trigger recovery, our
     /// own teardown must not.
     @State private var closedByUs = false
@@ -272,7 +287,7 @@ struct ChatView: View {
                     .foregroundStyle(Color.secondary)
                     .padding(.vertical, 4)
             case .offline:
-                Button(action: retryConnectionNow) {
+                Button(action: { retryConnectionNow() }) {
                     Label("Chat offline — tap to retry", systemImage: "wifi.exclamationmark")
                         .font(.footnote)
                         .foregroundStyle(Color.statusAlert)
@@ -302,6 +317,8 @@ struct ChatView: View {
                     .padding(.horizontal)
             }
 
+            BackgroundTaskStrip(tasks: backgroundTasks)
+                .padding(.horizontal)
             ComposerBar(
                 draft: $draft,
                 errorMessage: Binding(get: { composerError }, set: { composerError = $0 }),
@@ -409,9 +426,10 @@ struct ChatView: View {
             eventTask?.cancel()
             eventTask = nil
             let closingConnection = connection
+            markBackgroundTasksUnavailable()
             connectionOwnership.invalidate()
             connection = nil
-            Task { await closingConnection?.close() }
+            Task { if let closingConnection { await RelayConnectionPool.release(closingConnection) } }
         }
         .sheet(isPresented: $showModelPicker) {
             ModelPickerSheet(
@@ -686,6 +704,7 @@ struct ChatView: View {
         }
         do {
             let fetched: [TranscriptMessage]
+            var relayPage: RelayTranscriptPage?
             if isRelay {
                 // The router permits one device socket: a standalone read
                 // while any chat connection exists (or is mid-handshake in a
@@ -695,9 +714,11 @@ struct ChatView: View {
                 // reconnects refresh from the resume snapshot anyway.
                 let live = liveConnection ?? connection
                 if live == nil && !allowStandaloneRelayRead { return false }
-                fetched = try await relayTranscriptMessages(
+                let page = try await relayTranscriptMessages(
                     transcriptID: transcriptID, limit: 100, offset: 0, using: live
                 )
+                relayPage = page
+                fetched = page.messages
             } else {
                 guard let origin = appModel.serverOrigin else { return false }
                 let client = makeHTTPClient(origin: origin)
@@ -721,8 +742,8 @@ struct ChatView: View {
             } else {
                 transcript.loadTranscript(restored)
             }
-            loadedTranscriptCount = history.count
-            hasMoreHistory = TranscriptHistoryPolicy.hasMoreHistory(fetchedCount: history.count)
+            loadedTranscriptCount = relayPage?.nextOffset ?? history.count
+            hasMoreHistory = relayPage?.hasMore ?? TranscriptHistoryPolicy.hasMoreHistory(fetchedCount: history.count)
             historyError = nil
             await cacheCurrentTranscript()
             initialScrollDone = !transcript.rows.isEmpty
@@ -745,7 +766,7 @@ struct ChatView: View {
         limit: Int,
         offset: Int,
         using live: ChatConnection?
-    ) async throws -> [TranscriptMessage] {
+    ) async throws -> RelayTranscriptPage {
         guard let target = appModel.activeRelayTarget else {
             throw ChatError.transport("No relay target is active")
         }
@@ -760,17 +781,12 @@ struct ChatView: View {
         if let live {
             result = try await live.relayRequest("relay.session.transcript", params: params)
         } else {
-            let connected = try await RelayConnector.connect(
+            let short = try await RelayConnectionPool.shared.acquire(
                 target: target, profile: appModel.activeProfile
             )
-            let short = try ChatConnection(socket: RelayChatSocket(connected: connected))
-            _ = short.start()
-            defer { Task { await short.close() } }
             result = try await short.relayRequest("relay.session.transcript", params: params)
         }
-        guard let raw = result["messages"] as? [[String: Any]] else { return [] }
-        let data = try JSONSerialization.data(withJSONObject: raw)
-        return (try? JSONDecoder().decode([TranscriptMessage].self, from: data)) ?? []
+        return try RelayTranscriptPage.decode(result, offset: offset, limit: limit)
     }
 
     /// SwiftUI keeps this view alive while iOS backgrounds the app, so its
@@ -787,7 +803,7 @@ struct ChatView: View {
             )
         }
         if connection == nil {
-            retryConnectionNow()
+            retryConnectionNow(automatic: true)
         }
     }
 
@@ -804,16 +820,19 @@ struct ChatView: View {
         defer { isLoadingHistory = false }
         do {
             let fetchedOlder: [TranscriptMessage]
+            var relayPage: RelayTranscriptPage?
             if isRelay {
                 // Backfill only rides the live chat connection; a standalone
                 // socket would supersede it (one device socket per install).
                 guard let live = connection else { return }
-                fetchedOlder = try await relayTranscriptMessages(
+                let page = try await relayTranscriptMessages(
                     transcriptID: transcriptID,
                     limit: TranscriptHistoryPolicy.pageSize,
                     offset: TranscriptHistoryPolicy.nextOffset(loadedCount: loadedTranscriptCount),
                     using: live
                 )
+                relayPage = page
+                fetchedOlder = page.messages
             } else {
                 guard let origin = appModel.serverOrigin else { return }
                 let client = makeHTTPClient(origin: origin)
@@ -824,8 +843,12 @@ struct ChatView: View {
                 )
             }
             let older = TranscriptPageOrdering.forDisplay(fetchedOlder)
+            if let page = relayPage {
+                loadedTranscriptCount = page.nextOffset
+                hasMoreHistory = page.hasMore
+            }
             guard !older.isEmpty else {
-                hasMoreHistory = false
+                if relayPage == nil { hasMoreHistory = false }
                 return
             }
             let restored = older.map { message in
@@ -837,8 +860,10 @@ struct ChatView: View {
                 )
             }
             transcript.prependHistory(restored)
-            loadedTranscriptCount += older.count
-            hasMoreHistory = TranscriptHistoryPolicy.hasMoreHistory(fetchedCount: older.count)
+            if relayPage == nil {
+                loadedTranscriptCount += older.count
+                hasMoreHistory = TranscriptHistoryPolicy.hasMoreHistory(fetchedCount: older.count)
+            }
             historyError = nil
         } catch {
             historyError = "Could not load earlier messages. Tap to retry."
@@ -868,12 +893,16 @@ struct ChatView: View {
         )
     }
 
+    @MainActor
     private func loadProcessRows() async {
         guard let connection, let runtimeSessionID else { return }
+        let scope = backgroundTaskScope
         let client = OperationsClient(request: { method, params in
             try await connection.operationsRequest(method, params: params)
         })
-        processRows = (try? await client.listProcesses(runtimeSessionID: runtimeSessionID)) ?? []
+        let rows = (try? await client.listProcesses(runtimeSessionID: runtimeSessionID)) ?? []
+        guard self.connection === connection, backgroundTaskScope == scope else { return }
+        processRows = rows
     }
 
     /// One connect attempt: ticket → socket → event loop → resume/create.
@@ -884,7 +913,15 @@ struct ChatView: View {
     private func establishConnection(attempt: Int) async -> Bool {
         // Task re-entry safety: for the new-chat flow, once the runtime exists
         // (createSession already ran) never run this again.
-        if isNewSession && runtimeSessionID != nil { return true }
+        if connection != nil { return true }
+        guard !establishing else { return false }
+        establishing = true
+        defer { establishing = false }
+        let requestedScope = backgroundTaskScope
+        let requestedProfile = appModel.activeProfile
+        let requestedTargetID = appModel.activeRelayTarget?.id
+        let requestedOrigin = appModel.serverOrigin
+        let requestedSelection = appModel.relaySelectionGeneration
         guard appModel.activeRelayTarget != nil || appModel.serverOrigin != nil else {
             return false
         }
@@ -898,11 +935,9 @@ struct ChatView: View {
                 // installation, so while this chat is open it owns the app's
                 // only relay connection (list refreshes pause while a chat
                 // is visible).
-                let connected = try await RelayConnector.connect(
-                    target: relayTarget,
-                    profile: appModel.activeProfile
+                candidate = try await RelayConnectionPool.shared.acquire(
+                    target: relayTarget, profile: appModel.activeProfile
                 )
-                candidate = try ChatConnection(socket: RelayChatSocket(connected: connected))
             } else {
                 guard let origin = appModel.serverOrigin else { return false }
                 let token = storedAccessToken(origin: origin)
@@ -918,16 +953,37 @@ struct ChatView: View {
                 candidate = try ChatConnection(socket: socket)
             }
             candidateConnection = candidate
-            let stream = candidate.start()
+            guard !Task.isCancelled, !closedByUs, backgroundTaskScope == requestedScope else {
+                await RelayConnectionPool.release(candidate)
+                return false
+            }
+            if attempt > 0, let relay = candidate.relaySocket,
+               let snapshot = await relay.recoverySnapshot(),
+               !snapshot.hasLiveBinding(durableId: durableID ?? sessionID, profile: requestedProfile) {
+                var tasks = await relay.retainedTasks(durable: durableID ?? sessionID, runtime: nil) ?? backgroundTasks
+                guard !Task.isCancelled, !closedByUs, backgroundTaskScope == requestedScope else {
+                    throw CancellationError()
+                }
+                tasks.recover(snapshot: snapshot, durableID: durableID ?? sessionID,
+                               profile: requestedProfile, runtime: nil)
+                appModel.backgroundTasksBySession[backgroundTaskScope] = tasks
+                _ = await loadTranscript(durableSessionID: durableID ?? sessionID, using: candidate)
+                connectionNote = "Retained session unavailable. Retry to reconnect explicitly."
+                throw ChatError.transport("Retained session unavailable")
+            }
 
+            let stream = candidate.start()
             // Keep the candidate private until create/resume proves it owns a
             // valid runtime. Publishing earlier lets a failed or stale attempt
             // clear a newer connection when its event stream finishes.
-            if isNewSession {
+            if isNewSession && durableID == nil {
                 let created = try await candidate.createSession(
-                    profile: nil,
+                    profile: requestedProfile,
                     workspacePath: newSessionWorkspacePath
                 )
+                guard !Task.isCancelled, !closedByUs, backgroundTaskScope == requestedScope else {
+                    throw CancellationError()
+                }
                 runtimeSessionID = created.runtimeSessionID
                 transcript.ownSessionIDs.insert(created.runtimeSessionID)
                 if let stored = created.durableSessionID {
@@ -938,7 +994,11 @@ struct ChatView: View {
                     appModel.markSessionEngaged(stored)
                 }
             } else {
-                let resumed = try await candidate.resume(durableSessionID: sessionID, profile: nil)
+                let resumed = try await candidate.resume(durableSessionID: durableID ?? sessionID, profile: requestedProfile,
+                                                         automaticRecovery: attempt > 0)
+                guard !Task.isCancelled, !closedByUs, backgroundTaskScope == requestedScope else {
+                    throw CancellationError()
+                }
                 runtimeSessionID = resumed.runtimeSessionID
                 transcript.ownSessionIDs.insert(resumed.runtimeSessionID)
                 if let provider = resumed.provider, let model = resumed.model {
@@ -984,12 +1044,43 @@ struct ChatView: View {
             // this attempt. Never let that stale candidate become active.
             guard let ownershipToken = connectionOwnership.publish(
                 when: !Task.isCancelled && !closedByUs
+                    && appModel.activeProfile == requestedProfile
+                    && appModel.activeRelayTarget?.id == requestedTargetID
+                    && appModel.serverOrigin == requestedOrigin
+                    && appModel.relaySelectionGeneration == requestedSelection
             ) else {
-                await candidate.close()
+                await RelayConnectionPool.release(candidate)
                 return false
             }
             connection = candidate
+            let childScope = backgroundTaskScope
+            if let relay = candidate.relaySocket,
+               let tasks = await relay.retainedTasks(durable: durableID ?? sessionID, runtime: runtimeSessionID) {
+                guard connectionOwnership.isCurrent(ownershipToken), connection === candidate,
+                      backgroundTaskScope == childScope else { return false }
+                appModel.backgroundTasksBySession[childScope] = tasks
+            }
             eventTask?.cancel()
+            if !backgroundTasks.rows.isEmpty, let childRuntime = runtimeSessionID {
+                Task {
+                    if let statuses = try? await candidate.backgroundTaskStatuses(),
+                       connectionOwnership.isCurrent(ownershipToken), connection === candidate,
+                       backgroundTaskScope == childScope {
+                        if let relay = candidate.relaySocket {
+                            let tasks = await relay.reconcileRetainedTasks(durable: durableID ?? sessionID,
+                                                                          runtime: childRuntime, statuses: statuses)
+                            guard connectionOwnership.isCurrent(ownershipToken), connection === candidate,
+                                  backgroundTaskScope == childScope, runtimeSessionID == childRuntime,
+                                  let tasks else { return }
+                            appModel.backgroundTasksBySession[childScope] = tasks
+                        } else {
+                            var tasks = backgroundTasks
+                            tasks.reconcile(statuses, runtime: childRuntime)
+                            appModel.backgroundTasksBySession[childScope] = tasks
+                        }
+                    }
+                }
+            }
             eventTask = Task { [weak candidate] in
                 guard let candidate else { return }
                 for await event in stream {
@@ -1002,7 +1093,7 @@ struct ChatView: View {
                     // already reduced into rows, on both transports.
                     let stillOwnsConnection = await MainActor.run {
                         guard connectionOwnership.isCurrent(ownershipToken)
-                            && connection === candidate else { return false }
+                            && connection === candidate && backgroundTaskScope == childScope else { return false }
                         handleEvent(event)
                         return true
                     }
@@ -1010,8 +1101,9 @@ struct ChatView: View {
                 }
                 await MainActor.run {
                     guard connectionOwnership.isCurrent(ownershipToken),
-                          connection === candidate else { return }
+                          connection === candidate, backgroundTaskScope == childScope else { return }
                     _ = connectionOwnership.release(ifCurrent: ownershipToken)
+                    markBackgroundTasksUnavailable()
                     connection = nil
                     clearSlashCompletion()
                     // Unexpected stream end (peer drop / transport death) —
@@ -1036,7 +1128,7 @@ struct ChatView: View {
             return true
         } catch {
             if let candidateConnection {
-                await candidateConnection.close()
+                await RelayConnectionPool.release(candidateConnection)
             }
             return false
         }
@@ -1058,38 +1150,52 @@ struct ChatView: View {
     @MainActor
     private func scheduleReconnect() {
         guard reconnectTask == nil, !closedByUs else { return }
+        reconnectID = UUID()
+        let token = reconnectID
+        let scope = backgroundTaskScope
         reconnectTask = Task {
+            func current() -> Bool {
+                !Task.isCancelled && !closedByUs && reconnectID == token && backgroundTaskScope == scope
+            }
             for attempt in 1...Self.maxRecoveryAttempts {
-                guard !Task.isCancelled, !closedByUs else { break }
+                guard current() else { break }
+                // iOS suspension is not a failed recovery attempt.
+                while scenePhase != .active && current() {
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+                guard current() else { break }
                 connectionState = .reconnecting(attempt: attempt)
                 let millis = Self.recoveryBackoffMillis[min(attempt - 1, Self.recoveryBackoffMillis.count - 1)]
                 try? await Task.sleep(nanoseconds: millis * 1_000_000)
-                guard !Task.isCancelled, !closedByUs else { break }
+                while scenePhase != .active && current() {
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+                guard current() else { break }
                 if await establishConnection(attempt: attempt) {
-                    reconnectTask = nil
+                    if reconnectID == token { reconnectTask = nil }
                     return
                 }
             }
-            if !Task.isCancelled, !closedByUs {
-                connectionState = .offline
-            }
-            reconnectTask = nil
+            if current() { connectionState = .offline }
+            if reconnectID == token { reconnectTask = nil }
         }
     }
 
     @MainActor
-    private func retryConnectionNow() {
+    private func retryConnectionNow(automatic: Bool = false) {
         reconnectTask?.cancel()
         reconnectTask = nil
+        reconnectID = UUID()
+        let token = reconnectID
+        let scope = backgroundTaskScope
         guard connection == nil, !closedByUs else { return }
         reconnectTask = Task {
             connectionState = .reconnecting(attempt: 1)
-            if await establishConnection(attempt: 1) {
-                reconnectTask = nil
-                return
-            }
+            // Foreground recovery is not consent to resume a historical binding.
+            let connected = await establishConnection(attempt: automatic ? 1 : 0)
+            guard reconnectID == token, !Task.isCancelled, backgroundTaskScope == scope else { return }
             reconnectTask = nil
-            scheduleReconnect()
+            if !connected { scheduleReconnect() }
         }
     }
 
@@ -1756,6 +1862,25 @@ struct ChatView: View {
 
     @MainActor
     private func handleEvent(_ event: ChatEvent) {
+        guard event.belongsToPresentation(runtimeID: runtimeSessionID, durableID: durableID ?? sessionID) else { return }
+        if case .backgroundTask = event {
+            guard let runtimeSessionID else { return }
+            if let candidate = connection, let relay = candidate.relaySocket {
+                let scope = backgroundTaskScope
+                let durable = durableID ?? sessionID
+                Task { @MainActor in
+                    let tasks = await relay.retainedTasks(durable: durable, runtime: runtimeSessionID)
+                    guard connection === candidate, backgroundTaskScope == scope,
+                          self.runtimeSessionID == runtimeSessionID, let tasks else { return }
+                    appModel.backgroundTasksBySession[scope] = tasks
+                }
+            } else {
+                var tasks = backgroundTasks
+                tasks.apply(event, runtime: runtimeSessionID, now: Int64(Date().timeIntervalSince1970 * 1000))
+                appModel.backgroundTasksBySession[backgroundTaskScope] = tasks
+            }
+            return
+        }
         // Pure transcript mutation lives in the reducer.
         transcript.apply(event)
 
@@ -1825,7 +1950,8 @@ struct ChatView: View {
             // accept its events so the transcript renders instead of
             // silently filtering the whole turn.
             if let storedID, storedID == (durableID ?? sessionID), !infoRuntimeID.isEmpty {
-                transcript.ownSessionIDs.insert(infoRuntimeID)
+                runtimeSessionID = infoRuntimeID
+                transcript.ownSessionIDs = [storedID, infoRuntimeID]
             }
 
         case .statusUpdate:
@@ -1900,16 +2026,35 @@ struct ChatView: View {
         let artifacts = MediaDirectiveExtractor.extract(text)
             .filter { $0.origin == .managedPath && $0.type == .image }
         ForEach(artifacts, id: \.stableIdentity) { artifact in
-            RemoteManagedImage(path: artifact.source) { path in
+            RemoteManagedImage(path: artifact.source, scope: managedImageScope) { path in
                 try await loadManagedImage(path: path)
             }
+            .id(managedImageScope + "|" + artifact.source)
         }
     }
 
     /// Authenticated managed-image fetch: GET /api/files/download?path=…
     /// with the bearer token; image/* content type required; 10 MiB cap
     /// (Android downloadManagedImage parity).
+    private var managedImageScope: String {
+        let transport = appModel.activeRelayTarget.map { "relay:\($0.relayOrigin)|\($0.id)" }
+            ?? "direct:\(appModel.serverOrigin ?? "unconfigured")"
+        return "\(transport)|\(appModel.activeProfile)|\(connection.map { String(describing: ObjectIdentifier($0)) } ?? "disconnected")"
+    }
+
     private func loadManagedImage(path: String) async throws -> Data {
+        let scope = managedImageScope
+        if appModel.activeRelayTarget != nil {
+            guard let live = connection else { throw ChatError.transport("Connect the Relay chat to load images") }
+            let bytes = try await RelayImageReader.shared.read(profile: appModel.activeProfile, path: path) { method, params in
+                try Task.checkCancellation()
+                guard managedImageScope == scope, connection === live else { throw CancellationError() }
+                return try await live.relayRequest(method, params: params)
+            }
+            try Task.checkCancellation()
+            guard managedImageScope == scope, connection === live else { throw CancellationError() }
+            return bytes
+        }
         guard let origin = appModel.serverOrigin else {
             throw URLError(.userAuthenticationRequired)
         }
@@ -1924,6 +2069,8 @@ struct ChatView: View {
               data.count <= 10 * 1024 * 1024 else {
             throw URLError(.cannotDecodeContentData)
         }
+        try Task.checkCancellation()
+        guard managedImageScope == scope else { throw CancellationError() }
         return data
     }
 

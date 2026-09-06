@@ -365,6 +365,7 @@ interface HermesChatEvent {
         val reasoningEffort: String? = null,
         val title: String? = null,
         val running: Boolean? = null,
+        val fastMode: Boolean? = null,
     ) : HermesChatEvent
 
     data class Error(
@@ -448,6 +449,8 @@ fun interface HermesChatConnector {
 
 interface HermesChatSession {
     val events: Flow<HermesChatEvent>
+    val relayLeaseSnapshot: com.unsupportedpastels.hermesandroid.relay.RelayLeaseSnapshot? get() = null
+    fun acknowledgeRelayEvent(eventId: String?) {}
 
     /** Relay-owned metadata RPCs carried over the same admitted Hermes channel. */
     suspend fun relayRequest(method: String, params: JsonObject): JsonObject =
@@ -519,6 +522,14 @@ interface HermesChatSession {
         text: String,
         interrupted: Boolean,
     ): PromptSubmission = submitPrompt(runtimeSessionId, text)
+
+    /** Relay's existing lease-local correlation contract; never implies replay safety. */
+    suspend fun submitPrompt(
+        runtimeSessionId: RuntimeSessionId,
+        text: String,
+        interrupted: Boolean,
+        submissionId: String?,
+    ): PromptSubmission = submitPrompt(runtimeSessionId, text, interrupted)
 
     /** Adds bounded steering text to the currently running turn. */
     suspend fun steer(runtimeSessionId: RuntimeSessionId, text: String): SessionSteerResult =
@@ -702,7 +713,13 @@ class HermesChatConnection internal constructor(
     private val socket: HermesChatSocket,
     private val maxFrameBytes: Int,
     parentScope: CoroutineScope,
+    private val nextRequestId: AtomicLong = AtomicLong(1),
 ) : HermesChatSession {
+    override val relayLeaseSnapshot: com.unsupportedpastels.hermesandroid.relay.RelayLeaseSnapshot?
+        get() = (socket as? com.unsupportedpastels.hermesandroid.relay.RelayLeaseRecoverySocket)?.snapshot
+    override fun acknowledgeRelayEvent(eventId: String?) {
+        (socket as? com.unsupportedpastels.hermesandroid.relay.RelayLeaseRecoverySocket)?.acknowledge(eventId)
+    }
     override suspend fun relayRequest(method: String, params: JsonObject): JsonObject {
         if (!method.startsWith("relay.")) throw HermesChatProtocolException("Unsafe relay method")
         return request(method, params)
@@ -781,7 +798,7 @@ class HermesChatConnection internal constructor(
     }
     private val closed = AtomicBoolean(false)
     private val lifecycleLock = Any()
-    private val nextRequestId = AtomicLong(1)
+
     private val pendingRequests = ConcurrentHashMap<Long, kotlinx.coroutines.CompletableDeferred<JsonObject>>()
     private val pendingRequestMethods = ConcurrentHashMap<Long, String>()
     private val interactionLock = Any()
@@ -881,11 +898,22 @@ class HermesChatConnection internal constructor(
         runtimeSessionId: RuntimeSessionId,
         text: String,
         interrupted: Boolean,
+    ): PromptSubmission = submitPrompt(runtimeSessionId, text, interrupted, submissionId = null)
+
+    override suspend fun submitPrompt(
+        runtimeSessionId: RuntimeSessionId,
+        text: String,
+        interrupted: Boolean,
+        submissionId: String?,
     ): PromptSubmission {
+        if (submissionId != null && submissionId.length !in 1..128) {
+            throw HermesChatProtocolException("Invalid submission identifier")
+        }
         val params = buildJsonObject {
             put("session_id", runtimeSessionId.value)
             put("text", text)
             if (interrupted) put("interrupted", true)
+            submissionId?.let { put("submission_id", it) }
         }
         val result = request("prompt.submit", params)
         val status = result.stringValue("status")
@@ -1421,6 +1449,15 @@ class HermesChatConnection internal constructor(
             ?: return
         val type = params.stringValue("type") ?: return
         val payloadElement = params["payload"] ?: return
+        (payloadElement as? JsonObject)?.let { payload ->
+            decodeBackgroundTaskEvent(type, sessionId, payload)?.let { event ->
+                val eventId = params.boundedRequired("relay_event_id", 512)
+                    ?: params.boundedRequired("event_id", 512)
+                    ?: params.longValue("seq")?.let { "$sessionId:$it" }
+                eventChannel.trySend(event.copy(eventId = eventId, historical = params.booleanValue("relay_replay") == true))
+                return
+            }
+        }
         val shared = ChatEventDecoder.decode(type, sessionId, payloadElement.toString()) ?: return
         val payload = payloadElement as? JsonObject
         val todos = if (shared is com.unsupportedpastels.mercury.core.transcript.ChatEvent.ToolStart ||
@@ -1430,7 +1467,12 @@ class HermesChatConnection internal constructor(
         } else {
             null
         }
-        val event = shared.toAndroidEvent(todos) ?: return
+        val decoded = shared.toAndroidEvent(todos) ?: return
+        val result = payload?.get("result") as? JsonObject
+        val event = if (decoded is HermesChatEvent.ToolComplete && decoded.name == "delegate_task" &&
+            result?.get("status") == JsonPrimitive("dispatched") && result["mode"] == JsonPrimitive("background")) {
+            decoded.copy(summary = "Started background tasks")
+        } else decoded
 
         when (event) {
             is HermesChatEvent.ApprovalRequest -> synchronized(interactionLock) {

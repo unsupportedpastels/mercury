@@ -41,6 +41,7 @@ final class ProjectMetadataController {
         generation &+= 1
         let loadGeneration = generation
         await closeOwnedConnection()
+        guard loadGeneration == generation, !Task.isCancelled else { return }
 
         self.profile = profile
         tree = nil
@@ -55,7 +56,7 @@ final class ProjectMetadataController {
         isLoading = true
 
         do {
-            let socket: any ChatSocketing
+            let owned: ChatConnection
             switch source {
             case let .direct(origin, accessToken):
                 let gateway = try ChatGateway(
@@ -64,18 +65,14 @@ final class ProjectMetadataController {
                     ticketClient: WsTicketClient(session: .shared),
                     socketFactory: URLSessionChatWebSocketFactory()
                 )
-                socket = try await gateway.connect()
+                owned = try ChatConnection(socket: try await gateway.connect())
             case let .relay(target):
-                let connected = try await RelayConnector.connect(
-                    target: target, profile: profile
-                )
-                socket = RelayChatSocket(connected: connected)
+                owned = try await RelayConnectionPool.shared.acquire(target: target, profile: profile)
             }
             guard loadGeneration == generation else {
-                await socket.close()
+                await RelayConnectionPool.release(owned)
                 return
             }
-            let owned = try ChatConnection(socket: socket)
             connection = owned
             let stream = owned.start()
             readTask = Task { [weak owned] in
@@ -88,10 +85,9 @@ final class ProjectMetadataController {
             tree = loaded
             isLoading = false
             if case .relay = source {
-                // Over the relay this connection is superseded the moment a
-                // chat opens (one device socket per installation), so the
-                // 3-second activity poll would only fail forever. Load the
-                // tree once and skip runtime-presence indicators.
+                // Relay metadata borrows the selected controller admission.
+                // Do not infer runtime ownership from process-global presence
+                // polling; child lifecycle uses the scoped recovery reducer.
                 activeListSupported = false
             } else {
                 let shouldPoll = await refreshActiveSessions(connection: owned, generation: loadGeneration)
@@ -292,6 +288,6 @@ final class ProjectMetadataController {
         readTask = nil
         let owned = connection
         connection = nil
-        await owned?.close()
+        if let owned { await RelayConnectionPool.release(owned) }
     }
 }

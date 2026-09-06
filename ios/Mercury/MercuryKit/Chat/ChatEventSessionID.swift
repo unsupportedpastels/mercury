@@ -1,6 +1,19 @@
 import Foundation
 
 extension ChatEvent {
+    /// The pooled transport multicasts events for all attached sessions. Scope
+    /// them before ANY native UI reaction or shared transcript reduction.
+    /// A session.info may introduce a remapped runtime only when the server
+    /// explicitly binds it to this presentation's nonempty durable session.
+    func belongsToPresentation(runtimeID: String?, durableID: String?) -> Bool {
+        guard !sessionID.isEmpty else { return false }
+        if case .sessionInfo(_, let storedID, _, _, _, _, _, _) = self,
+           let storedID, !storedID.isEmpty {
+            return durableID?.isEmpty == false && storedID == durableID
+        }
+        return runtimeID?.isEmpty == false && sessionID == runtimeID
+    }
+
     /// Returns a copy of the event with its `sessionID` replaced.
     ///
     /// Used by the notification path so live events (which carry the transient
@@ -10,6 +23,8 @@ extension ChatEvent {
     /// notification's deep-link target a durable id the app can actually open.
     func withSessionID(_ newID: String) -> ChatEvent {
         switch self {
+        case .backgroundTask(_, let evidence):
+            return .backgroundTask(sessionID: newID, evidence: evidence)
         case .messageStart(_, let text):
             return .messageStart(sessionID: newID, text: text)
         case .messageDelta(_, let text):

@@ -63,6 +63,7 @@ targets:
       - name: Build MercuryCore KMP framework
         basedOnDependencyAnalysis: false
         script: |
+          set -eu
           # Not embedAndSignAppleFrameworkForXcode: that task disables itself
           # for a static framework with signing disallowed. Link the flavor
           # Xcode asked for and copy it to the FRAMEWORK_SEARCH_PATHS dir.
@@ -161,6 +162,10 @@ targets:
     platform: iOS
     sources:
       - MercuryTests
+      - path: ../shared/mercury-core/src/commonTest/resources/adapter-parity/chat-event-corpus.json
+        buildPhase: resources
+      - path: ../shared/mercury-core/src/commonTest/resources/adapter-parity/relay-recovery.json
+        buildPhase: resources
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

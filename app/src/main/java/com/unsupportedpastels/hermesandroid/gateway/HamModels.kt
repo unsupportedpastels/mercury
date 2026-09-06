@@ -238,7 +238,10 @@ internal fun parseSessionUsage(result: JsonObject): SessionUsage = SessionUsage(
     contextPercent = result.number("context_percent", "context_percentage", "percent"),
     calls = result.long("calls", "request_count", "requests"),
     creditsLines = (result["credits_lines"] as? JsonArray).orEmpty()
-        .mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.take(MAX_HAM_FIELD) }
+        .mapNotNull { (it as? JsonPrimitive)
+            ?.takeIf { primitive -> primitive.isString }
+            ?.contentOrNull
+            ?.take(MAX_HAM_FIELD) }
         .take(MAX_HAM_ROWS),
     rawInfo = result.text("info", MAX_HAM_FIELD),
 )

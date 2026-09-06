@@ -801,7 +801,7 @@ class HermesChatIntegrationTest {
         candidate.createStarted.await()
 
         viewModel.openSession(DurableSessionId("replacement"))
-        advanceUntilIdle()
+        runCurrent() // Do not advance through the new connection deadline.
 
         assertFalse(candidate.closeStarted)
         assertFalse(candidate.closeCompleted)
@@ -2169,11 +2169,16 @@ class HermesChatIntegrationTest {
         runCurrent()
         advanceTimeBy(500)
         runCurrent()
-        assertTrue(currentRecovery.resumeStarted.isCompleted)
-        assertTrue(viewModel.snapshots.value.chatSessions.getValue(durableId).isSending)
+        // Replacement is still allowed while receiving/recovering, but a second
+        // admission must wait until the obsolete non-cooperative candidate drains.
+        assertFalse(currentRecovery.resumeStarted.isCompleted)
+        assertEquals(2, connections)
 
         staleRecovery.releaseResume.complete(Unit)
         runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+        assertTrue(currentRecovery.resumeStarted.isCompleted)
         assertTrue(staleRecovery.closed)
         assertTrue(viewModel.snapshots.value.chatSessions.getValue(durableId).isSending)
         replacementInitial.closeEvents()

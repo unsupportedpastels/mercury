@@ -45,6 +45,7 @@ struct BillingInfo: Sendable, Equatable {
 }
 
 enum ChatEvent: Sendable, Equatable {
+    case backgroundTask(sessionID: String, evidence: BackgroundTaskEvidence)
     case messageStart(sessionID: String, text: String?)
     case messageDelta(sessionID: String, text: String)
     /// `text` is nil when the server omitted it; consumers keep their streamed
@@ -93,6 +94,7 @@ enum ChatEvent: Sendable, Equatable {
 
     var sessionID: String {
         switch self {
+        case .backgroundTask(let s, _): return s
         case .messageStart(let s, _), .messageDelta(let s, _),
              .messageComplete(let s, _, _, _, _, _, _, _, _),
              .reasoningDelta(let s, _, _), .messageInterim(let s, _, _),
