@@ -572,6 +572,42 @@ class HermesChatGatewayTest {
     }
 
     @Test
+    fun terminalErrorEventWithoutMessageStillReachesTheClientWithAFallback() = runTest {
+        val socket = ScriptedSocket()
+        socket.onSend = { frame ->
+            val request = Json.parseToJsonElement(frame).jsonObject
+            if (request["method"]?.jsonPrimitive?.content == "prompt.submit") {
+                val id = request["id"]!!.jsonPrimitive.content
+                socket.offer("""{"jsonrpc":"2.0","method":"event","params":{"type":"error","session_id":"runtime-1","payload":{}}}""")
+                socket.offer("""{"jsonrpc":"2.0","method":"event","params":{"type":"error","session_id":"runtime-1","payload":{"message":null}}}""")
+                socket.offer("""{"jsonrpc":"2.0","method":"event","params":{"type":"error","session_id":"runtime-1","payload":{"message":"   "}}}""")
+                socket.offer("""{"jsonrpc":"2.0","method":"event","params":{"type":"error","session_id":"runtime-1","payload":{"message":"boom"}}}""")
+                socket.offer("""{"jsonrpc":"2.0","id":$id,"result":{"status":"streaming"}}""")
+            }
+        }
+        val connection = HermesChatGateway(
+            origin = ServerOrigin.parse("https://hermes.example"),
+            accessToken = "opaque-access",
+            ticketClient = RecordingTicketClient("ticket-1"),
+            socketFactory = RecordingSocketFactory(socket),
+            parentScope = backgroundScope,
+        ).connect()
+
+        connection.submitPrompt(RuntimeSessionId("runtime-1"), "hello")
+        val events = connection.events.take(4).toList()
+
+        val fallback = HermesChatEvent.Error(
+            RuntimeSessionId("runtime-1"),
+            com.unsupportedpastels.mercury.core.transcript.ChatEventDecoder.ERROR_MESSAGE_FALLBACK,
+        )
+        assertEquals(
+            listOf(fallback, fallback, fallback, HermesChatEvent.Error(RuntimeSessionId("runtime-1"), "boom")),
+            events,
+        )
+        connection.close()
+    }
+
+    @Test
     fun malformedFrameFailsPendingRequestInsteadOfLeavingItSuspended() = runTest {
         val ticketClient = RecordingTicketClient("ticket-1")
         val socket = ScriptedSocket()

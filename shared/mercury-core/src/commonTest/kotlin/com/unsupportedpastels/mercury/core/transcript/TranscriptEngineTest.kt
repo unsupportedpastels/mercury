@@ -234,16 +234,44 @@ class TranscriptEngineTest {
     // --- pending requests -----------------------------------------------------
 
     @Test
-    fun secondRequestReplacesPendingAndAnyExpireClears() {
+    fun secondRequestReplacesPending() {
         val approval = ChatEvent.ApprovalRequest(sid, "r1", "cmd", null, listOf("yes", "no"))
         val clarify = ChatEvent.ClarifyRequest(sid, "r2", "which?", listOf("a"), multiSelect = false)
         var state = reduce(approval)
         assertIs<PendingTranscriptRequest.Approval>(state.pendingRequest)
         state = reduce(clarify, from = state)
         assertIs<PendingTranscriptRequest.Clarify>(state.pendingRequest)
-        // Blanket expire: not matched by id or kind.
-        state = reduce(ChatEvent.ApprovalExpire(sid, "unrelated"), from = state)
+    }
+
+    @Test
+    fun expireClearsOnlyTheMatchingKindAndRequestId() {
+        val clarify = ChatEvent.ClarifyRequest(sid, "c1", "which?", listOf("a"), multiSelect = false)
+        var state = reduce(clarify)
+        // Wrong kind, even with the same id, leaves the prompt up.
+        state = reduce(ChatEvent.ApprovalExpire(sid, "c1"), from = state)
+        assertIs<PendingTranscriptRequest.Clarify>(state.pendingRequest)
+        // Right kind, stale id (an earlier request's expiry arriving late).
+        state = reduce(ChatEvent.ClarifyExpire(sid, "c0"), from = state)
+        assertIs<PendingTranscriptRequest.Clarify>(state.pendingRequest)
+        // Exact match clears.
+        state = reduce(ChatEvent.ClarifyExpire(sid, "c1"), from = state)
         assertNull(state.pendingRequest)
+
+        val approval = ChatEvent.ApprovalRequest(sid, "r1", "cmd", null, listOf("yes"))
+        state = reduce(approval, from = state)
+        state = reduce(ChatEvent.ClarifyExpire(sid, "r1"), from = state)
+        assertIs<PendingTranscriptRequest.Approval>(state.pendingRequest)
+        state = reduce(ChatEvent.ApprovalExpire(sid, "r0"), from = state)
+        assertIs<PendingTranscriptRequest.Approval>(state.pendingRequest)
+        state = reduce(ChatEvent.ApprovalExpire(sid, "r1"), from = state)
+        assertNull(state.pendingRequest)
+    }
+
+    @Test
+    fun approvalWithoutRequestIdIsNeverExpiredByWire() {
+        val approval = ChatEvent.ApprovalRequest(sid, null, "cmd", null, listOf("yes"))
+        val state = reduce(approval, ChatEvent.ApprovalExpire(sid, "anything"))
+        assertIs<PendingTranscriptRequest.Approval>(state.pendingRequest)
     }
 
     // --- title / status -------------------------------------------------------
