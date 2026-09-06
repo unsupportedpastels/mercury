@@ -15,9 +15,11 @@ Hermes JSON-RPC session contract — Hermes itself is unchanged — and relay
 pairings, keys, and state live fully apart from direct-mode servers and
 credentials. Relay protocol, framing, Noise state, and target validation are
 implemented once in `shared/mercury-core`; iOS keeps Keychain, URLSession, and
-SwiftUI integration native. The protocol contract and canonical
-interop vectors live in the private `mercury-relay` repository; the vectors are
-vendored under `MercuryTests/Fixtures/RelayProtocol/`.
+SwiftUI integration native. The host plugin, protocol contract, and canonical
+interop vectors are open source at
+<https://github.com/unsupportedpastels/mercury-relay-plugin>; the vectors are
+vendored under `MercuryTests/Fixtures/RelayProtocol/` and
+`tools/check-relay-vectors.sh` fails CI if they drift from the pinned release.
 
 Product boundary and protocol contracts are shared with the Android client and
 documented in [`../AGENTS.md`](../AGENTS.md) plus the repo's project-local skills.
