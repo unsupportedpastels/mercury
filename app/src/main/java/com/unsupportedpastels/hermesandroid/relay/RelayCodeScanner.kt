@@ -10,9 +10,13 @@ class RelayCodeScanner(
 ) {
     private val scanner = GmsBarcodeScanning.getClient(
         activity,
+        // No auto-zoom: the pairing QR is dense (version ~18, ~100 modules a
+        // side), and ML Kit's auto-zoom overshoots on it, pushing the finder
+        // patterns out of frame so the scan never completes. Without it the
+        // scanner reads at whatever distance the user holds the phone, which
+        // is how the iOS scanner already behaves.
         GmsBarcodeScannerOptions.Builder()
             .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
-            .enableAutoZoom()
             .build(),
     )
 
