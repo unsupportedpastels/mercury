@@ -63,7 +63,7 @@ struct SettingsView: View {
                     }
                 }
 
-                if let target = appModel.activeRelayTarget {
+                if let target = appModel.activeRelayTarget ?? appModel.selectedRelayTarget {
                     Section {
                         Button {
                             appModel.disconnect()

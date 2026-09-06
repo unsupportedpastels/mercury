@@ -290,31 +290,35 @@ struct ConnectView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Paired hosts").font(.headline)
                 ForEach(relay.targets) { target in
-                    Button {
-                        if target.status == .approved {
-                            Task { await appModel.connectRelay(target) }
-                        } else {
-                            showRelayPairing = true
-                        }
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(target.displayLabel).fontWeight(.semibold)
-                                Text(
-                                    target.status == .approved
-                                        ? "Approved"
-                                        : "Waiting for host approval"
-                                )
-                                .font(.caption)
-                                .foregroundStyle(Color.secondary)
+                    // Two sibling buttons: the row connects, the trash removes.
+                    // A button nested inside the row's label would lose every
+                    // tap to the row.
+                    HStack(spacing: 8) {
+                        Button {
+                            if target.status == .approved {
+                                Task { await appModel.connectRelay(target) }
+                            } else {
+                                showRelayPairing = true
                             }
-                            Spacer()
-                            Image(systemName: "chevron.right")
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(target.displayLabel).fontWeight(.semibold)
+                                    Text(
+                                        target.status == .approved
+                                            ? "Approved"
+                                            : "Waiting for host approval"
+                                    )
+                                    .font(.caption)
+                                    .foregroundStyle(Color.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                            }
+                            .frame(maxWidth: .infinity)
                         }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .overlay(alignment: .trailing) {
+                        .buttonStyle(.bordered)
+
                         // Visible removal, like Android's RelayConnectPanel trash
                         // icon. Local removal only: revoking the device record
                         // stays a host/dashboard management action.
@@ -324,9 +328,8 @@ struct ConnectView: View {
                             Image(systemName: "trash")
                                 .frame(width: 44, height: 44)
                         }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Color.statusAlert)
-                        .padding(.trailing, 36)
+                        .buttonStyle(.bordered)
+                        .tint(Color.statusAlert)
                         .accessibilityLabel("Remove relay \(target.displayLabel)")
                     }
                     .contextMenu {
