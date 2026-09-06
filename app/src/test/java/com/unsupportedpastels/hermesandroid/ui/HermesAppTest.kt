@@ -12,6 +12,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.hasTestTag
@@ -285,6 +286,7 @@ class HermesAppTest {
     }
 
     @Test
+    @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
     fun sessionDetailsSummarizeArtifactsAndOpenArtifactBrowser() {
         val session = sessions.first()
         val previewBytes = ByteArrayOutputStream().use { output ->
@@ -331,7 +333,14 @@ class HermesAppTest {
         composeRule.onNodeWithText("voice.mp3").assertIsDisplayed()
         composeRule.onNodeWithText("Play").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Filter artifacts: Image").performClick()
-        composeRule.onNodeWithContentDescription("Zoom image preview.png").performClick()
+        // IO-thread decoding is not covered by Compose idleness. Wait until the
+        // loading placeholder has been replaced so it cannot disappear mid-click.
+        val loadedPreview = hasContentDescription("Zoom image preview.png") and
+            SemanticsMatcher.expectValue(SemanticsProperties.Role, androidx.compose.ui.semantics.Role.Image)
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.onAllNodes(loadedPreview).fetchSemanticsNodes().size == 1
+        }
+        composeRule.onNode(loadedPreview).performScrollTo().performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("Close").assertExists()
     }

@@ -60,6 +60,11 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            // Robolectric downloads SDKs independently of Gradle repositories.
+            // Its default repo1 endpoint can return HTTP 403 on hosted CI runners.
+            it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+        }
     }
 
     lint {
