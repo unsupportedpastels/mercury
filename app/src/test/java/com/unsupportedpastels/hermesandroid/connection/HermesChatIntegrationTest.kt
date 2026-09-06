@@ -23,6 +23,7 @@ import com.unsupportedpastels.hermesandroid.gateway.HermesChatProtocolException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatSession
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatTransportException
 import com.unsupportedpastels.hermesandroid.gateway.InflightPrompt
+import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
 import com.unsupportedpastels.hermesandroid.gateway.PromptSubmission
 import com.unsupportedpastels.hermesandroid.gateway.ResumedChatSession
 import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
@@ -147,6 +148,91 @@ class HermesChatIntegrationTest {
         assertEquals(listOf("Earlier question", "Earlier answer"), chat.messages.map { it.text })
         // A lost submit acknowledgement still needs the existing retry warning.
         assertEquals("Submission was not confirmed. Check the transcript before retrying.", chat.error)
+    }
+
+    @Test
+    fun defaultChatRecoversAfterManagementReplacesVisibleCatalog() = runTest(dispatcher) {
+        assertChatOwnerSurvivesCatalogReplacement("default", "director")
+    }
+
+    @Test
+    fun namedChatRecoversAfterManagementReplacesVisibleCatalog() = runTest(dispatcher) {
+        assertChatOwnerSurvivesCatalogReplacement("director", "default")
+    }
+
+    private suspend fun assertChatOwnerSurvivesCatalogReplacement(owner: String, selected: String) {
+        val client = ChatConnectionClient(owningProfile = owner)
+        val initial = StreamingChatSession(
+            submitFailure = HermesChatTransportException("dropped"),
+            runningOnResume = true,
+        )
+        val recovered = StreamingChatSession()
+        val sessions = ArrayDeque(listOf(initial, recovered))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(ServerSettingsState.Ready(origin)),
+            client = client,
+            tokenStore = MemoryTokenStore(tokens),
+            chatConnector = HermesChatConnector { _, _ -> sessions.removeFirst() },
+            nowEpochSeconds = { 1_900_000_000 },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(AuthenticationState.Authenticated, viewModel.snapshots.value.authenticationState)
+        viewModel.openSession(durableId).join()
+        assertEquals(owner, initial.resumedProfile)
+        assertFalse(initial.closed)
+
+        viewModel.loadManagementSettings(selected, refreshStatus = false).join()
+        assertNull(viewModel.snapshots.value.managementError)
+        assertEquals(selected, viewModel.snapshots.value.selectedProfile)
+        assertEquals(listOf(DurableSessionId("other-session")), viewModel.snapshots.value.durableSessions.map { it.id })
+        assertTrue(viewModel.snapshots.value.chatSessions.containsKey(durableId))
+        viewModel.openSession(durableId).join()
+        assertFalse(initial.closed)
+        assertEquals(listOf(owner), client.transcriptProfiles)
+
+        initial.completeTurn()
+        dispatcher.scheduler.runCurrent()
+        assertFalse(viewModel.snapshots.value.chatSessions.getValue(durableId).isSending)
+        viewModel.sendMessage(durableId, "Recover this turn").join()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals("Recover this turn", initial.submittedText)
+        assertEquals(owner, recovered.resumedProfile)
+        assertTrue(client.transcriptProfiles.size > 1)
+        assertEquals(List(client.transcriptProfiles.size) { owner }, client.transcriptProfiles)
+        assertFalse(viewModel.snapshots.value.chatSessions.getValue(durableId).isSending)
+        viewModel.logout()
+        assertTrue(viewModel.snapshots.value.chatSessions.isEmpty())
+    }
+
+    @Test
+    fun idleChatAndDraftPinOwnerBeforeOpenOrSendSuspends() = runTest(dispatcher) {
+        val client = ChatConnectionClient()
+        val states = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = states,
+            client = client,
+            tokenStore = MemoryTokenStore(tokens),
+            nowEpochSeconds = { 1_900_000_000 },
+        )
+        advanceUntilIdle()
+        val open = viewModel.openSession(durableId)
+        assertEquals("default", viewModel.snapshots.value.chatSessions.getValue(durableId).owningProfile)
+        open.join()
+        val draft = viewModel.createNewSession()
+        assertEquals("default", viewModel.snapshots.value.chatSessions.getValue(draft).owningProfile)
+        viewModel.loadManagementSettings("director", refreshStatus = false).join()
+        viewModel.openSession(durableId).join()
+        assertEquals(listOf("default", "default"), client.transcriptProfiles)
+        viewModel.sendMessage(draft, "Draft turn").join()
+        assertEquals("default", viewModel.snapshots.value.chatSessions.getValue(draft).owningProfile)
+
+        states.value = ServerSettingsState.Ready(ServerOrigin.parse("https://other.example"))
+        advanceUntilIdle()
+        assertTrue(viewModel.snapshots.value.chatSessions.isEmpty())
+        viewModel.loadManagementSettings("director", refreshStatus = false).join()
+        viewModel.openSession(durableId).join()
+        assertEquals("director", client.transcriptProfiles.last())
+        viewModel.logout()
     }
 
     @Test
@@ -753,6 +839,8 @@ class HermesChatIntegrationTest {
         advanceUntilIdle()
 
         assertEquals(canonicalId, client.lastTranscriptDurableId)
+        viewModel.loadManagementSettings("director", refreshStatus = false).join()
+        assertEquals("director", viewModel.snapshots.value.selectedProfile)
         first.closeEvents()
         advanceUntilIdle()
         viewModel.addAttachments(
@@ -771,6 +859,8 @@ class HermesChatIntegrationTest {
         advanceUntilIdle()
 
         assertEquals(canonicalId, second.resumedDurableId)
+        assertEquals("default", second.resumedProfile)
+        assertEquals("default", viewModel.snapshots.value.chatSessions.getValue(draftId).owningProfile)
         assertEquals("Second prompt", second.submittedText?.lineSequence()?.last())
         assertEquals(listOf("note.txt"), second.fileAttachCalls.map { it.first })
         assertTrue(viewModel.attachments.value[draftId].orEmpty().isEmpty())
@@ -2573,6 +2663,22 @@ private class MemoryTokenStore(initial: NativeTokenSet?) : NativeTokenStore {
 private class ChatConnectionClient(private val owningProfile: String = "default") : HermesConnectionClient {
     private val durableId = DurableSessionId("durable-1")
     val transcriptProfiles = mutableListOf<String>()
+    override suspend fun loadProfiles(serverOrigin: ServerOrigin, accessToken: String) =
+        listOf("default", "director")
+
+    override suspend fun loadDefaultModelOptions(
+        serverOrigin: ServerOrigin,
+        accessToken: String,
+        profile: String,
+    ) = ModelOptions(providers = emptyList(), current = null, profile = profile)
+
+    override suspend fun loadSessionsForProfile(
+        serverOrigin: ServerOrigin,
+        accessToken: String,
+        profile: String,
+        archivedOnly: Boolean,
+    ) = listOf(SessionSummary(DurableSessionId("other-session"), "Other session", profile = profile))
+
     var transcriptAccessToken: String? = null
     var transcriptLoads = 0
     var lastTranscriptDurableId: DurableSessionId? = null
@@ -3061,6 +3167,7 @@ private class CancellableCreateChatSession : HermesChatSession {
 
 private class StreamingChatSession(
     private val submitFailure: Exception? = null,
+    private val runningOnResume: Boolean = false,
 ) : HermesChatSession {
     private val mutableEvents = MutableSharedFlow<HermesChatEvent>(extraBufferCapacity = 8)
     override val events: Flow<HermesChatEvent> = mutableEvents
@@ -3070,6 +3177,10 @@ private class StreamingChatSession(
     var closed = false
     val fileAttachCalls = mutableListOf<Triple<String, String, String>>()
     val imageAttachCalls = mutableListOf<Pair<String, String>>()
+
+    suspend fun completeTurn() {
+        mutableEvents.emit(HermesChatEvent.MessageComplete(RuntimeSessionId("runtime-1"), "Finished", "done"))
+    }
 
     override suspend fun createSession(
         durableSessionId: DurableSessionId,
@@ -3088,7 +3199,7 @@ private class StreamingChatSession(
             durableSessionId = durableSessionId,
             resumed = true,
             messages = emptyList(),
-            running = false,
+            running = runningOnResume,
             inflight = null as InflightPrompt?,
         )
     }

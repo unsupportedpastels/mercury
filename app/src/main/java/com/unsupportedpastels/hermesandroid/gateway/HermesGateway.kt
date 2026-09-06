@@ -116,6 +116,8 @@ data class ChatSessionSnapshot(
     val maintenanceError: String? = null,
     val transcriptSource: CacheSource = CacheSource.Live,
     val transcriptPresentation: TranscriptPresentation? = null,
+    /** Bound for this chat's lifetime, independent of the visible profile catalog. */
+    val owningProfile: String? = null,
 ) {
     init {
         require(processRows.size <= MAX_PROCESS_ROWS) { "Process rows exceed the bounded limit" }
