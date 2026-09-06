@@ -35,6 +35,7 @@ final class URLSessionRelaySocketFactory: RelayBinarySocketFactorying, @unchecke
               socketURL.host != nil
         else { throw RelayConnectionError.offline }
         var request = URLRequest(url: socketURL)
+        request.timeoutInterval = 15
         if let routingToken {
             guard !routingToken.isEmpty,
                   routingToken.count <= Int(MercuryCore.RelayProtocolPolicy.shared.maxRoutingTokenCharacters),
@@ -164,6 +165,7 @@ enum RelayConnector {
         target: RelayPairedTarget,
         profile: String,
         resumeCursor: Int64? = nil,
+        recoveryVersion: Int32? = nil,
         socketFactory: any RelayBinarySocketFactorying = URLSessionRelaySocketFactory()
     ) async throws -> RelayConnectedChannel {
         guard let url = RelayPairingPayload.deviceSocketURL(
@@ -172,6 +174,7 @@ enum RelayConnector {
         ) else { throw RelayConnectionError.protocolViolation }
         let socket = try await socketFactory.connect(url: url, routingToken: target.relayRoutingToken)
         do {
+            try Task.checkCancellation()
             let channel = try RelaySecureChannel(
                 initiatorStaticPrivateKey: target.deviceStaticPrivateKey,
                 installationID: target.installationID,
@@ -181,20 +184,26 @@ enum RelayConnector {
             guard let second = try await socket.receive() else {
                 throw RelayConnectionError.notAuthorized
             }
+            try Task.checkCancellation()
             _ = try channel.readHandshake(second)
             try await socket.send(channel.writeHandshake())
 
             let envelope = try RelayAdmissionEnvelope.controllerOpen(
                 deviceID: target.deviceID,
                 profile: profile,
-                resumeCursor: resumeCursor
+                resumeCursor: resumeCursor,
+                recoveryVersion: recoveryVersion
             )
             try await socket.send(channel.encrypt(envelope))
+            try Task.checkCancellation()
             return RelayConnectedChannel(
                 socket: socket,
                 channel: channel,
                 channelBinding: try channel.channelBinding
             )
+        } catch is CancellationError {
+            await socket.close()
+            throw CancellationError()
         } catch let error as RelayConnectionError {
             await socket.close()
             throw error
@@ -223,6 +232,14 @@ actor RelayChatSocket: ChatSocketing {
     private let reassembler: RelayFrameReassembler
     private let randomMessageID: @Sendable () -> Data
     private var closed = false
+    private let recovery: MercuryCore.RelayLeaseRecoveryEngine?
+    private var recoveryFrames: [String] = []
+    private var sendTail: Task<Void, Error>?
+    private let checkpoint: RelayRecoveryCheckpoint?
+    private let checkpointGeneration: Int64
+    private let taskOwner: RelayTaskOwner?
+    private let recoveryProfile: String?
+    private var taskGeneration: UUID?
 
     /// Router/host close code seen on the underlying socket, for diagnostics.
     nonisolated func lastCloseCode() -> Int? { socket.lastCloseCode() }
@@ -230,10 +247,19 @@ actor RelayChatSocket: ChatSocketing {
 
     init(
         connected: RelayConnectedChannel,
+        recoveryProfile: String? = nil,
+        checkpoint: RelayRecoveryCheckpoint? = nil,
+        checkpointGeneration: Int64 = 0,
+        taskOwner: RelayTaskOwner? = nil,
         randomMessageID: @escaping @Sendable () -> Data = {
             Data((0..<RelayFraming.messageIDSize).map { _ in UInt8.random(in: 0...255) })
         }
     ) {
+        self.taskOwner = taskOwner
+        self.recoveryProfile = recoveryProfile
+        self.checkpoint = checkpoint
+        self.checkpointGeneration = checkpointGeneration
+        recovery = recoveryProfile.map { MercuryCore.RelayLeaseRecoveryEngine(profile: $0) }
         socket = connected.socket
         channel = connected.channel
         // PROTOCOL §7: the record channel ID is the first 16 bytes of the
@@ -244,6 +270,19 @@ actor RelayChatSocket: ChatSocketing {
     }
 
     func sendText(_ text: String) async throws {
+        guard recovery == nil || recovery?.replayComplete == true else {
+            throw RelayConnectionError.protocolViolation
+        }
+        let previous = sendTail
+        let send = Task {
+            try await previous?.value
+            try await self.sendSerialized(text)
+        }
+        sendTail = send
+        try await send.value
+    }
+
+    private func sendSerialized(_ text: String) async throws {
         guard !closed else { throw ChatError.transport("Mercury Relay channel is closed") }
         do {
             let records = try RelayFraming.encodeMessage(
@@ -262,7 +301,7 @@ actor RelayChatSocket: ChatSocketing {
         }
     }
 
-    func receiveText() async throws -> String? {
+    private func receiveRawText() async throws -> String? {
         while true {
             guard !closed else { return nil }
             let ciphertext: Data?
@@ -288,6 +327,101 @@ actor RelayChatSocket: ChatSocketing {
                 throw ChatError.protocolError("Mercury Relay channel failed")
             }
         }
+    }
+
+    /// Consume authenticated preamble and replay watermark before the first RPC.
+    func prepareRecovery() async throws {
+        guard let recovery else { return }
+        guard let raw = try await receiveRawText() else { throw RelayConnectionError.offline }
+        do {
+            let snapshot = try recovery.initialize(raw: raw)
+            checkpoint?.bind(generation: checkpointGeneration, leaseID: snapshot.leaseId)
+            if let taskOwner, let recoveryProfile {
+                taskGeneration = taskOwner.attach(snapshot: snapshot, profile: recoveryProfile)
+            }
+            while !recovery.replayComplete {
+                guard let raw = try await receiveRawText() else { throw RelayConnectionError.offline }
+                if let delivered = try recovery.receive(raw: raw), let accepted = consumeTaskFrame(delivered) {
+                    recoveryFrames.append(accepted)
+                }
+                updateCheckpoint()
+            }
+        } catch {
+            await close()
+            throw RelayConnectionError.protocolViolation
+        }
+    }
+
+    /// Native custody runs before delivery to any optional UI observer. A rejected
+    /// unbound/historical/malformed child is consumed, never made active in a view.
+    private func consumeTaskFrame(_ text: String) -> String? {
+        guard let taskOwner, let taskGeneration,
+              let message = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+              message["method"] as? String == "event",
+              let params = message["params"] as? [String: Any],
+              let eventID = params["relay_event_id"] as? String else { return text }
+        var accepted = false
+        if let runtime = params["session_id"] as? String,
+           let type = params["type"] as? String,
+           let payload = params["payload"] as? [String: Any],
+           var evidence = BackgroundTaskEvidence.decode(type: type, payload: payload) {
+            evidence.eventID = eventID
+            evidence.historical = params["relay_replay"] as? Bool == true
+            accepted = taskOwner.apply(generation: taskGeneration, runtime: runtime, evidence: evidence)
+        }
+        // Both paths are decisions by the authenticated scoped owner; never blind receipt ACK.
+        acknowledgeRecoveryEvent(eventID)
+        return accepted ? text : nil
+    }
+
+    func canAutomaticallyResume(durable: String, profile: String?) -> Bool {
+        guard let recoveryProfile, profile == nil || profile == recoveryProfile,
+              let snapshot = recovery?.snapshot else { return false }
+        return snapshot.hasLiveBinding(durableId: durable, profile: recoveryProfile)
+    }
+
+    func bindTaskRuntime(runtime: String, durable: String, profile: String?) {
+        guard let taskOwner, let taskGeneration, let recoveryProfile,
+              profile == nil || profile == recoveryProfile else { return }
+        taskOwner.bind(generation: taskGeneration, runtime: runtime, durable: durable, profile: recoveryProfile)
+    }
+
+    func reconcileRetainedTasks(durable: String, runtime: String, statuses: [String: String]) -> BackgroundTasks? {
+        guard let taskOwner, let taskGeneration else { return nil }
+        return taskOwner.reconcile(generation: taskGeneration, durable: durable, runtime: runtime, statuses: statuses)
+    }
+
+    func retainedTasks(durable: String, runtime: String?) -> BackgroundTasks? {
+        guard let taskOwner, let taskGeneration else { return nil }
+        return taskOwner.retained(generation: taskGeneration, durable: durable, runtime: runtime)
+    }
+
+    func recoverySnapshot() -> MercuryCore.RelayLeaseSnapshot? { recovery?.snapshot }
+    func acknowledgedRecoveryCursor() -> Int64 { recovery?.acknowledgedCursor ?? 0 }
+    func acknowledgeRecoveryEvent(_ id: String?) {
+        recovery?.acknowledge(eventId: id)
+        updateCheckpoint()
+    }
+    private func updateCheckpoint() {
+        guard let recovery, let snapshot = recovery.snapshot else { return }
+        checkpoint?.applied(generation: checkpointGeneration, leaseID: snapshot.leaseId,
+                            sequence: recovery.acknowledgedCursor)
+    }
+
+    func receiveText() async throws -> String? {
+        if !recoveryFrames.isEmpty { return recoveryFrames.removeFirst() }
+        while let raw = try await receiveRawText() {
+            guard let recovery else { return raw }
+            do {
+                let delivered = try recovery.receive(raw: raw)
+                updateCheckpoint()
+                if let delivered, let accepted = consumeTaskFrame(delivered) { return accepted }
+            } catch {
+                await close()
+                throw RelayConnectionError.protocolViolation
+            }
+        }
+        return nil
     }
 
     func close() async {

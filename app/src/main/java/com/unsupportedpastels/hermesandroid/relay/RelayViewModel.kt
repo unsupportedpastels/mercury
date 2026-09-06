@@ -25,6 +25,7 @@ data class RelayUiState(
     val targets: List<RelayPairedTarget> = emptyList(),
     val phase: RelayPairingPhase = RelayPairingPhase.Idle,
     val targetsError: String? = null,
+    val isLoaded: Boolean = false,
 )
 
 class RelayViewModel(
@@ -42,11 +43,16 @@ class RelayViewModel(
 
     fun loadTargets(): Job = viewModelScope.launch {
         try {
-            mutableState.value = mutableState.value.copy(targets = targets.load(), targetsError = null)
+            mutableState.value = mutableState.value.copy(
+                targets = targets.load(),
+                targetsError = null,
+                isLoaded = true,
+            )
         } catch (_: Exception) {
             mutableState.value = mutableState.value.copy(
                 targets = emptyList(),
                 targetsError = "Saved relay pairings could not be read.",
+                isLoaded = true,
             )
         }
     }
@@ -141,6 +147,10 @@ class RelayViewModel(
     class ProductionFactory(
         private val context: Context,
     ) : ViewModelProvider.Factory {
+        init {
+            RelayDiagnostics.shared.updateBuildMetadata(context)
+        }
+
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             require(modelClass.isAssignableFrom(RelayViewModel::class.java))
@@ -148,6 +158,7 @@ class RelayViewModel(
             val coordinator = RelayPairingCoordinator(
                 socketFactory = TlsRelayBinarySocketFactory(),
                 targets = store,
+                diagnostics = RelayDiagnostics.shared,
             )
             return RelayViewModel(store, coordinator) as T
         }

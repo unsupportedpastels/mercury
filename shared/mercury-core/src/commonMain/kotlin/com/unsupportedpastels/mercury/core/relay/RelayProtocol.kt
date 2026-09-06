@@ -248,7 +248,18 @@ object RelayApprovalProbe {
 
 object RelayAdmissionEnvelope {
     @Throws(RelayProtocolException::class)
-    fun controllerOpen(deviceId: String, profile: String, resumeCursor: Long? = null): ByteArray {
+    fun controllerOpen(deviceId: String, profile: String, resumeCursor: Long? = null): ByteArray =
+        controllerOpen(deviceId, profile, resumeCursor, recoveryVersion = null)
+
+    /** Opt in to retained lease recovery; null preserves the legacy admission bytes. */
+    @Throws(RelayProtocolException::class)
+    fun controllerOpen(
+        deviceId: String,
+        profile: String,
+        resumeCursor: Long?,
+        recoveryVersion: Int?,
+    ): ByteArray {
+        if (recoveryVersion != null && recoveryVersion != 1) invalid()
         if (RelayBase64.urlSafeDecodeExact(deviceId, RelayProtocolPolicy.deviceIdBytes) == null) invalid()
         if (profile.isEmpty() || profile.length > RelayProtocolPolicy.maxProfileCharacters ||
             profile.any { !it.isAsciiLetterOrDigit() && it != '-' && it != '_' && it != '.' }
@@ -258,7 +269,9 @@ object RelayAdmissionEnvelope {
         if (resumeCursor != null && resumeCursor < 0) invalid()
         var envelope = "{\"device_id\":\"$deviceId\",\"profile\":\"$profile\""
         if (resumeCursor != null) envelope += ",\"resume_cursor\":$resumeCursor"
-        envelope += ",\"type\":\"controller.open\"}"
+        envelope += ",\"type\":\"controller.open\""
+        if (recoveryVersion != null) envelope += ",\"recovery_version\":$recoveryVersion"
+        envelope += "}"
         return envelope.encodeToByteArray().also {
             if (it.size > RelayProtocolPolicy.maxEnvelopeBytes) invalid()
         }

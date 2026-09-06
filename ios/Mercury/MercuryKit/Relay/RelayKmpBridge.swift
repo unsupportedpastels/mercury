@@ -167,13 +167,15 @@ enum RelayAdmissionEnvelope {
     static func controllerOpen(
         deviceID: String,
         profile: String,
-        resumeCursor: Int64? = nil
+        resumeCursor: Int64? = nil,
+        recoveryVersion: Int32? = nil
     ) throws -> Data {
         do {
             return try MercuryCore.RelayAdmissionEnvelope.shared.controllerOpen(
                 deviceId: deviceID,
                 profile: profile,
-                resumeCursor: resumeCursor.map(KotlinLong.init(value:))
+                resumeCursor: resumeCursor.map(KotlinLong.init(value:)),
+                recoveryVersion: recoveryVersion.map(KotlinInt.init(value:))
             ).relayData
         } catch {
             throw RelayProtocolError.invalidEnvelope

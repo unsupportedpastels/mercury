@@ -12,7 +12,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RelayTransportTest {
@@ -21,6 +23,12 @@ class RelayTransportTest {
         val pair = binarySocketPair()
         val factory = FakeRelayBinarySocketFactory(pair.device)
         val target = target()
+        val diagnostics = RelayDiagnostics(
+            capacity = 16,
+            attemptIdFactory = { "connect-attempt" },
+            appBuildMetadata = RelayAppBuildMetadata("0.2.2", 1),
+            logger = {},
+        )
 
         val host = RelaySecureChannel(
             crypto = AndroidRelayCrypto,
@@ -47,6 +55,7 @@ class RelayTransportTest {
             socketFactory = factory,
             crypto = AndroidRelayCrypto,
             deterministicEphemeralPrivateKey = DEVICE_EPHEMERAL,
+            diagnostics = diagnostics,
         )
         hostTask.join()
         val chat = RelayHermesChatSocket(connected) { ByteArray(16) { 0x22 } }
@@ -73,6 +82,80 @@ class RelayTransportTest {
         chat.close()
         assertArrayEquals(INSTALLATION, factory.connectedInstallationRoute)
         assertEquals("routing.device.token", factory.connectedRoutingToken)
+        assertEquals(
+            listOf(
+                RelayDiagnosticPhase.Attempt,
+                RelayDiagnosticPhase.Open,
+                RelayDiagnosticPhase.Handshake,
+                RelayDiagnosticPhase.Admission,
+                RelayDiagnosticPhase.Disconnect,
+            ),
+            diagnostics.snapshot().map { it.phase },
+        )
+        assertEquals(RelayDiagnosticCloseReason.RemoteEndOfStream, diagnostics.snapshot().last().closeReason)
+    }
+
+    @Test
+    fun connectorFailureRecordsSafePhaseAndReason() = runTest {
+        val logs = mutableListOf<String>()
+        val diagnostics = RelayDiagnostics(
+            capacity = 8,
+            attemptIdFactory = { "failed-attempt" },
+            logger = logs::add,
+        )
+        val error = runCatching {
+            RelayConnector.connect(
+                target = target(),
+                profile = "default",
+                socketFactory = RelayBinarySocketFactory { _, _ ->
+                    throw RelayConnectionException(RelayConnectionFailure.NotAuthorized)
+                },
+                diagnostics = diagnostics,
+            )
+        }.exceptionOrNull()
+
+        assertTrue(error is RelayConnectionException)
+        assertEquals(
+            listOf(RelayDiagnosticPhase.Attempt, RelayDiagnosticPhase.Open),
+            diagnostics.snapshot().map { it.phase },
+        )
+        assertEquals(RelayDiagnosticStatus.Failed, diagnostics.snapshot().last().status)
+        assertEquals(RelayDiagnosticReason.NotAuthorized, diagnostics.snapshot().last().reason)
+        assertFalse(logs.joinToString().contains("Mercury Relay connection failed"))
+    }
+
+    @Test
+    fun connectorRecoveryAdmissionPreservesOptInWireBytes() = runTest {
+        val pair = binarySocketPair()
+        val target = target()
+        val host = RelaySecureChannel(
+            crypto = AndroidRelayCrypto,
+            isInitiator = false,
+            staticPrivateKey = HOST_PRIVATE,
+            installationId = INSTALLATION,
+            remoteStaticPublicKey = null,
+            deterministicEphemeralPrivateKey = HOST_EPHEMERAL,
+        )
+        val hostTask = backgroundScope.launch {
+            host.readHandshake(requireNotNull(pair.host.receive()))
+            pair.host.send(host.writeHandshake())
+            host.readHandshake(requireNotNull(pair.host.receive()))
+            assertEquals(
+                "{\"device_id\":\"${target.deviceId}\",\"profile\":\"default\",\"resume_cursor\":42,\"type\":\"controller.open\",\"recovery_version\":1}",
+                host.decrypt(requireNotNull(pair.host.receive())).decodeToString(),
+            )
+        }
+        val connected = RelayConnector.connect(
+            target = target,
+            profile = "default",
+            socketFactory = FakeRelayBinarySocketFactory(pair.device),
+            resumeCursor = 42,
+            recoveryVersion = 1,
+            deterministicEphemeralPrivateKey = DEVICE_EPHEMERAL,
+        )
+        hostTask.join()
+        RelayHermesChatSocket(connected).close()
+        host.close()
     }
 
     private fun target() = RelayPairedTarget(

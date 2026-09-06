@@ -3,7 +3,6 @@ package com.unsupportedpastels.hermesandroid.relay
 import android.util.Base64
 import java.io.EOFException
 import java.io.InputStream
-import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
@@ -14,13 +13,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLSocket
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 private const val RELAY_SOCKET_CONNECT_TIMEOUT_MILLIS = 10_000
-private const val RELAY_HANDSHAKE_TIMEOUT_MILLIS = 10_000
+private const val RELAY_CONNECT_DEADLINE_MILLIS = 20_000L
 private const val MAX_RELAY_HANDSHAKE_LINE_BYTES = 4_096
 private const val MAX_RELAY_HANDSHAKE_HEADERS = 64
 private const val MAX_RELAY_WEBSOCKET_MESSAGE_BYTES = 65_535
@@ -29,60 +29,101 @@ private const val WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 /** Minimal RFC 6455 client for Relay binary records with an exact Authorization upgrade. */
 class TlsRelayBinarySocketFactory(
     private val random: SecureRandom = SecureRandom(),
-) : RelayBinarySocketFactory {
+) : RelayBinarySocketFactory, RelayDiagnosticSocketFactory {
     override suspend fun connect(url: String, routingToken: String?): RelayBinarySocket =
-        withContext(Dispatchers.IO) {
-            val uri = runCatching { URI(url) }.getOrNull()
-                ?: fail(RelayConnectionFailure.ProtocolViolation)
-            if (uri.scheme != "wss" || uri.host.isNullOrEmpty() || uri.userInfo != null || uri.fragment != null) {
-                fail(RelayConnectionFailure.ProtocolViolation)
-            }
-            if (routingToken != null && !validRoutingToken(routingToken)) {
-                fail(RelayConnectionFailure.ProtocolViolation)
-            }
-            val port = if (uri.port == -1) 443 else uri.port
-            if (port !in 1..65_535) fail(RelayConnectionFailure.ProtocolViolation)
-            val raw = Socket()
-            var tls: SSLSocket? = null
-            try {
-                raw.connect(InetSocketAddress(uri.host, port), RELAY_SOCKET_CONNECT_TIMEOUT_MILLIS)
-                tls = HttpsURLConnection.getDefaultSSLSocketFactory()
-                    .createSocket(raw, uri.host, port, true) as SSLSocket
-                tls.sslParameters = tls.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
-                tls.soTimeout = RELAY_HANDSHAKE_TIMEOUT_MILLIS
-                tls.startHandshake()
-                val websocketKey = ByteArray(16).also(random::nextBytes).base64()
-                val path = buildString {
-                    append(uri.rawPath.takeUnless(String::isNullOrEmpty) ?: "/")
-                    uri.rawQuery?.let { append('?').append(it) }
+        connectInternal(url, routingToken, null)
+
+    override suspend fun connectWithDiagnostics(
+        url: String,
+        routingToken: String?,
+        attempt: RelayDiagnosticAttempt,
+    ): RelayBinarySocket = connectInternal(url, routingToken, attempt)
+
+    private suspend fun connectInternal(
+        url: String,
+        routingToken: String?,
+        diagnosticAttempt: RelayDiagnosticAttempt?,
+    ): RelayBinarySocket {
+        val uri = runCatching { URI(url) }.getOrNull()
+            ?: fail(RelayConnectionFailure.ProtocolViolation)
+        if (uri.scheme != "wss" || uri.host.isNullOrEmpty() || uri.userInfo != null || uri.fragment != null) {
+            fail(RelayConnectionFailure.ProtocolViolation)
+        }
+        if (routingToken != null && !validRoutingToken(routingToken)) {
+            fail(RelayConnectionFailure.ProtocolViolation)
+        }
+        val port = if (uri.port == -1) 443 else uri.port
+        if (port !in 1..65_535) fail(RelayConnectionFailure.ProtocolViolation)
+
+        val resources = RelayCloseRegistry()
+        try {
+            val result = withTimeoutOrNull(RELAY_CONNECT_DEADLINE_MILLIS) {
+                runRelayBlockingIo(
+                    onCancellation = resources::close,
+                    onResultCancellation = { socket -> socket.closeImmediately() },
+                ) {
+                    val raw = Socket()
+                    resources.register { runCatching { raw.close() } }
+                    diagnosticAttempt?.recordOpenStageStarted(RelayDiagnosticOpenStage.Dns)
+                    val address = InetSocketAddress(uri.host, port)
+                    // An unresolved address still fails in the original Socket.connect call.
+                    if (!address.isUnresolved) {
+                        diagnosticAttempt?.recordOpenStageSucceeded(RelayDiagnosticOpenStage.Dns)
+                        diagnosticAttempt?.recordOpenStageStarted(RelayDiagnosticOpenStage.Tcp)
+                    }
+                    raw.connect(address, RELAY_SOCKET_CONNECT_TIMEOUT_MILLIS)
+                    diagnosticAttempt?.recordOpenStageSucceeded(RelayDiagnosticOpenStage.Tcp)
+
+                    diagnosticAttempt?.recordOpenStageStarted(RelayDiagnosticOpenStage.Tls)
+                    val tls = HttpsURLConnection.getDefaultSSLSocketFactory()
+                        .createSocket(raw, uri.host, port, true) as SSLSocket
+                    resources.register { runCatching { tls.close() } }
+                    tls.sslParameters = tls.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
+                    tls.soTimeout = (RELAY_CONNECT_DEADLINE_MILLIS / 2).toInt()
+                    tls.startHandshake()
+                    diagnosticAttempt?.recordOpenStageSucceeded(RelayDiagnosticOpenStage.Tls)
+
+                    diagnosticAttempt?.recordOpenStageStarted(RelayDiagnosticOpenStage.Upgrade)
+                    val websocketKey = ByteArray(16).also(random::nextBytes).base64()
+                    val path = buildString {
+                        append(uri.rawPath.takeUnless(String::isNullOrEmpty) ?: "/")
+                        uri.rawQuery?.let { append('?').append(it) }
+                    }
+                    val host = if (port == 443) uri.host else "${uri.host}:$port"
+                    val request = buildRelayUpgradeRequest(path, host, websocketKey, routingToken)
+                    tls.outputStream.write(request.toByteArray(Charsets.US_ASCII))
+                    tls.outputStream.flush()
+                    validateHandshake(tls.inputStream, websocketKey)
+                    tls.soTimeout = 0
+                    diagnosticAttempt?.recordOpenStageSucceeded(RelayDiagnosticOpenStage.Upgrade)
+
+                    TlsRelayBinarySocket(tls, random).also { socket ->
+                        resources.register { socket.closeImmediately() }
+                    }
                 }
-                val host = if (port == 443) uri.host else "${uri.host}:$port"
-                val request = buildString {
-                    append("GET $path HTTP/1.1\r\n")
-                    append("Host: $host\r\n")
-                    append("Upgrade: websocket\r\n")
-                    append("Connection: Upgrade\r\n")
-                    append("Sec-WebSocket-Key: $websocketKey\r\n")
-                    append("Sec-WebSocket-Version: 13\r\n")
-                    routingToken?.let { append("Authorization: Bearer $it\r\n") }
-                    append("\r\n")
-                }
-                tls.outputStream.write(request.toByteArray(Charsets.US_ASCII))
-                tls.outputStream.flush()
-                validateHandshake(tls.inputStream, websocketKey)
-                tls.soTimeout = 0
-                TlsRelayBinarySocket(tls, random)
-            } catch (cancelled: CancellationException) {
-                runCatching { tls?.close() ?: raw.close() }
-                throw cancelled
-            } catch (error: RelayConnectionException) {
-                runCatching { tls?.close() ?: raw.close() }
-                throw error
-            } catch (_: Exception) {
-                runCatching { tls?.close() ?: raw.close() }
+            }
+            if (result == null) {
+                currentCoroutineContext().ensureActive()
+                diagnosticAttempt?.recordTimeout(RelayDiagnosticPhase.Open)
+                resources.close()
                 fail(RelayConnectionFailure.Offline)
             }
+            resources.detach()
+            return result
+        } catch (cancelled: CancellationException) {
+            diagnosticAttempt?.recordCancellation()
+            resources.close()
+            throw cancelled
+        } catch (error: RelayConnectionException) {
+            diagnosticAttempt?.recordOpenFailure(error)
+            resources.close()
+            throw error
+        } catch (error: Exception) {
+            diagnosticAttempt?.recordOpenFailure(error)
+            resources.close()
+            fail(RelayConnectionFailure.Offline)
         }
+    }
 
     private fun validateHandshake(input: InputStream, key: String) {
         val status = input.readAsciiLine() ?: fail(RelayConnectionFailure.Offline)
@@ -113,10 +154,29 @@ class TlsRelayBinarySocketFactory(
         value.isNotEmpty() && value.length <= 1_024 && value.all { it.code in 0x21..0x7e }
 }
 
+/** Internal serialization seam; never pass the returned credential-bearing request to diagnostics. */
+internal fun buildRelayUpgradeRequest(path: String, host: String, key: String, routingToken: String?): String =
+    buildString {
+        append("GET $path HTTP/1.1\r\n")
+        append("Host: $host\r\n")
+        append("Upgrade: websocket\r\n")
+        append("Connection: Upgrade\r\n")
+        append("Sec-WebSocket-Key: $key\r\n")
+        append("Sec-WebSocket-Version: 13\r\n")
+        routingToken?.let { append("Authorization: ").append("Bearer ").append(it).append("\r\n") }
+        append("\r\n")
+    }
+
 private class TlsRelayBinarySocket(
     private val socket: SSLSocket,
     private val random: SecureRandom,
 ) : RelayBinarySocket {
+    private data class WebSocketFrame(
+        val finished: Boolean,
+        val opcode: Int,
+        val payload: ByteArray,
+    )
+
     private val input = socket.inputStream
     private val output = socket.outputStream
     private val sendMutex = Mutex()
@@ -129,56 +189,36 @@ private class TlsRelayBinarySocket(
     }
 
     override suspend fun receive(): ByteArray? = receiveMutex.withLock {
-        withContext(Dispatchers.IO) {
-            var fragmented: ByteArray? = null
-            while (!closed.get()) {
-                val first = input.read()
-                if (first < 0) return@withContext null
-                val second = input.read()
-                if (second < 0) throw EOFException()
-                if (first and 0x70 != 0 || second and 0x80 != 0) failAndClose()
-                val finished = first and 0x80 != 0
-                val opcode = first and 0x0f
-                var length = second and 0x7f
-                if (length == 126) {
-                    length = (input.readRequired() shl 8) or input.readRequired()
-                } else if (length == 127) {
-                    var value = 0L
-                    repeat(8) { value = (value shl 8) or input.readRequired().toLong() }
-                    if (value > MAX_RELAY_WEBSOCKET_MESSAGE_BYTES) failAndClose()
-                    length = value.toInt()
+        var fragmented: ByteArray? = null
+        while (!closed.get()) {
+            val frame = readFrame() ?: return@withLock null
+            val payload = frame.payload
+            when (frame.opcode) {
+                0x0 -> {
+                    val prior = fragmented ?: failAndClose()
+                    if (prior.size + payload.size > MAX_RELAY_WEBSOCKET_MESSAGE_BYTES) failAndClose()
+                    fragmented = prior + payload
+                    if (frame.finished) return@withLock fragmented
                 }
-                if (length > MAX_RELAY_WEBSOCKET_MESSAGE_BYTES || (opcode >= 0x8 && (!finished || length > 125))) {
-                    failAndClose()
+                0x2 -> {
+                    if (fragmented != null) failAndClose()
+                    if (frame.finished) return@withLock payload
+                    fragmented = payload
                 }
-                val payload = input.readExactly(length)
-                when (opcode) {
-                    0x0 -> {
-                        val prior = fragmented ?: failAndClose()
-                        if (prior.size + payload.size > MAX_RELAY_WEBSOCKET_MESSAGE_BYTES) failAndClose()
-                        fragmented = prior + payload
-                        if (finished) return@withContext fragmented
-                    }
-                    0x2 -> {
-                        if (fragmented != null) failAndClose()
-                        if (finished) return@withContext payload
-                        fragmented = payload
-                    }
-                    0x8 -> {
-                        close()
-                        return@withContext null
-                    }
-                    0x9 -> sendFrame(opcode = 0xA, payload = payload)
-                    0xA -> Unit
-                    else -> failAndClose()
+                0x8 -> {
+                    closeImmediately()
+                    return@withLock null
                 }
+                0x9 -> sendFrame(opcode = 0xA, payload = payload)
+                0xA -> Unit
+                else -> failAndClose()
             }
-            null
         }
+        null
     }
 
     private suspend fun sendFrame(opcode: Int, payload: ByteArray) = sendMutex.withLock {
-        withContext(Dispatchers.IO) {
+        runRelayBlockingIo(onCancellation = ::closeImmediately) {
             if (closed.get()) fail(RelayConnectionFailure.Offline)
             val mask = ByteArray(4).also(random::nextBytes)
             output.write(0x80 or opcode)
@@ -198,14 +238,40 @@ private class TlsRelayBinarySocket(
         }
     }
 
-    override suspend fun close() {
+    private suspend fun readFrame(): WebSocketFrame? =
+        runRelayBlockingIo(onCancellation = ::closeImmediately) {
+            val first = input.read()
+            if (first < 0) return@runRelayBlockingIo null
+            val second = input.read()
+            if (second < 0) throw EOFException()
+            if (first and 0x70 != 0 || second and 0x80 != 0) failAndClose()
+            val finished = first and 0x80 != 0
+            val opcode = first and 0x0f
+            var length = second and 0x7f
+            if (length == 126) {
+                length = (input.readRequired() shl 8) or input.readRequired()
+            } else if (length == 127) {
+                var value = 0L
+                repeat(8) { value = (value shl 8) or input.readRequired().toLong() }
+                if (value > MAX_RELAY_WEBSOCKET_MESSAGE_BYTES) failAndClose()
+                length = value.toInt()
+            }
+            if (length > MAX_RELAY_WEBSOCKET_MESSAGE_BYTES || (opcode >= 0x8 && (!finished || length > 125))) {
+                failAndClose()
+            }
+            WebSocketFrame(finished, opcode, input.readExactly(length))
+        }
+
+    override suspend fun close() = closeImmediately()
+
+    internal fun closeImmediately() {
         if (closed.compareAndSet(false, true)) {
             runCatching { socket.close() }
         }
     }
 
-    private suspend fun failAndClose(): Nothing {
-        close()
+    private fun failAndClose(): Nothing {
+        closeImmediately()
         fail(RelayConnectionFailure.ProtocolViolation)
     }
 }

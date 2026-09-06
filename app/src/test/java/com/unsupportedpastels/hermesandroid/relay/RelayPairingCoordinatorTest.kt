@@ -20,6 +20,11 @@ class RelayPairingCoordinatorTest {
         val deviceId = RelayBase64.urlSafeEncode(ByteArray(16) { (it + 3).toByte() })
         val now = 1_756_400_000L
         var pairingRoutingToken: String? = null
+        val diagnostics = RelayDiagnostics(
+            capacity = 16,
+            attemptIdFactory = { "pairing-attempt" },
+            logger = {},
+        )
         val coordinator = RelayPairingCoordinator(
             socketFactory = RelayBinarySocketFactory { _, token ->
                 pairingRoutingToken = token
@@ -31,6 +36,7 @@ class RelayPairingCoordinatorTest {
             makeId = { "00000000-0000-4000-8000-000000000001" },
             makeDeviceKey = { DEVICE_PRIVATE.copyOf() },
             deterministicEphemeralPrivateKey = DEVICE_EPHEMERAL,
+            diagnostics = diagnostics,
         )
         val hostTask = backgroundScope.async {
             val host = RelaySecureChannel(
@@ -68,6 +74,17 @@ class RelayPairingCoordinatorTest {
         )
         assertArrayEquals(DEVICE_PRIVATE, target.deviceStaticPrivateKey)
         assertEquals(listOf(target.id), repository.targets.map { it.id })
+        assertEquals(
+            listOf(
+                RelayDiagnosticPhase.Attempt,
+                RelayDiagnosticPhase.Open,
+                RelayDiagnosticPhase.Handshake,
+                RelayDiagnosticPhase.Admission,
+                RelayDiagnosticPhase.Disconnect,
+            ),
+            diagnostics.snapshot().map { it.phase },
+        )
+        assertEquals(RelayDiagnosticCloseReason.PairingComplete, diagnostics.snapshot().last().closeReason)
     }
 
     private fun qr(expires: Long): String =

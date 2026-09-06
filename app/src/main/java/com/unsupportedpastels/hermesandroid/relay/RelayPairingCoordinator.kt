@@ -15,9 +15,11 @@ import com.unsupportedpastels.mercury.core.relay.RelayTargetCodec
 import com.unsupportedpastels.mercury.core.relay.RelayTargetStatus
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeoutOrNull
+
+private const val RELAY_PAIRING_NEGOTIATION_TIMEOUT_MILLIS = 10_000L
 
 enum class RelayPairingFailure {
     MalformedQr,
@@ -43,40 +45,66 @@ class RelayPairingCoordinator(
     private val makeId: () -> String = { UUID.randomUUID().toString() },
     private val makeDeviceKey: () -> ByteArray = { AndroidRelayCrypto.randomBytes(32) },
     private val deterministicEphemeralPrivateKey: ByteArray? = null,
+    private val diagnostics: RelayDiagnostics = RelayDiagnostics.shared,
 ) {
     suspend fun pair(scannedText: String): RelayPairedTarget {
+        val attempt = diagnostics.beginAttempt(RelayDiagnosticOperation.Pairing)
         val payload = try {
             RelayPairingPayload.parse(scannedText, nowEpochSeconds())
         } catch (error: RelayProtocolException) {
+            attempt.recordFailure(RelayDiagnosticPhase.Attempt, error.failure.toPairingFailure().toDiagnosticReason())
             throw RelayPairingException(error.failure.toPairingFailure())
         }
         val existing = try {
             targets.load()
+        } catch (cancelled: CancellationException) {
+            payload.capability.fill(0)
+            attempt.recordCancellation()
+            throw cancelled
         } catch (_: Exception) {
             payload.capability.fill(0)
+            attempt.recordFailure(RelayDiagnosticPhase.Attempt, RelayDiagnosticReason.StorageFailed)
             throw RelayPairingException(RelayPairingFailure.StorageFailed)
         }
         if (existing.size >= RelayTargetCodec.maxTargets) {
             payload.capability.fill(0)
+            attempt.recordFailure(RelayDiagnosticPhase.Attempt, RelayDiagnosticReason.StorageFailed)
             throw RelayPairingException(RelayPairingFailure.TargetLimitReached)
         }
-        val deviceKey = makeDeviceKey()
+        val deviceKey = try {
+            makeDeviceKey()
+        } catch (cancelled: CancellationException) {
+            payload.capability.fill(0)
+            attempt.recordCancellation()
+            throw cancelled
+        } catch (error: Exception) {
+            payload.capability.fill(0)
+            attempt.recordFailure(RelayDiagnosticPhase.Attempt, RelayDiagnosticReason.ProtocolViolation)
+            throw error
+        }
         if (deviceKey.size != 32) {
             payload.capability.fill(0)
+            attempt.recordFailure(RelayDiagnosticPhase.Attempt, RelayDiagnosticReason.ProtocolViolation)
             throw RelayPairingException(RelayPairingFailure.ProtocolViolation)
         }
         val socket = try {
-            socketFactory.connect(payload.deviceSocketUrl, payload.pairingRoutingToken)
+            socketFactory.connectRelaySocket(payload.deviceSocketUrl, payload.pairingRoutingToken, attempt)
         } catch (cancelled: CancellationException) {
             payload.capability.fill(0)
+            attempt.recordCancellation()
             throw cancelled
         } catch (_: Exception) {
             payload.capability.fill(0)
+            attempt.recordFailure(RelayDiagnosticPhase.Open, RelayDiagnosticReason.Offline)
             throw RelayPairingException(RelayPairingFailure.Offline)
         }
+        attempt.recordSuccess(RelayDiagnosticPhase.Open)
 
+        var channel: RelaySecureChannel? = null
+        var phase = RelayDiagnosticPhase.Handshake
+        var closeReason = RelayDiagnosticCloseReason.LocalFailure
         try {
-            val channel = RelaySecureChannel(
+            val createdChannel = RelaySecureChannel(
                 crypto = crypto,
                 isInitiator = true,
                 staticPrivateKey = deviceKey,
@@ -84,16 +112,29 @@ class RelayPairingCoordinator(
                 remoteStaticPublicKey = payload.hostPublicKey,
                 deterministicEphemeralPrivateKey = deterministicEphemeralPrivateKey,
             )
-            socket.send(channel.writeHandshake())
-            val second = socket.receive() ?: throw RelayPairingException(RelayPairingFailure.Offline)
-            channel.readHandshake(second)
-            socket.send(channel.writeHandshake(payload.capability))
+            channel = createdChannel
+            val pairingAck = withTimeoutOrNull(RELAY_PAIRING_NEGOTIATION_TIMEOUT_MILLIS) {
+                socket.send(createdChannel.writeHandshake())
+                val second = socket.receive() ?: throw RelayPairingException(RelayPairingFailure.Offline)
+                createdChannel.readHandshake(second)
+                attempt.recordSuccess(RelayDiagnosticPhase.Handshake)
+                phase = RelayDiagnosticPhase.Admission
+                socket.send(createdChannel.writeHandshake(payload.capability))
+                payload.capability.fill(0)
+                val ack = socket.receive() ?: throw RelayPairingException(RelayPairingFailure.OfferRejected)
+                RelayPairingAck.parseEnvelope(createdChannel.decrypt(ack))
+                    .also { attempt.recordSuccess(RelayDiagnosticPhase.Admission) }
+            } ?: run {
+                currentCoroutineContext().ensureActive()
+                attempt.recordTimeout(phase)
+                closeReason = RelayDiagnosticCloseReason.Timeout
+                throw RelayPairingException(RelayPairingFailure.Offline)
+            }
             payload.capability.fill(0)
-            val ack = socket.receive() ?: throw RelayPairingException(RelayPairingFailure.OfferRejected)
-            val pairingAck = RelayPairingAck.parseEnvelope(channel.decrypt(ack))
-            val fingerprint = RelayFingerprint.shortAuthenticationString(crypto, channel.channelBinding)
-            channel.close()
-            closeSocket(socket)
+            val fingerprint = RelayFingerprint.shortAuthenticationString(crypto, createdChannel.channelBinding)
+            closeRelayResources(socket, createdChannel)
+            channel = null
+            attempt.recordDisconnect(RelayDiagnosticCloseReason.PairingComplete)
             val target = RelayPairedTarget(
                 id = makeId(),
                 label = "",
@@ -110,6 +151,8 @@ class RelayPairingCoordinator(
             )
             return try {
                 targets.add(target)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (error: RelayTargetStoreException) {
                 throw RelayPairingException(
                     if (error.failure == RelayTargetStoreFailure.TargetLimitReached) {
@@ -123,26 +166,36 @@ class RelayPairingCoordinator(
             }
         } catch (cancelled: CancellationException) {
             payload.capability.fill(0)
-            closeSocket(socket)
+            attempt.recordCancellation()
+            closeRelayResources(socket, channel)
+            attempt.recordDisconnect(RelayDiagnosticCloseReason.Cancelled)
             throw cancelled
         } catch (error: RelayPairingException) {
             payload.capability.fill(0)
-            closeSocket(socket)
+            attempt.recordFailure(phase, error.failure.toDiagnosticReason())
+            closeRelayResources(socket, channel)
+            attempt.recordDisconnect(closeReason)
             throw error
         } catch (_: RelayProtocolException) {
             payload.capability.fill(0)
-            closeSocket(socket)
+            attempt.recordFailure(phase, RelayDiagnosticReason.ProtocolViolation)
+            closeRelayResources(socket, channel)
+            attempt.recordDisconnect(RelayDiagnosticCloseReason.ProtocolViolation)
             throw RelayPairingException(RelayPairingFailure.ProtocolViolation)
         } catch (_: Exception) {
             payload.capability.fill(0)
-            closeSocket(socket)
+            attempt.recordFailure(phase, RelayDiagnosticReason.ProtocolViolation)
+            closeRelayResources(socket, channel)
+            attempt.recordDisconnect(RelayDiagnosticCloseReason.LocalFailure)
             throw RelayPairingException(RelayPairingFailure.ProtocolViolation)
         }
     }
 
     suspend fun probeApproval(target: RelayPairedTarget, profile: String): Boolean {
         val connected = try {
-            RelayConnector.connect(target, profile, socketFactory, crypto)
+            RelayConnector.connect(target, profile, socketFactory, crypto, diagnostics = diagnostics)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             return false
         }
@@ -162,19 +215,13 @@ class RelayPairingCoordinator(
             } == true
             if (approved) targets.markApproved(target.id, nowEpochSeconds())
             approved
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             false
         } finally {
-            closeChat(chat)
+            chat.close()
         }
-    }
-
-    private suspend fun closeSocket(socket: RelayBinarySocket) = withContext(NonCancellable) {
-        runCatching { socket.close() }
-    }
-
-    private suspend fun closeChat(chat: RelayHermesChatSocket) = withContext(NonCancellable) {
-        runCatching { chat.close() }
     }
 
     private fun RelayProtocolFailure.toPairingFailure(): RelayPairingFailure = when (this) {
