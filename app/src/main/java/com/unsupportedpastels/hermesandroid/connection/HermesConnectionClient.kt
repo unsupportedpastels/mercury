@@ -500,6 +500,7 @@ interface HermesConnectionClient {
         serverOrigin: ServerOrigin,
         accessToken: String?,
         durableSessionId: DurableSessionId,
+        profile: String = "default",
     ): List<ChatMessage> = throw UnsupportedOperationException()
 
     suspend fun loadHostDirectories(
@@ -1510,6 +1511,7 @@ class HttpHermesConnectionClient(
         serverOrigin: ServerOrigin,
         accessToken: String?,
         durableSessionId: DurableSessionId,
+        profile: String,
     ): List<ChatMessage> = try {
         TRANSCRIPT_PAGE_LIMITS.forEachIndexed { index, pageLimit ->
             try {
@@ -1518,6 +1520,7 @@ class HttpHermesConnectionClient(
                     accessToken = accessToken,
                     durableSessionId = durableSessionId,
                     pageLimit = pageLimit,
+                    profile = profile,
                 )
             } catch (error: HermesResponseBodyTooLargeException) {
                 if (index == TRANSCRIPT_PAGE_LIMITS.lastIndex) throw error
@@ -1537,13 +1540,14 @@ class HttpHermesConnectionClient(
         accessToken: String?,
         durableSessionId: DurableSessionId,
         pageLimit: Int,
+        profile: String,
     ): List<ChatMessage> {
         val encodedId = durableSessionId.value.encodeURLPathPart()
         val response = client.get("${serverOrigin.value}/api/sessions/$encodedId/messages") {
             accessToken?.let { bearerAuth(it) }
             parameter("limit", pageLimit)
             parameter("order", "latest")
-            parameter("profile", "default")
+            parameter("profile", profile)
         }
         if (!response.status.isSuccess()) {
             response.readBodyTextBounded()

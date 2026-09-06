@@ -114,6 +114,42 @@ class HermesChatIntegrationTest {
     }
 
     @Test
+    fun namedProfileOpenAndRecoveryKeepTheSessionOwner() = runTest(dispatcher) {
+        val client = ChatConnectionClient(owningProfile = "director")
+        val initial = StreamingChatSession(submitFailure = HermesChatTransportException("dropped"))
+        val recovered = StreamingChatSession()
+        val sessions = ArrayDeque(listOf(initial, recovered))
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(ServerSettingsState.Ready(origin)),
+            client = client,
+            tokenStore = MemoryTokenStore(tokens),
+            chatConnector = HermesChatConnector { _, _ -> sessions.removeFirst() },
+            nowEpochSeconds = { 1_900_000_000 },
+        )
+        advanceUntilIdle()
+        assertEquals(AuthenticationState.Authenticated, viewModel.snapshots.value.authenticationState)
+        // The owning row, not the current settings selection, is authoritative.
+        assertEquals("default", viewModel.snapshots.value.selectedProfile)
+        viewModel.openSession(durableId)
+        advanceUntilIdle()
+        assertEquals(listOf("director"), client.transcriptProfiles)
+        assertEquals("director", initial.resumedProfile)
+
+        // Opening an idle session closes it; reconnect for Send, then recover.
+        sessions.addFirst(initial)
+        viewModel.sendMessage(durableId, "Recover this turn")
+        advanceUntilIdle()
+        assertEquals("director", recovered.resumedProfile)
+        // Open, first-prompt refresh, and idle recovery all use the same store.
+        assertEquals(listOf("director", "director", "director"), client.transcriptProfiles)
+        val chat = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        assertFalse(chat.isSending)
+        assertEquals(listOf("Earlier question", "Earlier answer"), chat.messages.map { it.text })
+        // A lost submit acknowledgement still needs the existing retry warning.
+        assertEquals("Submission was not confirmed. Check the transcript before retrying.", chat.error)
+    }
+
+    @Test
     fun rejectedPersistedAuthenticationClearsTokensAndRequiresSignIn() = runTest(dispatcher) {
         val tokenStore = MemoryTokenStore(tokens)
         val viewModel = HermesConnectionViewModel(
@@ -2534,8 +2570,9 @@ private class MemoryTokenStore(initial: NativeTokenSet?) : NativeTokenStore {
     override suspend fun clear(serverOrigin: ServerOrigin) { value = null }
 }
 
-private class ChatConnectionClient : HermesConnectionClient {
+private class ChatConnectionClient(private val owningProfile: String = "default") : HermesConnectionClient {
     private val durableId = DurableSessionId("durable-1")
+    val transcriptProfiles = mutableListOf<String>()
     var transcriptAccessToken: String? = null
     var transcriptLoads = 0
     var lastTranscriptDurableId: DurableSessionId? = null
@@ -2552,14 +2589,16 @@ private class ChatConnectionClient : HermesConnectionClient {
         accessToken: String,
     ) = AuthenticatedHermesConnection(
         userId = "user-1",
-        sessions = listOf(SessionSummary(durableId, "Test session")),
+        sessions = listOf(SessionSummary(durableId, "Test session", profile = owningProfile)),
     )
 
     override suspend fun loadTranscript(
         serverOrigin: ServerOrigin,
         accessToken: String?,
         durableSessionId: DurableSessionId,
+        profile: String,
     ): List<com.unsupportedpastels.hermesandroid.gateway.ChatMessage> {
+        transcriptProfiles += profile
         transcriptAccessToken = accessToken
         transcriptLoads += 1
         lastTranscriptDurableId = durableSessionId
@@ -2594,6 +2633,7 @@ private class UnauthorizedOnceTranscriptClient : HermesConnectionClient {
         serverOrigin: ServerOrigin,
         accessToken: String?,
         durableSessionId: DurableSessionId,
+        profile: String,
     ): List<com.unsupportedpastels.hermesandroid.gateway.ChatMessage> {
         transcriptLoads += 1
         if (transcriptLoads == 1) throw HermesUnauthorizedException()
@@ -2721,6 +2761,7 @@ private class NonCooperativeAuthenticationClient(
         serverOrigin: ServerOrigin,
         accessToken: String?,
         durableSessionId: DurableSessionId,
+        profile: String,
     ) = emptyList<com.unsupportedpastels.hermesandroid.gateway.ChatMessage>()
 }
 
@@ -2747,6 +2788,7 @@ private class BlockingTranscriptClient : HermesConnectionClient {
         serverOrigin: ServerOrigin,
         accessToken: String?,
         durableSessionId: DurableSessionId,
+        profile: String,
     ): List<com.unsupportedpastels.hermesandroid.gateway.ChatMessage> = try {
         transcript.await()
     } catch (cancelled: CancellationException) {
@@ -3023,6 +3065,7 @@ private class StreamingChatSession(
     private val mutableEvents = MutableSharedFlow<HermesChatEvent>(extraBufferCapacity = 8)
     override val events: Flow<HermesChatEvent> = mutableEvents
     var resumedDurableId: DurableSessionId? = null
+    var resumedProfile: String? = null
     var submittedText: String? = null
     var closed = false
     val fileAttachCalls = mutableListOf<Triple<String, String, String>>()
@@ -3039,6 +3082,7 @@ private class StreamingChatSession(
         profile: String?,
     ): ResumedChatSession {
         resumedDurableId = durableSessionId
+        resumedProfile = profile
         return ResumedChatSession(
             runtimeSessionId = RuntimeSessionId("runtime-1"),
             durableSessionId = durableSessionId,

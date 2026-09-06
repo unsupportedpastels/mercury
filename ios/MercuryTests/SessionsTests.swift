@@ -192,6 +192,20 @@ final class SessionsTests: XCTestCase {
         )
     }
 
+    func testNamedProfileTranscriptAndOlderPageUseOwningStore() async throws {
+        SessionsMockURLProtocol.requestHandler = { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+            XCTAssertEqual(query?.first(where: { $0.name == "profile" })?.value, "director")
+            return try self.okResponse(request, body: Self.transcriptDataKeyJSON)
+        }
+        let sessions = SessionsClient(client: makeClient(), profile: "director")
+        let latest = try await sessions.transcript(sessionID: "director-session")
+        let older = try await sessions.olderTranscript(sessionID: "director-session", offset: 100)
+        XCTAssertEqual(latest.count, 2)
+        XCTAssertEqual(older.count, 2)
+        XCTAssertEqual(SessionsMockURLProtocol.requests.count, 2)
+    }
+
     func testOlderTranscriptBuildsOffsetQueryForLoadEarlier() async throws {
         SessionsMockURLProtocol.requestHandler = { request in
             SessionsMockURLProtocol.lastRequest = request
@@ -238,7 +252,7 @@ final class SessionsTests: XCTestCase {
                 : (response, Data(Self.transcriptDataKeyJSON.utf8))
         }
 
-        let transcript = try await SessionsClient(client: makeClient())
+        let transcript = try await SessionsClient(client: makeClient(), profile: "director")
             .transcript(sessionID: "oversized-session")
 
         let limits = SessionsMockURLProtocol.requests.compactMap { request in
@@ -246,6 +260,10 @@ final class SessionsTests: XCTestCase {
                 .queryItems?.first(where: { $0.name == "limit" })?.value
         }
         XCTAssertEqual(limits, ["100", "50"])
+        XCTAssertTrue(SessionsMockURLProtocol.requests.allSatisfy { request in
+            URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "profile" })?.value == "director"
+        })
         XCTAssertEqual(transcript.count, 2)
     }
 
