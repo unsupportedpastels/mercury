@@ -3602,6 +3602,7 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
         serverOrigin: ServerOrigin,
         accessToken: String?,
         durableSessionId: DurableSessionId,
+        profile: String,
     ): List<com.unsupportedpastels.hermesandroid.gateway.ChatMessage> = emptyList()
 
     override suspend fun triggerCronJob(

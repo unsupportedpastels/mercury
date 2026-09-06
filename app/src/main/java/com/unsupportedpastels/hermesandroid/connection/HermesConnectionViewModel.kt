@@ -880,10 +880,11 @@ class HermesConnectionViewModel(
             durableSessions = cached.sessions.map(CachedSession::summary),
             sessionMetadataSource = CacheSource.Cached,
             chatSessions = cached.sessions.fold(mutableSnapshots.value.chatSessions) { chats, session ->
-                if (session.messages.isEmpty()) chats else chats + (
+                if (session.messages.isEmpty() || chats[session.summary.id]?.owningProfile != null) chats else chats + (
                     session.summary.id to ChatSessionSnapshot(
                         messages = session.messages,
                         transcriptSource = CacheSource.Cached,
+                        owningProfile = session.summary.profile,
                     )
                 )
             },
@@ -2861,7 +2862,7 @@ class HermesConnectionViewModel(
                     isLocalDraft = true,
                 ),
             ) + snapshot.durableSessions,
-            chatSessions = snapshot.chatSessions + (draftId to ChatSessionSnapshot()),
+            chatSessions = snapshot.chatSessions + (draftId to ChatSessionSnapshot(owningProfile = snapshot.selectedProfile)),
         )
         hydrateDraftDefaults(draftId)
         return draftId
@@ -2889,7 +2890,7 @@ class HermesConnectionViewModel(
         val existingChat = snapshot.chatSessions[draftId]
         val chatSessions = if (workspacePath == null && !isNoProjectBucket(projectId)) {
             snapshot.chatSessions + (
-                draftId to (existingChat ?: ChatSessionSnapshot()).copy(error = "No workspace")
+                draftId to (existingChat ?: ChatSessionSnapshot(owningProfile = draft.profile)).copy(error = "No workspace")
                 )
         } else {
             snapshot.chatSessions
@@ -2899,7 +2900,7 @@ class HermesConnectionViewModel(
             projectSessionStates = snapshot.projectSessionStates + (
                 projectId to ProjectSessionLoadState.Loaded(projectSessions)
                 ),
-            chatSessions = chatSessions + (draftId to (chatSessions[draftId] ?: ChatSessionSnapshot())),
+            chatSessions = chatSessions + (draftId to (chatSessions[draftId] ?: ChatSessionSnapshot(owningProfile = draft.profile))),
         )
         hydrateDraftDefaults(draftId)
         return draftId
@@ -3086,10 +3087,12 @@ class HermesConnectionViewModel(
         }
     }
 
-    private fun loadBackgroundViewedTranscript(durableSessionId: DurableSessionId): Job =
-        viewModelScope.launch {
+    private fun loadBackgroundViewedTranscript(durableSessionId: DurableSessionId): Job {
+        pinChatProfile(durableSessionId)
+        return viewModelScope.launch {
             val origin = activeOrigin ?: return@launch
             val originGeneration = generation
+            val profile = owningProfile(durableSessionId)
             updateChat(durableSessionId) { it.copy(isLoading = true, error = null) }
             try {
                 val relayTarget = activeRelayTarget
@@ -3098,7 +3101,7 @@ class HermesConnectionViewModel(
                 } else {
                     val accessToken = accessTokenForRequest(origin, originGeneration)
                     if (!isCurrentOrigin(origin, originGeneration)) return@launch
-                    client.loadTranscript(origin, accessToken, serverDurableId(durableSessionId))
+                    client.loadTranscript(origin, accessToken, serverDurableId(durableSessionId), profile)
                 }
                 if (!isCurrentOrigin(origin, originGeneration)) return@launch
                 updateChat(durableSessionId) {
@@ -3121,8 +3124,10 @@ class HermesConnectionViewModel(
                 }
             }
         }
+    }
 
     fun openSession(durableSessionId: DurableSessionId): Job {
+        pinChatProfile(durableSessionId)
         sessionControllerRegistry.chatJobs[durableSessionId]?.takeIf { it.isActive }?.let { return it }
         if (durableSessionId in pendingDraftSessions) {
             return openDraftSession(durableSessionId)
@@ -3136,7 +3141,8 @@ class HermesConnectionViewModel(
             val origin = activeOrigin ?: return@launch
             var originGeneration = generation
             val expectedProfileGeneration = profileGeneration
-            val profile = mutableSnapshots.value.selectedProfile
+            val selectedProfile = mutableSnapshots.value.selectedProfile
+            val profile = owningProfile(durableSessionId)
             if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return@launch
             val cached = cacheRepository?.read(
                 CacheScope(origin, profile),
@@ -3145,7 +3151,7 @@ class HermesConnectionViewModel(
             if (
                 activeOrigin != origin || generation != originGeneration ||
                 profileGeneration != expectedProfileGeneration ||
-                mutableSnapshots.value.selectedProfile != profile
+                mutableSnapshots.value.selectedProfile != selectedProfile
             ) return@launch
             val hasCachedMessages = cached?.messages?.isNotEmpty() == true
             if (cached != null) {
@@ -3176,11 +3182,12 @@ class HermesConnectionViewModel(
                             origin,
                             accessToken,
                             serverDurableId(durableSessionId),
+                            profile = profile,
                         )
                         if (
                             !isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration) ||
                             profileGeneration != expectedProfileGeneration ||
-                            mutableSnapshots.value.selectedProfile != profile
+                            mutableSnapshots.value.selectedProfile != selectedProfile
                         ) return@launch
                     } catch (unauthorized: HermesUnauthorizedException) {
                         if (retriedAfterUnauthorized) throw unauthorized
@@ -3271,6 +3278,7 @@ class HermesConnectionViewModel(
         rawText: String,
         interrupted: Boolean = false,
     ): Job {
+        pinChatProfile(durableSessionId)
         if (mutableSnapshots.value.chatSessions[durableSessionId]?.connectionPhase?.let {
                 it == ChatConnectionPhase.Connecting || it == ChatConnectionPhase.Submitting
             } == true) {
@@ -3748,6 +3756,7 @@ class HermesConnectionViewModel(
     fun undoSession(durableSessionId: DurableSessionId): Job {
         val operation = beginMaintenanceSession(durableSessionId)
             ?: return unavailableMaintenanceJob(durableSessionId)
+        val profile = owningProfile(durableSessionId)
         return viewModelScope.launch {
             try {
                 operation.session.undoSession(operation.runtimeSessionId)
@@ -3757,6 +3766,7 @@ class HermesConnectionViewModel(
                     operation.origin,
                     token,
                     serverDurableId(durableSessionId),
+                    profile = profile,
                 )
                 currentCoroutineContext().ensureActive()
                 publishUndoneSession(operation, messages)
@@ -4522,6 +4532,17 @@ class HermesConnectionViewModel(
     private fun serverDurableId(localId: DurableSessionId): DurableSessionId =
         serverDurableIds[localId] ?: localId
 
+    private fun owningProfile(durableSessionId: DurableSessionId): String =
+        mutableSnapshots.value.chatSessions[durableSessionId]?.owningProfile
+            ?: cachedSummary(durableSessionId)?.profile
+            ?: mutableSnapshots.value.selectedProfile
+
+    private fun pinChatProfile(durableSessionId: DurableSessionId) {
+        if (mutableSnapshots.value.chatSessions[durableSessionId]?.owningProfile != null) return
+        val profile = owningProfile(durableSessionId)
+        updateChat(durableSessionId) { it.copy(owningProfile = profile) }
+    }
+
     private fun cachedSummary(durableSessionId: DurableSessionId): SessionSummary? =
         mutableSnapshots.value.durableSessions.firstOrNull { it.id == durableSessionId }
             ?: mutableSnapshots.value.projectSessions.values.asSequence()
@@ -4697,14 +4718,13 @@ class HermesConnectionViewModel(
             val resumed = if (creatingDraft) {
                 session.createSession(
                     durableSessionId = durableSessionId,
-                    profile = localDraftSession(durableSessionId)?.profile ?: "default",
+                    profile = owningProfile(durableSessionId),
                     workspacePath = localDraftSession(durableSessionId)
                         ?.workspacePath
                         ?.let(::validProjectWorkspacePath),
                 )
             } else {
-                session.resume(serverDurableId(durableSessionId), profile =
-                    if (relayTarget != null) mutableSnapshots.value.selectedProfile else "default")
+                session.resume(serverDurableId(durableSessionId), profile = owningProfile(durableSessionId))
             }
             if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                 throw CancellationException("Chat operation was replaced")
@@ -4861,6 +4881,7 @@ class HermesConnectionViewModel(
         originGeneration: Long,
         operationGeneration: Long,
     ) {
+        val profile = owningProfile(durableSessionId)
         viewModelScope.launch {
             val accessToken = try {
                 accessTokenForRequest(origin, originGeneration)
@@ -4879,7 +4900,7 @@ class HermesConnectionViewModel(
                 reconcileCanonicalSessionMetadata(durableSessionId, canonical)
             }
             val messages = try {
-                client.loadTranscript(origin, accessToken, canonicalId)
+                client.loadTranscript(origin, accessToken, canonicalId, profile)
             } catch (_: Exception) {
                 return@launch
             }
@@ -5174,6 +5195,7 @@ class HermesConnectionViewModel(
         val relayTarget = activeRelayTarget
         val connector = chatConnector
         if (relayTarget == null && connector == null) return
+        val profile = owningProfile(durableSessionId)
         val previous = sessionControllerRegistry.controller(durableSessionId)
         if (previous != null) {
             sessionControllerRegistry.replaceControllerForRecovery(durableSessionId, previous.session)
@@ -5216,7 +5238,6 @@ class HermesConnectionViewModel(
                 // An open socket is not proof that resume will ever answer. Keep
                 // each reconciliation attempt bounded; never replay prompt.submit.
                 val recoverySnapshot = candidate.relayLeaseSnapshot
-                val profile = if (relayTarget != null) mutableSnapshots.value.selectedProfile else "default"
                 if (recoverySnapshot != null && !recoverySnapshot.hasLiveBinding(
                         serverDurableId(durableSessionId).value, profile)) {
                     // Missing retained ownership is not permission to take over another
@@ -5295,7 +5316,7 @@ class HermesConnectionViewModel(
                             },
                         ))
                     } else {
-                        client.loadTranscript(origin, token, serverDurableId(durableSessionId))
+                        client.loadTranscript(origin, token, serverDurableId(durableSessionId), profile)
                     }
                     if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                         closeChatSessionNonCancellably(candidate)
@@ -6008,6 +6029,7 @@ class HermesConnectionViewModel(
                     )) +
                     (result.durableSessionId to ChatSessionSnapshot(
                         messages = result.messages.mapNotNull(::chatMessageFromJson),
+                        owningProfile = owningProfile(operation.durableSessionId),
                     )),
                 lastBranchedSessionId = result.durableSessionId,
             )

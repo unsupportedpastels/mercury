@@ -419,9 +419,32 @@ class HermesConnectionClientTest {
     }
 
     @Test
+    fun namedProfileTranscriptDoesNotReadDefaultStore() = runTest {
+        val engine = MockEngine { request ->
+            assertEquals("/api/sessions/director-session/messages", request.url.encodedPath)
+            if (request.url.parameters["profile"] != "director") {
+                respond("{}", HttpStatusCode.NotFound)
+            } else {
+                respond(
+                    """{"messages":[{"role":"assistant","content":"Named history"}]}""",
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+            }
+        }
+        val messages = HttpHermesConnectionClient(HttpClient(engine)).loadTranscript(
+            ServerOrigin.parse("https://hermes.example"),
+            accessToken = null,
+            DurableSessionId("director-session"),
+            profile = "director",
+        )
+        assertEquals("Named history", messages.single().text)
+    }
+
+    @Test
     fun transcriptKeepsToolRowsUsingNameAndContextPreview() = runTest {
         val engine = MockEngine { request ->
             assertEquals("/api/sessions/durable-1/messages", request.url.encodedPath)
+            assertEquals("default", request.url.parameters["profile"])
             respond(
                 content = """
                     {"session_id":"durable-1","messages":[
@@ -459,6 +482,7 @@ class HermesConnectionClientTest {
         val requestedLimits = mutableListOf<String?>()
         val engine = MockEngine { request ->
             assertEquals("/api/sessions/durable-large/messages", request.url.encodedPath)
+            assertEquals("director", request.url.parameters["profile"])
             assertEquals("latest", request.url.parameters["order"])
             requestedLimits += request.url.parameters["limit"]
             if (request.url.parameters["limit"] == "100") {
@@ -478,6 +502,7 @@ class HermesConnectionClientTest {
             ServerOrigin.parse("https://hermes.example"),
             accessToken = null,
             DurableSessionId("durable-large"),
+            profile = "director",
         )
 
         assertEquals(listOf("100", "50"), requestedLimits)
