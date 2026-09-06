@@ -165,11 +165,11 @@ actor RelayPairingCoordinator {
     /// by a `gateway.ping` round trip. Pending or revoked devices see the
     /// host close the socket instead.
     ///
-    /// The router allows one device socket per installation, so the probe's
-    /// socket is closed and awaited on every exit path (approved, rejected,
-    /// early EOF, thrown error, cancellation) before this returns. A caller
-    /// that opens the chat right after a probe must never race a socket that
-    /// is still being torn down.
+    /// The probe uses the device's default lease channel, which the next
+    /// default-channel open supersedes, so its socket is closed and awaited
+    /// on every exit path (approved, rejected, early EOF, thrown error,
+    /// cancellation) before this returns. A caller that opens a connection
+    /// right after a probe must never race a socket still being torn down.
     func probeApproval(target: RelayPairedTarget, profile: String) async -> Bool {
         let connected: RelayConnectedChannel
         do {

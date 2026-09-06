@@ -427,6 +427,56 @@ final class RelayTransportTests: XCTestCase {
         await hostSocket.close()
     }
 
+    /// One phone, several sessions: each named channel gets its own admitted
+    /// socket and lease, and closing one leaves the others untouched.
+    func testPoolHoldsOneConnectionPerLeaseChannel() async throws {
+        let (deviceA, hostA) = InMemoryRelayTransport.pair()
+        let (deviceB, hostB) = InMemoryRelayTransport.pair()
+        let factory = FakeRelaySocketFactory(sockets: [deviceA, deviceB])
+        let pool = RelayConnectionPool(socketFactory: factory)
+        let target = makeTarget()
+
+        func serve(_ socket: FakeRelaySocket, lease: String) -> Task<String?, Error> {
+            Task {
+                let admitted = try await admit(socket: socket)
+                let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: admitted.envelope) as? [String: Any])
+                try await sendFrame(["jsonrpc": "2.0", "method": "relay.lease.attached", "params": [
+                    "recovery_version": 1, "lease_id": lease, "last_seq": 0,
+                    "resume_cursor": 0, "replay_gap": false, "recovery_reset": false,
+                    "bindings": [], "task_snapshot": []
+                ]], socket: socket, channel: admitted.channel)
+                try await sendFrame(["jsonrpc": "2.0", "method": "relay.lease.replay_complete",
+                                     "params": ["lease_id": lease, "last_seq": 0]],
+                                    socket: socket, channel: admitted.channel)
+                return envelope["channel"] as? String
+            }
+        }
+        let hostASide = serve(hostA, lease: "lease-a")
+        let hostBSide = serve(hostB, lease: "lease-b")
+        let a = try await pool.acquire(target: target, profile: "default", channel: "s-session-a")
+        let b = try await pool.acquire(target: target, profile: "default", channel: "s-session-b")
+        XCTAssertFalse(a === b)
+        XCTAssertEqual(factory.requestedURLs.count, 2)
+        let channelA = try await hostASide.value
+        let channelB = try await hostBSide.value
+        XCTAssertEqual(channelA, "s-session-a")
+        XCTAssertEqual(channelB, "s-session-b")
+
+        // Re-acquiring a channel returns its live connection; no new socket.
+        let again = try await pool.acquire(target: target, profile: "default", channel: "s-session-a")
+        XCTAssertTrue(again === a)
+        XCTAssertEqual(factory.requestedURLs.count, 2)
+
+        // Losing one channel's peer does not touch the other channel.
+        let ended = Task { for await _ in a.start(replayBuffered: false) {} }
+        await hostA.close()
+        await ended.value
+        XCTAssertTrue(a.isClosed)
+        XCTAssertFalse(b.isClosed)
+        await b.close()
+        await hostB.close()
+    }
+
     func testStaleAuxiliaryScopeCannotOpenOrSupersedeSelectedProfile() async throws {
         let factory = FakeRelaySocketFactory(sockets: [])
         let pool = RelayConnectionPool(socketFactory: factory, selectionRequired: true)

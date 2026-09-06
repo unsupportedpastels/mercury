@@ -342,9 +342,7 @@ final class ConnectionController {
         }
     }
 
-    /// One short-lived relay connection serving one `relay.sessions.list`
-    /// read. Sequential short-lived connections keep the single device-socket
-    /// slot free for an open chat.
+    /// One `relay.sessions.list` read over the pool's default lease channel.
     static func relaySessionsPage(
         target: RelayPairedTarget,
         profile: String,
@@ -369,10 +367,8 @@ final class ConnectionController {
         guard case .connected = appModel.connectionPhase else { return nil }
 
         if let target = appModel.activeRelayTarget {
-            // The router permits one device socket per installation. An open
-            // chat owns it, so refreshes stand down until the chat closes and
-            // the visible list refreshes again.
-            guard appModel.visibleSessionID == nil else { return nil }
+            // Reads use the default lease channel; open chats own their own
+            // channels, so a visible chat never blocks a list refresh.
             do {
                 return try await Self.relaySessionsPage(
                     target: target,

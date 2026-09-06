@@ -168,18 +168,25 @@ enum RelayAdmissionEnvelope {
         deviceID: String,
         profile: String,
         resumeCursor: Int64? = nil,
-        recoveryVersion: Int32? = nil
+        recoveryVersion: Int32? = nil,
+        channel: String? = nil
     ) throws -> Data {
         do {
             return try MercuryCore.RelayAdmissionEnvelope.shared.controllerOpen(
                 deviceId: deviceID,
                 profile: profile,
                 resumeCursor: resumeCursor.map(KotlinLong.init(value:)),
-                recoveryVersion: recoveryVersion.map(KotlinInt.init(value:))
+                recoveryVersion: recoveryVersion.map(KotlinInt.init(value:)),
+                channel: channel
             ).relayData
         } catch {
             throw RelayProtocolError.invalidEnvelope
         }
+    }
+
+    /// Deterministic lease channel for one session key (shared with Android).
+    static func channelForSession(_ sessionKey: String) -> String {
+        MercuryCore.RelayAdmissionEnvelope.shared.channelForSession(sessionKey: sessionKey)
     }
 }
 
