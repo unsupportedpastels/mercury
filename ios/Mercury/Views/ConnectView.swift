@@ -14,6 +14,7 @@ struct ConnectView: View {
     @State private var validationError: String?
     @State private var showSavedServers = false
     @State private var relay = RelayAppModel()
+    @State private var relayPendingRemoval: RelayPairedTarget?
     @State private var showRelayPairing = false
     /// Error banner text injected when arriving via `.failed(_)` phase.
     private let bannerMessage: String?
@@ -313,15 +314,46 @@ struct ConnectView: View {
                         .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
+                    .overlay(alignment: .trailing) {
+                        // Visible removal, like Android's RelayConnectPanel trash
+                        // icon. Local removal only: revoking the device record
+                        // stays a host/dashboard management action.
+                        Button(role: .destructive) {
+                            relayPendingRemoval = target
+                        } label: {
+                            Image(systemName: "trash")
+                                .frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.statusAlert)
+                        .padding(.trailing, 36)
+                        .accessibilityLabel("Remove relay \(target.displayLabel)")
+                    }
                     .contextMenu {
                         Button(role: .destructive) {
-                            Task { await relay.removeTarget(target) }
+                            relayPendingRemoval = target
                         } label: {
-                            // Local removal only: revoking the device record
-                            // stays a host/dashboard management action.
                             Label("Remove from this device", systemImage: "trash")
                         }
                     }
+                }
+                .confirmationDialog(
+                    "Remove this relay pairing from this phone?",
+                    isPresented: Binding(
+                        get: { relayPendingRemoval != nil },
+                        set: { if !$0 { relayPendingRemoval = nil } }
+                    ),
+                    titleVisibility: .visible,
+                    presenting: relayPendingRemoval
+                ) { target in
+                    Button("Remove \(target.displayLabel)", role: .destructive) {
+                        Task {
+                            if appModel.activeRelayTarget?.id == target.id { appModel.disconnect() }
+                            await relay.removeTarget(target)
+                        }
+                    }
+                } message: { _ in
+                    Text("The host still lists this device until you revoke it there. You can pair again with a new QR code.")
                 }
             }
         }
