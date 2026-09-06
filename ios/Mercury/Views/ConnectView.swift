@@ -331,6 +331,29 @@ struct ConnectView: View {
                         .buttonStyle(.bordered)
                         .tint(Color.statusAlert)
                         .accessibilityLabel("Remove relay \(target.displayLabel)")
+                        // Presented from this row's own button so the sheet
+                        // anchors to it; bound to this row's id so no other row
+                        // ever presents for the same state.
+                        .confirmationDialog(
+                            "Remove \(target.displayLabel) from this phone?",
+                            isPresented: Binding(
+                                get: { relayPendingRemoval?.id == target.id },
+                                set: { if !$0, relayPendingRemoval?.id == target.id { relayPendingRemoval = nil } }
+                            ),
+                            titleVisibility: .visible
+                        ) {
+                            Button("Remove pairing", role: .destructive) {
+                                Task {
+                                    if appModel.activeRelayTarget?.id == target.id
+                                        || appModel.selectedRelayTarget?.id == target.id {
+                                        appModel.disconnect()
+                                    }
+                                    await relay.removeTarget(target)
+                                }
+                            }
+                        } message: {
+                            Text("The host still lists this device until you revoke it there. You can pair again with a new QR code.")
+                        }
                     }
                     .contextMenu {
                         Button(role: .destructive) {
@@ -340,24 +363,6 @@ struct ConnectView: View {
                         }
                     }
                 }
-            }
-            .confirmationDialog(
-                "Remove this relay pairing from this phone?",
-                isPresented: Binding(
-                    get: { relayPendingRemoval != nil },
-                    set: { if !$0 { relayPendingRemoval = nil } }
-                ),
-                titleVisibility: .visible,
-                presenting: relayPendingRemoval
-            ) { target in
-                Button("Remove \(target.displayLabel)", role: .destructive) {
-                    Task {
-                        if appModel.activeRelayTarget?.id == target.id { appModel.disconnect() }
-                        await relay.removeTarget(target)
-                    }
-                }
-            } message: { _ in
-                Text("The host still lists this device until you revoke it there. You can pair again with a new QR code.")
             }
         }
 
