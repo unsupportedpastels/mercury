@@ -16,9 +16,23 @@ enum ServerOrigin {
         return (result as? MercuryCore.OriginParseResultValid)?.origin
     }
 
+    /// The shared policy's reason when `input` is not a valid origin, or nil
+    /// when it is valid. Surfaces the same wording Android shows, including
+    /// the public plain-HTTP rejection, instead of a generic message.
+    static func validationFailure(_ input: String, useTls: Bool = true) -> String? {
+        let result = MercuryCore.ServerOriginPolicy.shared.canonicalize(input: input, useTls: useTls)
+        return (result as? MercuryCore.OriginParseResultInvalid)?.reason
+    }
+
     /// Converts an explicit HTTP(S) origin to the matching WebSocket scheme.
     static func webSocketValue(_ origin: String) -> String? {
         MercuryCore.ServerOriginPolicy.shared.webSocketValue(origin: origin)
+    }
+
+    /// The host to show for an origin or dashboard URL in lists (shared
+    /// display decision: no scheme, port, or path). Nil when there is no host.
+    static func displayHost(_ originOrURL: String) -> String? {
+        MercuryCore.ServerOriginPolicy.shared.displayHost(originOrUrl: originOrURL)
     }
 
     /// True when the host of a normalized origin is loopback or RFC1918-private.

@@ -35,6 +35,9 @@ final class AppModel {
     /// origin-scoped REST features guard on `serverOrigin` and quietly stand
     /// down because it stays nil.
     private(set) var activeRelayTarget: RelayPairedTarget?
+    /// The relay the user selected, kept across a failed or pending connect so
+    /// Settings can still disconnect from it and remove its pairing.
+    private(set) var selectedRelayTarget: RelayPairedTarget?
     private(set) var relaySelectionGeneration: UInt64 = 0
     private(set) var hermesVersion: String?
     var profiles: [String] = ["default"]
@@ -631,7 +634,7 @@ final class AppModel {
     /// (origin-scoped Keychain delete) and its host's cookies, then resets
     /// transient connection state. No-op when no server origin is set.
     func signOut() async {
-        if activeRelayTarget != nil {
+        if activeRelayTarget != nil || selectedRelayTarget != nil {
             // Relay "sign out" is a local disconnect. The pairing — and the
             // host-side authorization — stays until removed or revoked
             // explicitly from the pairing management surfaces.
@@ -972,6 +975,8 @@ final class AppModel {
     func disconnect() {
         endRelaySelection()
         activeRelayTarget = nil
+        selectedRelayTarget = nil
+        sessionsError = nil
         connectionPhase = .disconnected
     }
 
@@ -979,6 +984,7 @@ final class AppModel {
     /// the normal connected experience.
     func connectRelay(_ target: RelayPairedTarget) async {
         relaySelectionGeneration &+= 1
+        selectedRelayTarget = target
         await controller.connectRelay(target: target)
     }
 
@@ -999,6 +1005,7 @@ final class AppModel {
     func reset() {
         endRelaySelection()
         activeRelayTarget = nil
+        selectedRelayTarget = nil
         serverOrigin = nil
         hermesVersion = nil
         sessionsError = nil

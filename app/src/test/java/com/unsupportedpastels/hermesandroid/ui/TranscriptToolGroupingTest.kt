@@ -64,4 +64,43 @@ class TranscriptToolGroupingTest {
         assertEquals("terminal", transcriptToolName("terminal · curl -fsSL https://example.com"))
         assertEquals("bare", transcriptToolName("bare"))
     }
+
+    /** iOS WorkBurstView parity, decided once in the shared engine. */
+    @Test
+    fun reasoningOnlyStepsAndTheirToolsCoalesceIntoAWorkBurst() {
+        val messages = listOf(
+            message(ChatMessageRole.User, "find the bug"),
+            ChatMessage(ChatMessageRole.Assistant, "", reasoningText = "let me look"),
+            message(ChatMessageRole.Tool, "read_file · Main.kt"),
+            message(ChatMessageRole.Tool, "grep · TODO"),
+            message(ChatMessageRole.Assistant, "Found it."),
+            message(ChatMessageRole.Tool, "patch · Main.kt"),
+        )
+
+        val entries = coalesceTranscriptEntries(messages)
+
+        assertEquals(4, entries.size)
+        assertEquals(TranscriptEntry.Single(0, messages[0]), entries[0])
+        assertEquals(
+            TranscriptEntry.WorkBurst(
+                reasoning = listOf(IndexedChatMessage(1, messages[1])),
+                tools = listOf(IndexedChatMessage(2, messages[2]), IndexedChatMessage(3, messages[3])),
+            ),
+            entries[1],
+        )
+        assertEquals(TranscriptEntry.Single(4, messages[4]), entries[2])
+        assertEquals(TranscriptEntry.ToolRun(listOf(IndexedChatMessage(5, messages[5]))), entries[3])
+    }
+
+    @Test
+    fun streamingReasoningOnlyStepIsStillAWorkBurst() {
+        val messages = listOf(
+            ChatMessage(ChatMessageRole.Assistant, "", isStreaming = true, reasoningText = "thinking"),
+        )
+        val entries = coalesceTranscriptEntries(messages)
+        assertEquals(
+            listOf(TranscriptEntry.WorkBurst(reasoning = listOf(IndexedChatMessage(0, messages[0])), tools = emptyList())),
+            entries,
+        )
+    }
 }

@@ -9,6 +9,8 @@ import ActivityKit
 struct SettingsView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
+    @State private var relay = RelayAppModel()
+    @State private var confirmRemoveRelay = false
 
     var body: some View {
         NavigationStack {
@@ -61,18 +63,47 @@ struct SettingsView: View {
                     }
                 }
 
-                Section {
-                    Button(role: .destructive) {
-                        Task { await appModel.signOut() }
-                    } label: {
-                        Label("Sign out of this server", systemImage: "rectangle.portrait.and.arrow.right")
+                if let target = appModel.activeRelayTarget ?? appModel.selectedRelayTarget {
+                    Section {
+                        Button {
+                            appModel.disconnect()
+                            dismiss()
+                        } label: {
+                            Label("Disconnect from this relay", systemImage: "antenna.radiowaves.left.and.right.slash")
+                        }
+                        Button(role: .destructive) {
+                            confirmRemoveRelay = true
+                        } label: {
+                            Label("Remove this pairing from this phone", systemImage: "trash")
+                        }
+                    } header: {
+                        Text("Mercury Relay — \(target.displayLabel)")
+                    } footer: {
+                        Text("Disconnecting returns you to the connect screen and keeps the pairing. Removing deletes this phone's key for the host; the host still lists the device until you revoke it there.")
                     }
-                } header: {
-                    Text(
-                        appModel.serverOrigin
-                            ?? appModel.activeRelayTarget.map { "Mercury Relay — \($0.displayLabel)" }
-                            ?? "Not connected"
-                    )
+                    .confirmationDialog(
+                        "Remove the pairing with \(target.displayLabel)?",
+                        isPresented: $confirmRemoveRelay,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Remove pairing", role: .destructive) {
+                            Task {
+                                appModel.disconnect()
+                                await relay.removeTarget(target)
+                                dismiss()
+                            }
+                        }
+                    }
+                } else {
+                    Section {
+                        Button(role: .destructive) {
+                            Task { await appModel.signOut() }
+                        } label: {
+                            Label("Sign out of this server", systemImage: "rectangle.portrait.and.arrow.right")
+                        }
+                    } header: {
+                        Text(appModel.serverOrigin ?? "Not connected")
+                    }
                 }
             }
             .scrollContentBackground(.hidden)

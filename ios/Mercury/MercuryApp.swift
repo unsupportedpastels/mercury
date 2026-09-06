@@ -86,7 +86,6 @@ struct MercuryApp: App {
                 #endif
             }
                 .environment(appModel)
-                .preferredColorScheme(.dark)
                 .task {
                     #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("-uitest-background-tasks") { return }

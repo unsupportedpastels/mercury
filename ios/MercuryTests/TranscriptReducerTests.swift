@@ -307,20 +307,31 @@ final class TranscriptReducerTests: XCTestCase {
         XCTAssertEqual(state.pendingRequest, .clarify(clarify))
     }
 
-    /// Any expire clears whichever request is pending — expires are not
-    /// matched by request ID or kind (pre-extraction parity).
-    func testAnyExpireClearsAnyPendingRequest() {
+    /// An expire clears the pending request only on an exact kind and
+    /// request-ID match (Android RunEventModels parity). Stale or unrelated
+    /// expiries must never dismiss a prompt the agent is still blocked on.
+    func testExpireClearsOnlyMatchingKindAndRequestID() {
         var state = makeState()
-        state.apply(ChatEvent.clarifyRequest(
+        let clarify = ChatEvent.clarifyRequest(
             sessionID: "s1", requestID: "c1", question: "?", choices: [], multiSelect: false
-        ))
-        state.apply(ChatEvent.approvalExpire(sessionID: "s1", requestID: "unrelated-id"))
+        )
+        state.apply(clarify)
+        state.apply(ChatEvent.approvalExpire(sessionID: "s1", requestID: "c1"))
+        XCTAssertEqual(state.pendingRequest, .clarify(clarify))
+        state.apply(ChatEvent.clarifyExpire(sessionID: "s1", requestID: "c0"))
+        XCTAssertEqual(state.pendingRequest, .clarify(clarify))
+        state.apply(ChatEvent.clarifyExpire(sessionID: "s1", requestID: "c1"))
         XCTAssertNil(state.pendingRequest)
 
-        state.apply(ChatEvent.approvalRequest(
+        let approval = ChatEvent.approvalRequest(
             sessionID: "s1", requestID: "r2", command: nil, description: nil, choices: ["go"]
-        ))
-        state.apply(ChatEvent.clarifyExpire(sessionID: "s1", requestID: "also-unrelated"))
+        )
+        state.apply(approval)
+        state.apply(ChatEvent.clarifyExpire(sessionID: "s1", requestID: "r2"))
+        XCTAssertEqual(state.pendingRequest, .approval(approval))
+        state.apply(ChatEvent.approvalExpire(sessionID: "s1", requestID: "stale"))
+        XCTAssertEqual(state.pendingRequest, .approval(approval))
+        state.apply(ChatEvent.approvalExpire(sessionID: "s1", requestID: "r2"))
         XCTAssertNil(state.pendingRequest)
     }
 

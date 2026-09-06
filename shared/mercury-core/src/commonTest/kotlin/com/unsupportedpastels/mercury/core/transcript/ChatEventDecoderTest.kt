@@ -25,6 +25,19 @@ class ChatEventDecoderTest {
     }
 
     @Test
+    fun terminalErrorWithoutUsableMessageStillDecodesWithFallback() {
+        val fallback = ChatEvent.Error("runtime-1", ChatEventDecoder.ERROR_MESSAGE_FALLBACK)
+        assertEquals(fallback, ChatEventDecoder.decode("error", "runtime-1", "{}"))
+        assertEquals(fallback, ChatEventDecoder.decode("error", "runtime-1", "{\"message\":null}"))
+        assertEquals(fallback, ChatEventDecoder.decode("error", "runtime-1", "{\"message\":\"\"}"))
+        assertEquals(fallback, ChatEventDecoder.decode("error", "runtime-1", "{\"message\":\"   \"}"))
+        assertEquals(
+            ChatEvent.Error("runtime-1", "boom"),
+            ChatEventDecoder.decode("error", "runtime-1", "{\"message\":\"boom\"}"),
+        )
+    }
+
+    @Test
     fun unknownOrMalformedEventsAreIgnoredWithoutThrowing() {
         assertNull(ChatEventDecoder.decode("future.event", "runtime-1", "42"))
         assertNull(ChatEventDecoder.decode("message.delta", "runtime-1", "42"))

@@ -43,7 +43,7 @@ final class HostFilesClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        let session = URLSession(configuration: configuration)
+        let session = HermesURLSession.make(configuration)
         try self.init(
             origin: origin,
             bearerToken: bearerToken,
@@ -61,7 +61,7 @@ final class HostFilesClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 30
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        let session = URLSession(configuration: configuration)
+        let session = HermesURLSession.make(configuration)
         try self.init(
             origin: origin,
             bearerToken: bearerToken,
@@ -85,7 +85,7 @@ final class HostFilesClient {
     /// Cookie-authenticated variant used by the Android-parity basic login.
     /// The supplied session must share the cookie store that received the
     /// `/auth/password-login` response.
-    convenience init(cookieAuthenticatedOrigin origin: String, session: URLSession = .shared) throws {
+    convenience init(cookieAuthenticatedOrigin origin: String, session: URLSession = HermesURLSession.noRedirects) throws {
         try self.init(
             origin: origin,
             bearerToken: nil,

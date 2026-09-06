@@ -26,7 +26,7 @@ struct PasswordLoginClient: @unchecked Sendable {
 
     private let session: URLSession
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession = HermesURLSession.noRedirects) {
         self.session = session
     }
 

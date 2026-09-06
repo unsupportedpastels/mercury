@@ -355,8 +355,8 @@ internal suspend fun RelayBinarySocketFactory.connectRelaySocket(
 }
 
 internal fun RelayConnectionFailure.toDiagnosticReason(): RelayDiagnosticReason = when (this) {
-    RelayConnectionFailure.Offline -> RelayDiagnosticReason.Offline
-    RelayConnectionFailure.NotAuthorized -> RelayDiagnosticReason.NotAuthorized
+    RelayConnectionFailure.Offline, RelayConnectionFailure.NoHost -> RelayDiagnosticReason.Offline
+    RelayConnectionFailure.NotAuthorized, RelayConnectionFailure.RoutingRejected -> RelayDiagnosticReason.NotAuthorized
     RelayConnectionFailure.ProtocolViolation -> RelayDiagnosticReason.ProtocolViolation
 }
 
@@ -384,9 +384,10 @@ internal fun Exception.toOpenDiagnosticCategory(): RelayDiagnosticExceptionCateg
         is javax.net.ssl.SSLException -> RelayDiagnosticExceptionCategory.Tls
         is java.net.UnknownHostException -> RelayDiagnosticExceptionCategory.Dns
         is RelayConnectionException -> when (failure) {
-            RelayConnectionFailure.NotAuthorized -> RelayDiagnosticExceptionCategory.Authorization
+            RelayConnectionFailure.NotAuthorized, RelayConnectionFailure.RoutingRejected ->
+                RelayDiagnosticExceptionCategory.Authorization
             RelayConnectionFailure.ProtocolViolation -> RelayDiagnosticExceptionCategory.Protocol
-            RelayConnectionFailure.Offline -> RelayDiagnosticExceptionCategory.Connection
+            RelayConnectionFailure.Offline, RelayConnectionFailure.NoHost -> RelayDiagnosticExceptionCategory.Connection
         }
         is java.io.IOException -> RelayDiagnosticExceptionCategory.Connection
         else -> RelayDiagnosticExceptionCategory.Unknown

@@ -16,6 +16,8 @@ object ChatEventDecoder {
     const val MAX_EVENT_ID_CHARS = 256
     const val MAX_EVENT_NAME_CHARS = 256
     const val MAX_EVENT_TEXT_CHARS = 4_096
+    /** Shown when a terminal `error` event carries a missing or blank message. */
+    const val ERROR_MESSAGE_FALLBACK = "Hermes reported an error"
     const val MAX_MESSAGE_TEXT_CHARS = 1024 * 1024
     const val MAX_EVENT_CONTEXT_CHARS = 4_096
     const val MAX_EVENT_CHOICE_CHARS = 256
@@ -85,8 +87,12 @@ object ChatEventDecoder {
                 title = payload.boundedOptional("title", MAX_EVENT_NAME_CHARS),
                 running = payload.booleanValue("running"),
             )
-            "error" -> payload.boundedOptional("message", MAX_EVENT_TEXT_CHARS)
-                ?.let { ChatEvent.Error(boundedSessionId, it) }
+            // A terminal error with no usable message still ends the turn on
+            // both platforms; a generic fallback keeps the UI from spinning.
+            "error" -> ChatEvent.Error(
+                boundedSessionId,
+                payload.boundedOptional("message", MAX_EVENT_TEXT_CHARS) ?: ERROR_MESSAGE_FALLBACK,
+            )
             "tool.start" -> {
                 val toolId = payload.boundedRequired("tool_id", MAX_EVENT_ID_CHARS)
                 val name = payload.boundedRequired("name", MAX_EVENT_NAME_CHARS)

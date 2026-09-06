@@ -25,8 +25,11 @@ data class ServerCatalogEntry(
         }
     }
 
+    /** A user label wins; otherwise the hostname alone (shared display decision). */
     val displayLabel: String
-        get() = label.ifBlank { origin.value }
+        get() = label.ifBlank {
+            com.unsupportedpastels.mercury.core.origin.ServerOriginPolicy.displayHost(origin.value) ?: origin.value
+        }
 
     fun normalized(): ServerCatalogEntry = copy(label = label.trim())
 }

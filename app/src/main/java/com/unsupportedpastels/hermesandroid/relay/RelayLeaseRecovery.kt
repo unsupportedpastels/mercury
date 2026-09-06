@@ -18,10 +18,12 @@ data class RelayLeaseSnapshot(
     val bindings: List<RelayLeaseBinding>,
     val tasks: List<JsonObject>,
     val truncated: Boolean,
+    /** Renewed router token from the authenticated attach preamble, if the host sent one. */
+    val routingToken: String? = null,
 ) {
     fun hasLiveBinding(durableId: String, profile: String): Boolean = shared().hasLiveBinding(durableId, profile)
     internal fun shared() = com.unsupportedpastels.mercury.core.relay.RelayLeaseSnapshot(
-        leaseId, lastSeq, gap, reset, bindings, tasks.map { it.toString() }, truncated)
+        leaseId, lastSeq, gap, reset, bindings, tasks.map { it.toString() }, truncated, routingToken)
 }
 
 /** Native synchronization, shared immutable checkpoint decisions. Never persist this state. */
@@ -51,7 +53,8 @@ class RelayLeaseRecoverySocket(
         synchronized(this) {
             val shared = protocol { engine.initialize(raw) }
             snapshot = RelayLeaseSnapshot(shared.leaseId, shared.lastSeq, shared.gap, shared.reset,
-                shared.bindings, shared.tasks.map { Json.parseToJsonElement(it).jsonObject }, shared.truncated)
+                shared.bindings, shared.tasks.map { Json.parseToJsonElement(it).jsonObject }, shared.truncated,
+                shared.routingToken)
             checkpoint.bind(owner, shared.leaseId)
         }
     }

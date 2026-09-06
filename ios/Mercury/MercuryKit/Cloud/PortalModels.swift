@@ -90,6 +90,12 @@ public struct TokenSet: Codable, Equatable {
 
 /// One agent row from portal agent discovery (`GET {portal}/api/agents`).
 public struct CloudAgent: Codable, Equatable {
+    /// Cloud agents are labelled by the hostname of their dashboard, like
+    /// server rows, and fall back to the agent name while provisioning.
+    var displayLabel: String {
+        dashboardURL.flatMap(ServerOrigin.displayHost) ?? name
+    }
+
     public let id: String
     public let name: String
     public let status: String

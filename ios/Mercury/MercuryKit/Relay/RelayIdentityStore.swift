@@ -45,7 +45,8 @@ struct RelayPairedTarget: Identifiable, Equatable, Sendable {
     var status: RelayTargetStatus
     let createdAtEpochSeconds: Int64
     var lastUsedEpochSeconds: Int64?
-    let relayRoutingToken: String?
+    /// Router admission token; renewed by the host on every lease attach.
+    var relayRoutingToken: String?
 
     init(
         id: UUID,
@@ -199,6 +200,20 @@ actor RelayTargetStore {
             throw RelayTargetStoreError.unknownTarget
         }
         targets[index].lastUsedEpochSeconds = epochSeconds()
+        try persist(targets)
+    }
+
+    /// Stores a router token the host renewed over the authenticated channel.
+    func updateRoutingToken(id: UUID, token: String) throws {
+        var targets = try load()
+        guard let index = targets.firstIndex(where: { $0.id == id }) else {
+            throw RelayTargetStoreError.unknownTarget
+        }
+        guard !token.isEmpty,
+              token.count <= Int(MercuryCore.RelayProtocolPolicy.shared.maxRoutingTokenCharacters),
+              token.utf8.allSatisfy({ $0 >= 0x21 && $0 <= 0x7e })
+        else { throw RelayTargetStoreError.corruptState }
+        targets[index].relayRoutingToken = token
         try persist(targets)
     }
 

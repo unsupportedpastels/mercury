@@ -14,8 +14,10 @@ package com.unsupportedpastels.mercury.core.transcript
  * - MessageComplete with null text keeps the streamed buffer; only a non-null
  *   final text replaces it. The interrupt sentinel counts as null final text,
  *   and a sentinel completion that streamed nothing drops the row entirely.
- * - Any approval/clarify expire clears whichever request is pending; expires
- *   are not matched by request id or kind.
+ * - An approval/clarify expire clears the pending request only when both the
+ *   kind and the request id match (Android RunEventModels parity). A stale or
+ *   unrelated expire must never dismiss a newer prompt the agent is still
+ *   blocked on.
  * - Reasoning deltas land on the last incomplete assistant row (or open a
  *   fresh reasoning-only row); reasoning text survives completion.
  * - Interim commentary seals the current streaming segment as completed;
@@ -271,8 +273,19 @@ object TranscriptEngine {
         is ChatEvent.ClarifyRequest ->
             state.copy(pendingRequest = PendingTranscriptRequest.Clarify(event))
 
-        is ChatEvent.ApprovalExpire, is ChatEvent.ClarifyExpire ->
-            if (state.pendingRequest != null) state.copy(pendingRequest = null) else state
+        is ChatEvent.ApprovalExpire ->
+            when (val pending = state.pendingRequest) {
+                is PendingTranscriptRequest.Approval ->
+                    if (pending.event.requestId == event.requestId) state.copy(pendingRequest = null) else state
+                else -> state
+            }
+
+        is ChatEvent.ClarifyExpire ->
+            when (val pending = state.pendingRequest) {
+                is PendingTranscriptRequest.Clarify ->
+                    if (pending.event.requestId == event.requestId) state.copy(pendingRequest = null) else state
+                else -> state
+            }
 
         is ChatEvent.SessionTitle ->
             // New-chat flow only: adopt live title renames for our own session.

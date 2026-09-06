@@ -213,4 +213,27 @@ class RelayTransportTest {
         private val DEVICE_EPHEMERAL = ByteArray(32) { (it + 0x40).toByte() }
         private val HOST_EPHEMERAL = ByteArray(32) { (it + 0x60).toByte() }
     }
+
+    private class SilentlyClosingSocket(private val closeCode: Int?) : RelayBinarySocket {
+        override suspend fun send(data: ByteArray) = Unit
+        override suspend fun receive(): ByteArray? = null
+        override suspend fun close() = Unit
+        override fun lastCloseCode(): Int? = closeCode
+    }
+
+    /** The router's 4004 close means no host is attached; any other silent close is the host refusing us. */
+    @Test
+    fun silentCloseIsNoHostOnlyForTheRouterCloseCode() = runTest {
+        suspend fun failure(closeCode: Int?): RelayConnectionFailure? = runCatching {
+            RelayConnector.connect(
+                target = target(),
+                profile = "default",
+                socketFactory = RelayBinarySocketFactory { _, _ -> SilentlyClosingSocket(closeCode) },
+                diagnostics = RelayDiagnostics(capacity = 8, logger = {}),
+            )
+        }.exceptionOrNull().let { (it as? RelayConnectionException)?.failure }
+        assertEquals(RelayConnectionFailure.NoHost, failure(RELAY_CLOSE_NO_HOST))
+        assertEquals(RelayConnectionFailure.NotAuthorized, failure(null))
+        assertEquals(RelayConnectionFailure.NotAuthorized, failure(1000))
+    }
 }

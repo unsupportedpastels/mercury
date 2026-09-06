@@ -36,12 +36,10 @@ struct ServerListView: View {
                                 Text(entry.displayLabel)
                                     .font(.headline)
                                     .foregroundStyle(Color.primary)
-                                if !entry.label.isEmpty {
-                                    Text(entry.origin)
-                                        .font(.caption.monospaced())
-                                        .foregroundStyle(Color.secondary)
-                                        .lineLimit(1)
-                                }
+                                Text(entry.origin)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(Color.secondary)
+                                    .lineLimit(1)
                             }
                             Spacer()
                         }

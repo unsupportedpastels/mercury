@@ -114,6 +114,20 @@ final class ServerOriginTests: XCTestCase {
         XCTAssertFalse(ServerOrigin.isLoopbackOrPrivate("https://192.169.0.1"))
     }
 
+    // MARK: - validationFailure (shared reason surfaces on iOS)
+
+    func testPublicPlainHTTPIsRejectedWithTheSharedReason() {
+        XCTAssertNil(ServerOrigin.normalize("http://hermes.example.com"))
+        XCTAssertEqual(
+            ServerOrigin.validationFailure("http://hermes.example.com"),
+            "Plain HTTP is allowed only for local or private-network servers"
+        )
+        XCTAssertNil(ServerOrigin.normalize("hermes.example.com", useTls: false))
+        XCTAssertNotNil(ServerOrigin.validationFailure("hermes.example.com", useTls: false))
+        XCTAssertNil(ServerOrigin.validationFailure("192.168.1.20:8080", useTls: false))
+        XCTAssertNil(ServerOrigin.validationFailure("hermes.example.com"))
+    }
+
     // MARK: - allowsCleartextHTTP (cleartext allowed only for private hosts)
 
     func testCleartextAllowedOnlyForPrivateHosts() {

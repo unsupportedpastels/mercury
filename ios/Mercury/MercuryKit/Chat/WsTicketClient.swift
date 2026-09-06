@@ -17,7 +17,7 @@ final class WsTicketClient: WsTicketClienting, @unchecked Sendable {
 
     /// Creates a ticket client with an injectable session so unit tests can
     /// route requests through a per-file URLProtocol without real networking.
-    init(session: URLSession = .shared) {
+    init(session: URLSession = HermesURLSession.noRedirects) {
         self.session = session
         self.defaultOrigin = nil
     }
@@ -26,7 +26,7 @@ final class WsTicketClient: WsTicketClienting, @unchecked Sendable {
     /// bearer-auth HTTP client. The origin is retained for the convenience
     /// overload below; the gateway still supplies its origin explicitly so it
     /// cannot accidentally mint against a different configured host.
-    convenience init(client: HermesHTTPClient, session: URLSession = .shared) {
+    convenience init(client: HermesHTTPClient, session: URLSession = HermesURLSession.noRedirects) {
         self.init(session: session, defaultOrigin: client.origin)
     }
 

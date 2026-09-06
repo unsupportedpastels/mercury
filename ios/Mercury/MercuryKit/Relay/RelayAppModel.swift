@@ -35,6 +35,12 @@ final class RelayAppModel {
     ) {
         self.store = store
         coordinator = RelayPairingCoordinator(socketFactory: socketFactory, store: store)
+        let store = store
+        Task {
+            await RelayConnectionPool.shared.setRoutingTokenSink { target, token in
+                try? await store.updateRoutingToken(id: target.id, token: token)
+            }
+        }
     }
 
     func loadTargets() async {

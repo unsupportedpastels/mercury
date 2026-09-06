@@ -718,6 +718,25 @@ internal fun SessionDetailScreen(
                                 )
                                 return@items
                             }
+                            if (entry is TranscriptEntry.WorkBurst) {
+                                var burstExpanded by rememberSaveable(
+                                    session.id.value,
+                                    transcriptEntryKey(entry, chat),
+                                ) {
+                                    mutableStateOf(false)
+                                }
+                                WorkBurstGroup(
+                                    reasoning = entry.reasoning,
+                                    tools = entry.tools,
+                                    expanded = burstExpanded,
+                                    onToggle = { burstExpanded = !burstExpanded },
+                                    sessionKey = session.id.value,
+                                    loadManagedImage = { path ->
+                                        onLoadManagedImage(path).getOrThrow()
+                                    },
+                                )
+                                return@items
+                            }
                             val messageIndex = (entry as TranscriptEntry.Single).index
                             val message = entry.message
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -2344,6 +2363,15 @@ internal sealed interface TranscriptEntry {
     data class Single(val index: Int, val message: ChatMessage) : TranscriptEntry
 
     data class ToolRun(val tools: List<IndexedChatMessage>) : TranscriptEntry
+
+    /**
+     * Consecutive reasoning-only assistant steps bundled with their tool runs
+     * into one compact, expandable activity line (iOS WorkBurstView parity).
+     */
+    data class WorkBurst(
+        val reasoning: List<IndexedChatMessage>,
+        val tools: List<IndexedChatMessage>,
+    ) : TranscriptEntry
 }
 
 /** Retained reducer IDs survive streaming and removal of earlier rows. */
@@ -2351,35 +2379,47 @@ internal fun transcriptEntryKey(entry: TranscriptEntry, chat: ChatSessionSnapsho
     val index = when (entry) {
         is TranscriptEntry.Single -> entry.index
         is TranscriptEntry.ToolRun -> entry.tools.first().index
+        is TranscriptEntry.WorkBurst -> entry.reasoning.first().index
     }
     val presentation = chat.transcriptPresentation?.takeIf { it.messages === chat.messages }
     val identity = presentation?.state?.rows?.getOrNull(index)?.id?.let { "row:$it" } ?: "index:$index"
-    return if (entry is TranscriptEntry.ToolRun) "tool-run:$identity" else "message:$identity"
+    return when (entry) {
+        is TranscriptEntry.ToolRun -> "tool-run:$identity"
+        is TranscriptEntry.WorkBurst -> "work-burst:$identity"
+        is TranscriptEntry.Single -> "message:$identity"
+    }
 }
 
 /**
- * Fold a flat transcript into renderable entries, coalescing every maximal run
- * of adjacent `Tool` messages into a single [TranscriptEntry.ToolRun]. Original
- * message indices are preserved so per-message expansion state stays stable.
+ * Fold a flat transcript into renderable entries using the shared engine's
+ * grouping decision (`coalesceTranscriptEntries` in mercury-core): adjacent
+ * tool messages collapse into one [TranscriptEntry.ToolRun], and reasoning-only
+ * assistant steps followed by tool runs collapse into one
+ * [TranscriptEntry.WorkBurst]. Original message indices are preserved so
+ * per-message expansion state stays stable.
  */
 internal fun coalesceTranscriptEntries(messages: List<ChatMessage>): List<TranscriptEntry> {
-    val entries = mutableListOf<TranscriptEntry>()
-    var run: MutableList<IndexedChatMessage>? = null
-    fun flush() {
-        run?.let { entries.add(TranscriptEntry.ToolRun(it.toList())) }
-        run = null
+    val rows = messages.mapIndexed { index, message ->
+        com.unsupportedpastels.mercury.core.transcript.TranscriptRow(
+            id = index.toLong(),
+            role = message.role.name.lowercase(),
+            text = message.text,
+            completed = !message.isStreaming,
+            reasoningText = message.reasoningText,
+        )
     }
-    messages.forEachIndexed { index, message ->
-        if (message.role == ChatMessageRole.Tool) {
-            (run ?: mutableListOf<IndexedChatMessage>().also { run = it })
-                .add(IndexedChatMessage(index, message))
-        } else {
-            flush()
-            entries.add(TranscriptEntry.Single(index, message))
+    fun indexed(row: com.unsupportedpastels.mercury.core.transcript.TranscriptRow) =
+        IndexedChatMessage(row.id.toInt(), messages[row.id.toInt()])
+    return com.unsupportedpastels.mercury.core.transcript.coalesceTranscriptEntries(rows).map { entry ->
+        when (entry) {
+            is com.unsupportedpastels.mercury.core.transcript.TranscriptEntry.Message ->
+                TranscriptEntry.Single(entry.row.id.toInt(), messages[entry.row.id.toInt()])
+            is com.unsupportedpastels.mercury.core.transcript.TranscriptEntry.ToolRun ->
+                TranscriptEntry.ToolRun(entry.rows.map(::indexed))
+            is com.unsupportedpastels.mercury.core.transcript.TranscriptEntry.WorkBurst ->
+                TranscriptEntry.WorkBurst(entry.reasoning.map(::indexed), entry.tools.map(::indexed))
         }
     }
-    flush()
-    return entries
 }
 
 /**
@@ -2682,6 +2722,94 @@ private fun TranscriptToolRunGroup(
                             loadManagedImage = loadManagedImage,
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One collapsed work burst (iOS WorkBurstView parity): consecutive reasoning
+ * steps bundled with their tool runs into a single compact activity line.
+ * Expanding reveals each thinking block and tool result in original order.
+ */
+@Composable
+private fun WorkBurstGroup(
+    reasoning: List<IndexedChatMessage>,
+    tools: List<IndexedChatMessage>,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    sessionKey: String,
+    loadManagedImage: (suspend (String) -> ByteArray)? = null,
+) {
+    val stepCount = reasoning.size + tools.size
+    val noun = if (stepCount == 1) "step" else "steps"
+    val working = reasoning.any { it.message.isStreaming }
+    val summary = "${if (working) "Working" else "Activity"} · $stepCount $noun"
+    Surface(
+        onClick = onToggle,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) {
+                contentDescription = "$summary, ${if (expanded) "expanded" else "collapsed"}"
+                stateDescription = if (expanded) "Expanded" else "Collapsed"
+            },
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.Psychology,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    summary,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Icon(
+                    if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (expanded) {
+                reasoning.forEach { indexed ->
+                    key(indexed.index) {
+                        var showReasoning by rememberSaveable(sessionKey, indexed.index) {
+                            mutableStateOf(false)
+                        }
+                        ThinkingBlock(
+                            reasoning = indexed.message.reasoningText,
+                            streaming = indexed.message.isStreaming,
+                            expanded = showReasoning,
+                            onToggle = { showReasoning = !showReasoning },
+                        )
+                    }
+                }
+                if (tools.isNotEmpty()) {
+                    var toolsExpanded by rememberSaveable(sessionKey, tools.first().index) {
+                        mutableStateOf(false)
+                    }
+                    TranscriptToolRunGroup(
+                        tools = tools,
+                        expanded = toolsExpanded,
+                        onToggle = { toolsExpanded = !toolsExpanded },
+                        sessionKey = sessionKey,
+                        loadManagedImage = loadManagedImage,
+                    )
                 }
             }
         }

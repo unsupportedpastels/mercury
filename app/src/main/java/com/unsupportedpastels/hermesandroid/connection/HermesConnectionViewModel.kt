@@ -23,6 +23,7 @@ import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
 import com.unsupportedpastels.mercury.core.attachment.AttachmentAddResult
 import com.unsupportedpastels.mercury.core.notifications.NotificationTextPolicy
 import com.unsupportedpastels.mercury.core.transcript.InterruptSentinel
+import com.unsupportedpastels.mercury.core.relay.RelayAdmissionEnvelope
 import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
 import com.unsupportedpastels.mercury.core.relay.RelayTargetStatus
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentByteReader
@@ -110,6 +111,8 @@ import com.unsupportedpastels.hermesandroid.session.evaluateBulkDeleteSelection
 import com.unsupportedpastels.hermesandroid.session.SessionListFilter
 import com.unsupportedpastels.hermesandroid.session.toggleBulkSelection
 import com.unsupportedpastels.hermesandroid.relay.TlsRelayBinarySocketFactory
+import com.unsupportedpastels.hermesandroid.relay.RelayConnectionException
+import com.unsupportedpastels.hermesandroid.relay.RelayConnectionFailure
 import com.unsupportedpastels.hermesandroid.relay.RelayConnector
 import com.unsupportedpastels.hermesandroid.relay.RelayHermesChatSocket
 import com.unsupportedpastels.hermesandroid.relay.RelayLeaseCheckpoint
@@ -317,7 +320,13 @@ class HermesConnectionViewModel(
     private val refreshClient: NativeRefreshClient? = null,
     private val chatConnector: HermesChatConnector? = null,
     private val projectConnector: HermesChatConnector? = null,
-    private val relaySessionFactory: (suspend (RelayPairedTarget, String) -> HermesChatSession)? = null,
+    /**
+     * Opens one admitted relay controller. The third argument is the lease
+     * channel: null borrows the device's default channel (reads and metadata,
+     * superseded by the next default open); chats pass a per-session channel
+     * so several sessions stay open on one phone at once.
+     */
+    private val relaySessionFactory: (suspend (RelayPairedTarget, String, String?) -> HermesChatSession)? = null,
     private val cacheRepository: OfflineCacheRepository? = null,
     private val nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1_000L },
     private val attachmentReader: AttachmentByteReader =
@@ -655,7 +664,7 @@ class HermesConnectionViewModel(
                 relayConnectionLock.lock()
                 admissionLocked = true
                 if (generation != currentGeneration || activeRelayTarget?.id != target.id) return@launch
-                session = factory(target, boundedProfile)
+                session = factory(target, boundedProfile, null)
                 val profiles = try {
                     session.loadProfiles()
                 } catch (cancelled: CancellationException) {
@@ -694,14 +703,14 @@ class HermesConnectionViewModel(
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (_: Exception) {
+            } catch (error: Exception) {
                 if (generation != currentGeneration || activeRelayTarget?.id != target.id) return@launch
                 mutableSnapshots.value = HermesGatewaySnapshot(
                     connectionState = ConnectionState.Disconnected,
                     authenticationState = AuthenticationState.Unknown,
                     relayTargetId = target.id,
                     relayTargetLabel = target.displayLabel,
-                    connectionError = "The relay or host is unreachable. Check that the host is online, then retry.",
+                    connectionError = relayConnectionErrorMessage(error),
                 )
             } finally {
                 try {
@@ -723,7 +732,6 @@ class HermesConnectionViewModel(
     }
 
     private fun refreshRelaySessions(target: RelayPairedTarget): Job {
-        if (liveControllers.isNotEmpty()) return viewModelScope.launch { }
         val expectedGeneration = generation
         val factory = relaySessionFactory ?: return viewModelScope.launch { }
         return viewModelScope.launch {
@@ -732,7 +740,7 @@ class HermesConnectionViewModel(
             val borrowed = liveControllers.values.firstOrNull()?.session
             try {
                 if (generation != expectedGeneration || activeRelayTarget?.id != target.id) return@launch
-                session = borrowed ?: factory(target, mutableSnapshots.value.selectedProfile)
+                session = borrowed ?: factory(target, mutableSnapshots.value.selectedProfile, null)
                 val result = session.relayRequest(
                     "relay.sessions.list",
                     buildJsonObject {
@@ -3065,7 +3073,7 @@ class HermesConnectionViewModel(
         val expectedGeneration = generation
         if (activeRelayTarget?.id != target.id) throw CancellationException("Relay target changed")
         val borrowed = liveControllers.values.firstOrNull()?.session
-        val session = borrowed ?: relaySessionFactory?.invoke(target, profile)
+        val session = borrowed ?: relaySessionFactory?.invoke(target, profile, null)
             ?: throw HermesConnectionException("Mercury Relay chat is unavailable")
         try {
             currentCoroutineContext().ensureActive()
@@ -4660,26 +4668,10 @@ class HermesConnectionViewModel(
             )
             return existing
         }
+        // Relay: every session owns its own lease channel on the host, so other
+        // open sessions on this phone are never closed or blocked by this one.
         val relayTarget = activeRelayTarget
             ?.takeIf { activeOrigin == origin && generation == originGeneration }
-        if (relayTarget != null) {
-            // Pending metadata/attachment staging owns admission just like an active turn.
-            // Only genuinely idle controllers may be replaced by an explicit Send.
-            val others = liveControllers.values.filter { it.durableSessionId != durableSessionId }
-            if (others.any {
-                    val chat = mutableSnapshots.value.chatSessions[it.durableSessionId]
-                    chat?.isSending == true || chat?.connectionPhase == ChatConnectionPhase.Connecting ||
-                        chat?.connectionPhase == ChatConnectionPhase.Submitting
-                }) {
-                throw HermesConnectionException("Another Relay session is active. Wait for it to finish before sending here.")
-            }
-            for (other in others) {
-                other.eventJob?.cancel()
-                sessionControllerRegistry.replaceControllerForRecovery(other.durableSessionId, other.session)
-                removeActiveRuntime(other.runtimeSessionId)
-                closeChatSessionNonCancellably(other.session)
-            }
-        }
         val connector = chatConnector
         if (relayTarget == null && connector == null) {
             throw HermesConnectionException("Live chat is unavailable")
@@ -4691,6 +4683,7 @@ class HermesConnectionViewModel(
             relaySessionFactory?.invoke(
                 relayTarget,
                 localDraftSession(durableSessionId)?.profile ?: mutableSnapshots.value.selectedProfile,
+                RelayAdmissionEnvelope.channelForSession(durableSessionId.value),
             ) ?: throw HermesConnectionException("Mercury Relay chat is unavailable")
         } else {
             connector!!.connect(origin, accessToken)
@@ -5208,8 +5201,11 @@ class HermesConnectionViewModel(
                 }
                 if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
                 candidate = if (relayTarget != null) {
-                    relaySessionFactory?.invoke(relayTarget, mutableSnapshots.value.selectedProfile)
-                        ?: throw HermesConnectionException("Mercury Relay chat is unavailable")
+                    relaySessionFactory?.invoke(
+                        relayTarget,
+                        mutableSnapshots.value.selectedProfile,
+                        RelayAdmissionEnvelope.channelForSession(durableSessionId.value),
+                    ) ?: throw HermesConnectionException("Mercury Relay chat is unavailable")
                 } else {
                     connector!!.connect(origin, token)
                 }
@@ -6672,15 +6668,16 @@ class HermesConnectionViewModel(
             val relayScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val relaySocketFactory = TlsRelayBinarySocketFactory()
             val relayNetwork = com.unsupportedpastels.hermesandroid.relay.RelayNetworkAvailability(context)
+            val relayTargetStore = com.unsupportedpastels.hermesandroid.relay.EncryptedRelayTargetStore(context)
             val leaseCheckpoints = mutableMapOf<List<String>, RelayLeaseCheckpoint>()
             // Shared monotonic IDs fence late inner-controller RPC replies across
             // attachments; a random process prefix also fences Android relaunch.
             val relayRequestIds = java.util.concurrent.atomic.AtomicLong(java.security.SecureRandom().nextLong().ushr(12))
-            val relaySessionFactory: suspend (RelayPairedTarget, String) -> HermesChatSession = { target, profile ->
+            val relaySessionFactory: suspend (RelayPairedTarget, String, String?) -> HermesChatSession = { target, profile, channel ->
                 val checkpoint = synchronized(leaseCheckpoints) {
-                    val key = listOf(target.relayOrigin, target.id, target.deviceId, target.fingerprint, profile)
+                    val key = listOf(target.relayOrigin, target.id, target.deviceId, target.fingerprint, profile, channel.orEmpty())
                     leaseCheckpoints.getOrPut(key) {
-                        if (leaseCheckpoints.size >= 16) leaseCheckpoints.remove(leaseCheckpoints.keys.first())
+                        if (leaseCheckpoints.size >= 64) leaseCheckpoints.remove(leaseCheckpoints.keys.first())
                         RelayLeaseCheckpoint()
                     }
                 }
@@ -6690,10 +6687,16 @@ class HermesConnectionViewModel(
                     socketFactory = relaySocketFactory,
                     resumeCursor = checkpoint.cursor,
                     recoveryVersion = 1,
+                    leaseChannel = channel,
                 )
                 val socket = RelayLeaseRecoverySocket(RelayHermesChatSocket(connected), profile, checkpoint)
                 try {
                     kotlinx.coroutines.withTimeout(15_000L) { socket.initialize() }
+                    // The host renews the router token on every attach; keep the
+                    // pairing current so it never ages out and needs a re-pair.
+                    socket.snapshot?.routingToken?.takeIf { it != target.relayRoutingToken }?.let { renewed ->
+                        relayScope.launch { runCatching { relayTargetStore.updateRoutingToken(target.id, renewed) } }
+                    }
                     HermesChatConnection(socket, HERMES_CHAT_MAX_FRAME_BYTES, relayScope, relayRequestIds)
                 } catch (error: Throwable) {
                     withContext(NonCancellable) { socket.close() }
@@ -6815,4 +6818,18 @@ private fun JsonObject.transcriptToolText(): String? {
         .joinToString(" · ")
         .takeIf(String::isNotEmpty)
         ?.take(HERMES_CHAT_MAX_MESSAGE_TEXT_CHARS)
+}
+
+/** User-facing relay failure text, distinct per cause (iOS ConnectionController parity). */
+internal fun relayConnectionErrorMessage(error: Throwable): String {
+    val failure = generateSequence(error) { it.cause }.filterIsInstance<RelayConnectionException>().firstOrNull()?.failure
+    return when (failure) {
+        RelayConnectionFailure.RoutingRejected ->
+            "The relay refused this phone's pairing token. Remove this relay and pair again from your host's Mercury Relay page."
+        RelayConnectionFailure.NoHost ->
+            "Your Hermes host isn't connected to the relay. Start Hermes on the host, then retry."
+        RelayConnectionFailure.NotAuthorized ->
+            "The host hasn't approved this device, or it was revoked. Approve it on the host, then retry."
+        else -> "The relay or host is unreachable. Check that the host is online, then retry."
+    }
 }

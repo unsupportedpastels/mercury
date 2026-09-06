@@ -329,22 +329,31 @@ final class ConnectionController {
             appModel.setSessionsError(nil)
             appModel.setHermesVersion(nil)
             appModel.setPhase(.connected)
-        } catch let error as RelayConnectionError where error == .notAuthorized {
-            guard appModel.relaySelectionGeneration == generation else { return }
-            appModel.setPhase(.failed(
-                "The host hasn't approved this device — or it was revoked. Approve it on the host, then try again."
-            ))
         } catch {
             guard appModel.relaySelectionGeneration == generation else { return }
-            appModel.setPhase(.failed(
-                "The relay or host is unreachable. Check that your Hermes host is online, then retry."
-            ))
+            let message = Self.relayFailureMessage(error)
+            // Cached sessions keep the list on screen; the banner carries the
+            // reason so a stale list is never mistaken for a live one.
+            appModel.setSessionsError(message)
+            appModel.setPhase(.failed(message))
         }
     }
 
-    /// One short-lived relay connection serving one `relay.sessions.list`
-    /// read. Sequential short-lived connections keep the single device-socket
-    /// slot free for an open chat.
+    /// User-facing relay failure text, distinct per cause (Android parity).
+    static func relayFailureMessage(_ error: Error) -> String {
+        switch error as? RelayConnectionError {
+        case .routingRejected:
+            return "The relay refused this phone's pairing token. Remove this relay and pair again from your host's Mercury Relay page."
+        case .noHost:
+            return "Your Hermes host isn't connected to the relay. Start Hermes on the host, then retry."
+        case .notAuthorized:
+            return "The host hasn't approved this device — or it was revoked. Approve it on the host, then try again."
+        default:
+            return "The relay or host is unreachable. Check that your Hermes host is online, then retry."
+        }
+    }
+
+    /// One `relay.sessions.list` read over the pool's default lease channel.
     static func relaySessionsPage(
         target: RelayPairedTarget,
         profile: String,
@@ -356,14 +365,7 @@ final class ConnectionController {
             "relay.sessions.list",
             params: ["profile": profile, "limit": limit, "offset": offset]
         )
-        guard let rawRows = result["sessions"] as? [[String: Any]] else {
-            return SessionPage(rows: [], total: 0, hasMore: false)
-        }
-        let data = try JSONSerialization.data(withJSONObject: rawRows)
-        let rows = (try? JSONDecoder().decode([SessionRow].self, from: data)) ?? []
-        let total = result["total"] as? Int
-        let hasMore = total.map { offset + rows.count < $0 } ?? (rows.count == limit)
-        return SessionPage(rows: rows, total: total, hasMore: hasMore)
+        return try RelaySessionPage.decode(result, offset: offset, limit: limit)
     }
 
     // MARK: - Sessions
@@ -376,10 +378,8 @@ final class ConnectionController {
         guard case .connected = appModel.connectionPhase else { return nil }
 
         if let target = appModel.activeRelayTarget {
-            // The router permits one device socket per installation. An open
-            // chat owns it, so refreshes stand down until the chat closes and
-            // the visible list refreshes again.
-            guard appModel.visibleSessionID == nil else { return nil }
+            // Reads use the default lease channel; open chats own their own
+            // channels, so a visible chat never blocks a list refresh.
             do {
                 return try await Self.relaySessionsPage(
                     target: target,
@@ -389,9 +389,7 @@ final class ConnectionController {
                 )
             } catch {
                 guard appModel.activeRelayTarget?.id == target.id else { return nil }
-                appModel.setSessionsError(
-                    "The relay host could not be reached. It may be offline — pull to retry."
-                )
+                appModel.setSessionsError(Self.relayFailureMessage(error))
                 return nil
             }
         }

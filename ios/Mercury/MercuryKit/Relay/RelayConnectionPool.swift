@@ -1,7 +1,8 @@
 import Foundation
 
-/// A single authenticated admission, borrowed by chat and auxiliary readers.
-/// No metadata view can displace or close a live retained controller.
+/// Authenticated relay admissions, one per lease channel, borrowed by chat and
+/// auxiliary readers. No metadata view can displace or close a live retained
+/// controller, and no chat can displace another chat's channel.
 actor RelayConnectionPool {
     static let shared = RelayConnectionPool(selectionRequired: true)
     private struct Scope: Equatable {
@@ -17,16 +18,30 @@ actor RelayConnectionPool {
                 && lhs.target.relayRoutingToken == rhs.target.relayRoutingToken
         }
     }
+    /// One admitted controller per lease channel. The default channel (nil)
+    /// serves auxiliary readers and metadata; each open chat owns its own
+    /// channel, so several sessions stay open on one phone at once. The host
+    /// keeps one lease per (device, channel); the router multiplexes sockets.
+    private final class Slot {
+        var scope: Scope?
+        var connection: ChatConnection?
+        var checkpoint = RelayRecoveryCheckpoint()
+        var taskOwner = RelayTaskOwner()
+        var opening: Task<ChatConnection, Error>?
+        var generation = UUID()
+    }
     private var selectedScope: Scope?
     private var selectionRequired: Bool
     private var selecting = false
-    private var scope: Scope?
-    private var connection: ChatConnection?
-    private var checkpoint = RelayRecoveryCheckpoint()
-    private var taskOwner = RelayTaskOwner()
-    private var opening: Task<ChatConnection, Error>?
-    private var generation = UUID()
+    private var slots: [String: Slot] = [:]
+    private var selectionGeneration = UUID()
     private let socketFactory: any RelayBinarySocketFactorying
+    /// Receives a router token the host renewed inside the attach preamble.
+    private var routingTokenSink: (@Sendable (RelayPairedTarget, String) async -> Void)?
+
+    func setRoutingTokenSink(_ sink: (@Sendable (RelayPairedTarget, String) async -> Void)?) {
+        routingTokenSink = sink
+    }
 
     init(socketFactory: any RelayBinarySocketFactorying = URLSessionRelaySocketFactory(),
          selectionRequired: Bool = false) {
@@ -34,56 +49,69 @@ actor RelayConnectionPool {
         self.socketFactory = socketFactory
     }
 
+    private func slot(for channel: String?) -> Slot {
+        let key = channel ?? ""
+        if let existing = slots[key] { return existing }
+        let created = Slot()
+        slots[key] = created
+        return created
+    }
+
     /// Only explicit app transport/profile selection may replace the admission scope.
+    /// Selection drops every channel's controller.
     func select(target: RelayPairedTarget?, profile: String) async {
         let requested = target.map { Scope(target: $0, profile: profile) }
         selectionRequired = true
-        guard selectedScope != requested || scope != requested else { return }
+        guard selectedScope != requested || slots.values.contains(where: { $0.scope != requested }) else { return }
         selectedScope = requested
-        generation = UUID()
-        let token = generation
+        selectionGeneration = UUID()
+        let token = selectionGeneration
         selecting = true
-        let oldFlight = opening
-        let old = connection
-        opening = nil
-        connection = nil
-        scope = nil
-        checkpoint = RelayRecoveryCheckpoint()
-        taskOwner = RelayTaskOwner()
-        oldFlight?.cancel()
-        if let old { await old.close() }
-        if let oldFlight, let stale = try? await oldFlight.value { await stale.close() }
-        if generation == token { selecting = false }
+        let old = slots
+        slots = [:]
+        for slot in old.values {
+            slot.generation = UUID()
+            slot.opening?.cancel()
+        }
+        for slot in old.values {
+            if let connection = slot.connection { await connection.close() }
+            if let flight = slot.opening, let stale = try? await flight.value { await stale.close() }
+        }
+        if selectionGeneration == token { selecting = false }
     }
 
-    func acquire(target: RelayPairedTarget, profile: String) async throws -> ChatConnection {
+    func acquire(
+        target: RelayPairedTarget, profile: String, channel: String? = nil
+    ) async throws -> ChatConnection {
         let requested = Scope(target: target, profile: profile)
         guard !selecting, !selectionRequired || selectedScope == requested else {
             throw CancellationError()
         }
-        if scope == requested {
-            if let connection, !connection.isClosed { return connection }
-            if let opening {
-                let token = generation
+        let slot = slot(for: channel)
+        if slot.scope == requested {
+            if let connection = slot.connection, !connection.isClosed { return connection }
+            if let opening = slot.opening {
+                let token = slot.generation
                 let candidate = try await opening.value
-                guard generation == token, scope == requested else { throw CancellationError() }
+                guard slot.generation == token, slot.scope == requested else { throw CancellationError() }
                 return candidate
             }
         }
-        let previousOpening = opening
-        let previousConnection = connection
-        if scope != requested {
-            checkpoint = RelayRecoveryCheckpoint()
-            taskOwner = RelayTaskOwner()
+        let previousOpening = slot.opening
+        let previousConnection = slot.connection
+        if slot.scope != requested {
+            slot.checkpoint = RelayRecoveryCheckpoint()
+            slot.taskOwner = RelayTaskOwner()
         }
-        let checkpoint = self.checkpoint
-        let taskOwner = self.taskOwner
+        let checkpoint = slot.checkpoint
+        let taskOwner = slot.taskOwner
         previousOpening?.cancel()
-        generation = UUID()
-        let token = generation
-        scope = requested
-        connection = nil
+        slot.generation = UUID()
+        let token = slot.generation
+        slot.scope = requested
+        slot.connection = nil
         let factory = socketFactory
+        let tokenSink = routingTokenSink
         // Publish the flight BEFORE any await, including cursor acquisition and
         // old-channel draining. Actor reentrancy must not create two candidates.
         let task = Task<ChatConnection, Error> {
@@ -94,7 +122,7 @@ actor RelayConnectionPool {
             let cursor = checkpointOwner.cursor
             let connected = try await RelayConnector.connect(
                 target: target, profile: profile, resumeCursor: cursor, recoveryVersion: 1,
-                socketFactory: factory
+                channel: channel, socketFactory: factory
             )
             let socket = RelayChatSocket(connected: connected, recoveryProfile: profile,
                 checkpoint: checkpoint, checkpointGeneration: checkpointOwner.generation,
@@ -111,6 +139,12 @@ actor RelayConnectionPool {
                     _ = try await group.next()
                 }
                 try Task.checkCancellation()
+                // The host renews the router token on every attach; persist
+                // it so the pairing never ages out and needs a re-pair.
+                if let tokenSink, let renewed = await socket.recoverySnapshot()?.routingToken,
+                   renewed != target.relayRoutingToken {
+                    await tokenSink(target, renewed)
+                }
                 let candidate = try ChatConnection(socket: socket)
                 candidate.startReading()
                 return candidate
@@ -119,18 +153,18 @@ actor RelayConnectionPool {
                 throw error
             }
         }
-        opening = task
+        slot.opening = task
         do {
             let candidate = try await task.value
-            guard generation == token, scope == requested else {
+            guard slot.generation == token, slot.scope == requested else {
                 await candidate.close()
                 throw CancellationError()
             }
-            connection = candidate
-            opening = nil
+            slot.connection = candidate
+            slot.opening = nil
             return candidate
         } catch {
-            if generation == token { opening = nil }
+            if slot.generation == token { slot.opening = nil }
             throw error
         }
     }

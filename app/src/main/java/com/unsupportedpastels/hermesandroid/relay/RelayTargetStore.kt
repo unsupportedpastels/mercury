@@ -33,6 +33,8 @@ interface RelayTargetRepository {
     suspend fun markApproved(id: String, nowEpochSeconds: Long)
     suspend fun touch(id: String, nowEpochSeconds: Long)
     suspend fun updateLabel(id: String, label: String)
+    /** Stores a router token renewed by the host over the authenticated channel. */
+    suspend fun updateRoutingToken(id: String, token: String) {}
     suspend fun remove(id: String)
 }
 
@@ -77,6 +79,10 @@ class EncryptedRelayTargetStore(
             fail(RelayTargetStoreFailure.InvalidLabel)
         }
         mutate(id) { target -> target.copy(label = trimmed) }
+    }
+
+    override suspend fun updateRoutingToken(id: String, token: String) {
+        mutate(id) { target -> target.copy(relayRoutingToken = token) }
     }
 
     override suspend fun remove(id: String) = withContext(ioDispatcher) {

@@ -14,6 +14,7 @@ struct ConnectView: View {
     @State private var validationError: String?
     @State private var showSavedServers = false
     @State private var relay = RelayAppModel()
+    @State private var relayPendingRemoval: RelayPairedTarget?
     @State private var showRelayPairing = false
     /// Error banner text injected when arriving via `.failed(_)` phase.
     private let bannerMessage: String?
@@ -229,8 +230,8 @@ struct ConnectView: View {
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(agent.name).fontWeight(.semibold)
-                                Text(agent.gatewayState ?? agent.status)
+                                Text(agent.displayLabel).fontWeight(.semibold)
+                                Text("\(agent.name) · \(agent.gatewayState ?? agent.status)")
                                     .font(.caption)
                                     .foregroundStyle(Color.secondary)
                             }
@@ -289,36 +290,75 @@ struct ConnectView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Paired hosts").font(.headline)
                 ForEach(relay.targets) { target in
-                    Button {
-                        if target.status == .approved {
-                            Task { await appModel.connectRelay(target) }
-                        } else {
-                            showRelayPairing = true
-                        }
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(target.displayLabel).fontWeight(.semibold)
-                                Text(
-                                    target.status == .approved
-                                        ? "Approved"
-                                        : "Waiting for host approval"
-                                )
-                                .font(.caption)
-                                .foregroundStyle(Color.secondary)
+                    // Two sibling buttons: the row connects, the trash removes.
+                    // A button nested inside the row's label would lose every
+                    // tap to the row.
+                    HStack(spacing: 8) {
+                        Button {
+                            if target.status == .approved {
+                                Task { await appModel.connectRelay(target) }
+                            } else {
+                                showRelayPairing = true
                             }
-                            Spacer()
-                            Image(systemName: "chevron.right")
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(target.displayLabel).fontWeight(.semibold)
+                                    Text(
+                                        target.status == .approved
+                                            ? "Approved"
+                                            : "Waiting for host approval"
+                                    )
+                                    .font(.caption)
+                                    .foregroundStyle(Color.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                            }
+                            .frame(maxWidth: .infinity)
                         }
-                        .frame(maxWidth: .infinity)
+                        .buttonStyle(.bordered)
+
+                        // Visible removal, like Android's RelayConnectPanel trash
+                        // icon. Local removal only: revoking the device record
+                        // stays a host/dashboard management action.
+                        Button(role: .destructive) {
+                            relayPendingRemoval = target
+                        } label: {
+                            Image(systemName: "trash")
+                                .frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(Color.statusAlert)
+                        .accessibilityLabel("Remove relay \(target.displayLabel)")
+                        // Presented from this row's own button so the sheet
+                        // anchors to it; bound to this row's id so no other row
+                        // ever presents for the same state.
+                        .confirmationDialog(
+                            "Remove \(target.displayLabel) from this phone?",
+                            isPresented: Binding(
+                                get: { relayPendingRemoval?.id == target.id },
+                                set: { if !$0, relayPendingRemoval?.id == target.id { relayPendingRemoval = nil } }
+                            ),
+                            titleVisibility: .visible
+                        ) {
+                            Button("Remove pairing", role: .destructive) {
+                                Task {
+                                    if appModel.activeRelayTarget?.id == target.id
+                                        || appModel.selectedRelayTarget?.id == target.id {
+                                        appModel.disconnect()
+                                    }
+                                    await relay.removeTarget(target)
+                                }
+                            }
+                        } message: {
+                            Text("The host still lists this device until you revoke it there. You can pair again with a new QR code.")
+                        }
                     }
-                    .buttonStyle(.bordered)
                     .contextMenu {
                         Button(role: .destructive) {
-                            Task { await relay.removeTarget(target) }
+                            relayPendingRemoval = target
                         } label: {
-                            // Local removal only: revoking the device record
-                            // stays a host/dashboard management action.
                             Label("Remove from this device", systemImage: "trash")
                         }
                     }
@@ -355,7 +395,8 @@ struct ConnectView: View {
         guard canContinue else { return }
         validationError = nil
         guard let canonical = ServerOrigin.normalize(originText, useTls: useTls) else {
-            validationError = "That doesn't look like a server address. Try something like hermes.example.com or 192.168.1.20:8080."
+            validationError = ServerOrigin.validationFailure(originText, useTls: useTls)
+                ?? "That doesn't look like a server address. Try something like hermes.example.com or 192.168.1.20:8080."
             return
         }
         Task { await appModel.probeSelfHosted(origin: canonical) }
@@ -386,4 +427,10 @@ struct ConnectView: View {
     ConnectView()
         .environment(AppModel())
         .preferredColorScheme(.dark)
+}
+
+#Preview("Light") {
+    ConnectView()
+        .environment(AppModel())
+        .preferredColorScheme(.light)
 }

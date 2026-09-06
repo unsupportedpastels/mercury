@@ -7,8 +7,30 @@ import SwiftUI
 /// M3 additions: profile switcher menu, new-session button, swipe/context
 /// row actions (pin / archive / rename / delete), and infinite-scroll
 /// pagination driven by the AppModel's paged-session API.
+/// A chat the home list wants shown. On compact widths it is pushed onto the
+/// home navigation stack; on regular widths (iPad) it becomes the detail
+/// column of the split view (Android list/detail parity with native columns).
+struct HomeChatDestination: Hashable {
+    let sessionID: String
+    let title: String
+    var isNewSession = false
+}
+
 struct SessionListView: View {
     @Environment(AppModel.self) private var appModel: AppModel
+    /// Non-nil when hosted as the sidebar of a split view: chats route here
+    /// instead of pushing onto the sidebar column.
+    private let splitSelection: Binding<HomeChatDestination?>?
+
+    init(splitSelection: Binding<HomeChatDestination?>? = nil) {
+        self.splitSelection = splitSelection
+    }
+
+    private var usesSplit: Bool { splitSelection != nil }
+
+    private func routeToDetail(_ destination: HomeChatDestination) {
+        splitSelection?.wrappedValue = destination
+    }
 
     // Programmatic push of a brand-new chat session ("+" toolbar button).
     @State private var showNewSession = false
@@ -83,6 +105,15 @@ struct SessionListView: View {
         )
     }
 
+    /// Android Home "Running subagents" parity, from what this phone has
+    /// observed in opened sessions (not a host-wide delegation query).
+    private var observedRunningSubagents: [BackgroundTaskRow] {
+        appModel.backgroundTasksBySession.values
+            .flatMap(\.rows)
+            .filter { !$0.terminal }
+            .sorted { $0.observedAtMillis > $1.observedAtMillis }
+    }
+
     private var homeSessions: [SessionRow] {
         HomeInboxPolicy.recentSessionPreview(appModel.sessions)
     }
@@ -99,9 +130,7 @@ struct SessionListView: View {
                                 .foregroundStyle(Color.secondary)
                         } else {
                             ForEach(mergedSearchResults) { result in
-                                NavigationLink {
-                                    ChatView(sessionID: result.sessionID, title: result.title)
-                                } label: {
+                                homeChatLink(HomeChatDestination(sessionID: result.sessionID, title: result.title)) {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(result.title)
                                             .font(.headline)
@@ -124,6 +153,29 @@ struct SessionListView: View {
                         Label(error, systemImage: "exclamationmark.triangle.fill")
                             .font(.footnote)
                             .foregroundStyle(Color.statusAlert)
+                    }
+                }
+
+                if !observedRunningSubagents.isEmpty {
+                    Section {
+                        ForEach(observedRunningSubagents) { row in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(row.goal)
+                                    .font(.subheadline.weight(.semibold))
+                                    .lineLimit(2)
+                                Text(row.action ?? "running")
+                                    .font(.caption)
+                                    .foregroundStyle(Color.secondary)
+                                    .lineLimit(1)
+                            }
+                            .listRowBackground(Color.accentContainer.opacity(0.3))
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel("Running subagent: \(row.goal), \(row.action ?? "running")")
+                        }
+                    } header: {
+                        Text("Running subagents")
+                    } footer: {
+                        Text("Observed from sessions opened on this phone.")
                     }
                 }
 
@@ -168,11 +220,7 @@ struct SessionListView: View {
                             .listRowSeparator(.hidden)
                     }
                     ForEach(homeSessions) { session in
-                        NavigationLink {
-                            ChatView(sessionID: session.id, title: session.title)
-                                .onAppear { projectController.setVisibleSession(session.id) }
-                                .onDisappear { projectController.setVisibleSession(nil) }
-                        } label: {
+                        homeChatLink(HomeChatDestination(sessionID: session.id, title: session.title)) {
                             sessionRow(session)
                         }
                         .buttonStyle(.plain)
@@ -246,7 +294,13 @@ struct SessionListView: View {
             .overlay(alignment: .bottomTrailing) {
                 // Android SessionListScreen floatingActionButton parity: the
                 // amber 48pt rounded-square "New task" FAB, bottom-trailing.
-                NewTaskFloatingButton { showNewSession = true }
+                NewTaskFloatingButton {
+                    if usesSplit {
+                        routeToDetail(HomeChatDestination(sessionID: UUID().uuidString, title: "New chat", isNewSession: true))
+                    } else {
+                        showNewSession = true
+                    }
+                }
             }
             .navigationTitle("Mercury")
             .navigationBarTitleDisplayMode(.inline)
@@ -590,6 +644,26 @@ struct SessionListView: View {
         }
     }
 
+    /// Compact: push the chat onto this stack. Regular (split view): select it
+    /// as the detail column instead.
+    @ViewBuilder
+    private func homeChatLink<Label: View>(
+        _ destination: HomeChatDestination,
+        @ViewBuilder label: () -> Label
+    ) -> some View {
+        if usesSplit {
+            Button { routeToDetail(destination) } label: { label() }
+        } else {
+            NavigationLink {
+                ChatView(sessionID: destination.sessionID, title: destination.title)
+                    .onAppear { projectController.setVisibleSession(destination.sessionID) }
+                    .onDisappear { projectController.setVisibleSession(nil) }
+            } label: {
+                label()
+            }
+        }
+    }
+
     @ViewBuilder
     private func sessionRow(_ session: SessionRow) -> some View {
         let projects = projectController.tree?.projects ?? []
@@ -688,4 +762,10 @@ private struct AllSessionsView: View {
     SessionListView()
         .environment(AppModel())
         .preferredColorScheme(.dark)
+}
+
+#Preview("Light") {
+    SessionListView()
+        .environment(AppModel())
+        .preferredColorScheme(.light)
 }

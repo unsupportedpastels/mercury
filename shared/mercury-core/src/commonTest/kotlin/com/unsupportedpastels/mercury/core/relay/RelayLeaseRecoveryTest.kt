@@ -108,4 +108,19 @@ class RelayLeaseRecoveryTest {
         assertEquals(0L, completed.rows.single().observedAtMillis)
         assertTrue(completed.rows.single().terminal)
     }
+
+    @Test
+    fun attachedPreambleCarriesARenewedRoutingTokenWhenValid() {
+        fun attached(token: String?): RelayLeaseSnapshot {
+            val field = token?.let { ",\"relay_token\":\"$it\"" } ?: ""
+            return RelayLeaseRecoveryEngine("default").initialize(
+                """{"method":"relay.lease.attached","params":{"recovery_version":1,"lease_id":"lease","last_seq":0,"resume_cursor":0,"replay_gap":false$field}}""",
+            )
+        }
+        assertEquals(null, attached(null).routingToken)
+        assertEquals("abc.DEF-123_", attached("abc.DEF-123_").routingToken)
+        assertEquals(null, attached("").routingToken)
+        assertEquals(null, attached("x".repeat(RelayProtocolPolicy.maxRoutingTokenCharacters + 1)).routingToken)
+        assertEquals(null, attached("has space").routingToken)
+    }
 }

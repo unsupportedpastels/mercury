@@ -58,7 +58,7 @@ final class HermesHTTPClient {
         config.httpShouldSetCookies = true
         config.timeoutIntervalForRequest = 20
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        self.session = URLSession(configuration: config)
+        self.session = HermesURLSession.make(config)
         self.ownsSession = true
     }
 

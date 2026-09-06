@@ -1,83 +1,99 @@
 import SwiftUI
+import UIKit
 
-// MARK: - AMOLED-first dark theme
+// MARK: - Mercury design tokens
 //
-// Every color in Mercury is defined here exactly once. No hardcoded hex
-// anywhere else in the app — views reach for these statics (or the system
-// .primary/.secondary text colors) only.
+// Every color in Mercury is defined here exactly once, as a light/dark pair
+// derived from the Android Material 3 scheme in
+// app/src/main/java/.../theme/Theme.kt (the source of truth; see the local
+// design-tokens spec). No hardcoded hex anywhere else in the app — views
+// reach for these roles (or the system .primary/.secondary text colors) only.
+// Dark is AMOLED-first: a pure #000000 canvas with neutral gray tiers.
+
+private extension Color {
+    /// One adaptive role from its light and dark hex values.
+    static func token(light: UInt32, dark: UInt32) -> Color {
+        Color(UIColor { traits in
+            traits.userInterfaceStyle == .dark ? UIColor(hex: dark) : UIColor(hex: light)
+        })
+    }
+}
+
+private extension UIColor {
+    convenience init(hex: UInt32) {
+        self.init(
+            red: CGFloat((hex >> 16) & 0xFF) / 255.0,
+            green: CGFloat((hex >> 8) & 0xFF) / 255.0,
+            blue: CGFloat(hex & 0xFF) / 255.0,
+            alpha: 1
+        )
+    }
+}
 
 extension Color {
-    /// Pure #000000. The app background on AMOLED hardware: true pixels-off black.
-    static let amoledBlack = Color(red: 0, green: 0, blue: 0)
+    // MARK: Canvas and surfaces (Material background / surfaceContainer*)
 
-    /// Raised surface steps above AMOLED black, subtle and monotonic.
-    static let surfaceLow = Color(red: 0x0A / 255.0, green: 0x0A / 255.0, blue: 0x0A / 255.0)   // #0A0A0A
-    static let surfaceMid = Color(red: 0x14 / 255.0, green: 0x14 / 255.0, blue: 0x14 / 255.0)   // #141414
-    static let surfaceHigh = Color(red: 0x1E / 255.0, green: 0x1E / 255.0, blue: 0x1E / 255.0)  // #1E1E1E
+    /// App background: Material `background`. Pure black on AMOLED hardware.
+    static let canvas = Color.token(light: 0xFAFCFB, dark: 0x000000)
+    /// Material `surfaceContainerLowest`.
+    static let surfaceLowest = Color.token(light: 0xFFFFFF, dark: 0x0A0A0A)
+    /// Material `surfaceContainerLow`: the first raised step above the canvas.
+    static let surfaceLow = Color.token(light: 0xF4F7F5, dark: 0x141414)
+    /// Material `surfaceContainer`: cards, the composer, sheets.
+    static let surfaceMid = Color.token(light: 0xECF2EF, dark: 0x1C1C1C)
+    /// Material `surfaceContainerHigh`.
+    static let surfaceHigh = Color.token(light: 0xE6ECE9, dark: 0x232323)
+    /// Material `surfaceContainerHighest`.
+    static let surfaceHighest = Color.token(light: 0xE0E5E2, dark: 0x2B2B2B)
+    /// Material `onSurfaceVariant`: secondary content on surfaces.
+    static let secondaryContent = Color.token(light: 0x3F4947, dark: 0xC5C5C5)
+    /// Material `outline`.
+    static let outline = Color.token(light: 0x6F7977, dark: 0x8A8A8A)
+    /// Material `outlineVariant`: hairlines and borders between surfaces.
+    static let separatorSubtle = Color.token(light: 0xBEC9C6, dark: 0x3A3A3A)
 
-    /// Accent: system indigo keeps the native iOS feel; mint is reserved for
-    /// "connected/healthy" states so the accent never fights status semantics.
-    static let accentPrimary = Color.indigo
-    static let statusHealthy = Color.mint
-    static let statusAlert = Color.red
+    // MARK: Accent (Hermes teal, Material primary)
 
-    // Android composer parity. These are deliberately scoped semantic roles
-    // rather than replacements for Mercury's native iOS accent: the chat bar
-    // should match the authoritative Android client without recoloring the
-    // rest of the app.
-    static let composerPrimary = Color(
-        red: 0x80 / 255.0,
-        green: 0xD5 / 255.0,
-        blue: 0xCF / 255.0
-    ) // Android dark primary #80D5CF
-    static let composerOnPrimary = Color(
-        red: 0x00 / 255.0,
-        green: 0x37 / 255.0,
-        blue: 0x35 / 255.0
-    ) // Android dark onPrimary #003735
-    static let composerSurface = Color(
-        red: 0x1C / 255.0,
-        green: 0x1C / 255.0,
-        blue: 0x1C / 255.0
-    ) // Android dark surfaceContainer #1C1C1C
-    static let composerSecondaryContent = Color(
-        red: 0xC5 / 255.0,
-        green: 0xC5 / 255.0,
-        blue: 0xC5 / 255.0
-    ) // Android dark onSurfaceVariant #C5C5C5
-    static let composerActive = Color(
-        red: 0xF2 / 255.0,
-        green: 0xC6 / 255.0,
-        blue: 0x4D / 255.0
-    ) // Android semantic active #F2C64D
-    static let composerOnActive = Color(
-        red: 0x24 / 255.0,
-        green: 0x1A / 255.0,
-        blue: 0x00 / 255.0
-    ) // Android semantic onActive #241A00
+    static let accentPrimary = Color.token(light: 0x1B6969, dark: 0x9BD0CF)
+    static let onAccentPrimary = Color.token(light: 0xE0FFFE, dark: 0x0C4848)
+    static let accentContainer = Color.token(light: 0xA8EFEE, dark: 0x255A5A)
+    static let onAccentContainer = Color.token(light: 0x005C5C, dark: 0xB7EDEC)
 
-    /// Hairlines/borders between raised surfaces.
-    static let separatorSubtle = Color.primary.opacity(0.12)
+    // MARK: Status (Android semantic roles)
+
+    /// A running turn, the new-session control: Android `active`.
+    static let statusActive = Color.token(light: 0xC68A16, dark: 0xF2C64D)
+    static let onStatusActive = Color.token(light: 0x241A00, dark: 0x241A00)
+    /// Connected/healthy and completed runs share Android `completed`.
+    static let statusHealthy = Color.token(light: 0x2D6A43, dark: 0x8ED6A5)
+    static let onStatusHealthy = Color.token(light: 0xFFFFFF, dark: 0x0C3A1E)
+    /// Material `error`.
+    static let statusAlert = Color.token(light: 0xBA1A1A, dark: 0xFFB4AB)
+    static let onStatusAlert = Color.token(light: 0xFFFFFF, dark: 0x690005)
+    static let alertContainer = Color.token(light: 0xFFDAD6, dark: 0x93000A)
+    static let onAlertContainer = Color.token(light: 0x410002, dark: 0xFFDAD6)
 }
 
 extension ShapeStyle where Self == Color {
-    /// `some ShapeStyle` ergonomics: `.background(.amoledBlack)` etc.
-    static var amoledBlack: Color { .amoledBlack }
+    /// `some ShapeStyle` ergonomics: `.background(.canvas)` etc.
+    static var canvas: Color { .canvas }
+    static var surfaceLowest: Color { .surfaceLowest }
     static var surfaceLow: Color { .surfaceLow }
     static var surfaceMid: Color { .surfaceMid }
     static var surfaceHigh: Color { .surfaceHigh }
+    static var surfaceHighest: Color { .surfaceHighest }
 }
 
 extension View {
-    /// Applies the AMOLED background edge-to-edge beneath safe-area content.
+    /// Applies the canvas background edge-to-edge beneath safe-area content.
     func amoledScreen() -> some View {
-        background(Color.amoledBlack.ignoresSafeArea(edges: .all))
+        background(Color.canvas.ignoresSafeArea(edges: .all))
     }
 }
 
 /// Android-parity new-session floating action button: the 48dp rounded-square
 /// `Surface` from `SessionListScreen`'s `floatingActionButton` slot (amber
-/// `semanticColors.active` #F2C64D, dark `onActive` content, shapes.small),
+/// `semanticColors.active`, dark `onActive` content, shapes.small),
 /// anchored bottom-trailing. The SAME control appears on Home and on the
 /// project sessions screen so session creation looks identical everywhere.
 struct NewTaskFloatingButton: View {
@@ -87,9 +103,9 @@ struct NewTaskFloatingButton: View {
         Button(action: action) {
             Image(systemName: "plus")
                 .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(Color.composerOnActive)
+                .foregroundStyle(Color.onStatusActive)
                 .frame(width: 48, height: 48)
-                .background(Color.composerActive, in: RoundedRectangle(cornerRadius: 8))
+                .background(Color.statusActive, in: RoundedRectangle(cornerRadius: 8))
         }
         .accessibilityLabel("New session")
         .padding(.trailing, 28)

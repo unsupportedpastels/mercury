@@ -171,3 +171,9 @@ struct SignInView: View {
         .environment(AppModel())
         .preferredColorScheme(.dark)
 }
+
+#Preview("Light") {
+    SignInView()
+        .environment(AppModel())
+        .preferredColorScheme(.light)
+}
