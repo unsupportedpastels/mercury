@@ -26,6 +26,8 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
@@ -115,10 +117,14 @@ import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
 import com.unsupportedpastels.hermesandroid.session.SavedSessionFilter
 import com.unsupportedpastels.hermesandroid.session.SessionListFilter
 import com.unsupportedpastels.hermesandroid.theme.LocalHermesSemanticColors
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 private const val HOME_RECENT_SESSION_PREVIEW_LIMIT = 10
+
+/** Silent working-presence poll cadence for the Home session list. */
+internal const val WORKING_PRESENCE_POLL_MILLIS = 3_000L
 
 private fun mergeSessionCollections(
     durableSessions: List<SessionSummary>,
@@ -224,6 +230,7 @@ internal fun SessionListScreen(
     showDockOwnedActions: Boolean = true,
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
+    onRefreshWorkingPresence: () -> Unit = {},
     onLoadManagementSettings: (String) -> Unit = {},
     onRefreshDurableSessions: (Boolean) -> Unit = {},
     onConfigureServer: () -> Unit,
@@ -333,6 +340,25 @@ internal fun SessionListScreen(
         .filter { it.access == RuntimeAccess.Controller }
         .mapNotNull { it.durableSessionId }
         .toSet()
+    val activeWorkingSessionIds = snapshot.activeWorkingSessionIds
+    // Silent working-presence poll: authoritative session.active_list state
+    // (joined by durable session_key) every 3s while the Home screen is
+    // visible; the loop stops automatically when the composable leaves.
+    LaunchedEffect(snapshot.connectionState, snapshot.authenticationState) {
+        if (snapshot.connectionState != ConnectionState.Connected ||
+            snapshot.authenticationState !in setOf(
+                AuthenticationState.Authenticated,
+                AuthenticationState.NotRequired,
+            )
+        ) {
+            return@LaunchedEffect
+        }
+        onRefreshWorkingPresence()
+        while (true) {
+            delay(WORKING_PRESENCE_POLL_MILLIS)
+            onRefreshWorkingPresence()
+        }
+    }
     var observedFilterScopeKey by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(serverOrigin, snapshot.authenticationState) {
         if (
@@ -798,6 +824,7 @@ internal fun SessionListScreen(
                                 projectLabel = session.projectId
                                     ?.let { projectId -> projects.firstOrNull { it.id == projectId }?.label },
                                 current = isCurrent,
+                                isWorking = session.id in activeWorkingSessionIds,
                                 onClick = dropUnlessResumed {
                                     onSessionSelected(session.id)
                                 },
@@ -1178,6 +1205,7 @@ private fun RecentSessionHomeRow(
     session: SessionSummary,
     projectLabel: String? = null,
     current: Boolean,
+    isWorking: Boolean = false,
     onClick: () -> Unit,
     onRename: () -> Unit,
     onPin: () -> Unit,
@@ -1214,12 +1242,19 @@ private fun RecentSessionHomeRow(
                     if (current) "Controller active" else null,
                     projectLabel,
                 ).joinToString(" · ")
-                Text(
-                    session.title,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.titleSmall,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        session.title,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (isWorking) {
+                        Spacer(Modifier.width(8.dp))
+                        WorkingIndicator()
+                    }
+                }
                 if (supportingLabel.isNotEmpty()) {
                     Text(
                         supportingLabel,
@@ -1246,6 +1281,7 @@ internal fun RecentSessionsScreen(
     onBack: () -> Unit,
     onLoad: () -> Unit,
     onLoadMore: () -> Unit,
+    onRefreshWorkingPresence: () -> Unit = {},
     onSessionSelected: (DurableSessionId) -> Unit,
 ) {
     val state = snapshot.recentSessions
@@ -1272,6 +1308,24 @@ internal fun RecentSessionsScreen(
         .filter { it.access == RuntimeAccess.Controller }
         .mapNotNull { it.durableSessionId }
         .toSet()
+    val activeWorkingSessionIds = snapshot.activeWorkingSessionIds
+
+    // Same silent presence poll as Home so the full list stays live.
+    LaunchedEffect(snapshot.connectionState, snapshot.authenticationState) {
+        if (snapshot.connectionState != ConnectionState.Connected ||
+            snapshot.authenticationState !in setOf(
+                AuthenticationState.Authenticated,
+                AuthenticationState.NotRequired,
+            )
+        ) {
+            return@LaunchedEffect
+        }
+        onRefreshWorkingPresence()
+        while (true) {
+            delay(WORKING_PRESENCE_POLL_MILLIS)
+            onRefreshWorkingPresence()
+        }
+    }
 
     LaunchedEffect(snapshot.selectedProfile, snapshot.authenticationState) {
         if (snapshot.authenticationState in setOf(
@@ -1364,6 +1418,7 @@ internal fun RecentSessionsScreen(
                         session = session,
                         projectLabel = projectLabel,
                         current = session.id in activeControllerSessionIds,
+                        isWorking = session.id in activeWorkingSessionIds,
                         onClick = dropUnlessResumed { onSessionSelected(session.id) },
                     )
                 }
@@ -1396,6 +1451,7 @@ private fun RecentSessionFullRow(
     session: SessionSummary,
     projectLabel: String,
     current: Boolean,
+    isWorking: Boolean = false,
     onClick: () -> Unit,
 ) {
     Surface(
@@ -1417,12 +1473,19 @@ private fun RecentSessionFullRow(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
-            Text(
-                session.title,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.titleMedium,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    session.title,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (isWorking) {
+                    Spacer(Modifier.width(8.dp))
+                    WorkingIndicator()
+                }
+            }
             Text(
                 projectLabel,
                 maxLines = 1,
@@ -1464,4 +1527,20 @@ private fun connectionContext(
     ConnectionState.Recovering -> "Reconnecting"
     ConnectionState.Disconnected ->
         if (snapshot.relayTargetId == null && serverOrigin == null) "Not configured" else "Offline"
+}
+
+/**
+ * Compact indeterminate "Agent is working" marker for a session row, driven by
+ * the authoritative `session.active_list` working set (observer presence).
+ * Accessibility announces the state explicitly; animation alone is never the
+ * only signal.
+ */
+@Composable
+internal fun WorkingIndicator(modifier: Modifier = Modifier) {
+    CircularProgressIndicator(
+        modifier = modifier
+            .size(14.dp)
+            .semantics { contentDescription = "Agent is working" },
+        strokeWidth = 2.dp,
+    )
 }

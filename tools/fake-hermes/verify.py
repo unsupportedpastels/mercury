@@ -5,7 +5,7 @@ Walks: probe -> password login -> sessions -> transcript -> ws-ticket
        -> WS session.resume -> prompt.submit -> start/delta/delta
        -> session.interrupt -> sentinel message.complete.
 
-Usage: python3 verify.py [PORT]   (default 8787; server must be running)
+Usage: python3 verify.py [PORT] [--video]   (default 8787; server must be running)
 """
 
 import base64
@@ -18,6 +18,7 @@ import sys
 import urllib.request
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8787
+VIDEO_EXPECTED = "--video" in sys.argv[2:]
 BASE = f"http://127.0.0.1:{PORT}"
 SENTINEL = "Operation interrupted: waiting for model response (2s elapsed)."
 
@@ -87,7 +88,19 @@ check("sessions list has e2e-session-1",
 status, _, body = http_json(
     "GET", "/api/sessions/e2e-session-1/messages?limit=100&order=latest&profile=default",
     headers=auth)
-check("transcript empty", status == 200 and body.get("messages") == [], str(body))
+if VIDEO_EXPECTED:
+    messages = body.get("messages", [])
+    check("transcript contains managed video", status == 200 and len(messages) == 1
+          and "MEDIA: /tmp/mercury-test-video.mp4" in messages[0].get("content", ""))
+    request = urllib.request.Request(BASE + "/api/files/download?path=/tmp/mercury-test-video.mp4", headers=auth)
+    with urllib.request.urlopen(request, timeout=5) as response:
+        clip = response.read(1024 * 1024)
+        check("authenticated MP4 fixture download", response.status == 200
+              and response.headers.get("Content-Type") == "video/mp4"
+              and clip[4:8] == b"ftyp"
+              and len(clip) == int(response.headers.get("Content-Length", "0")))
+else:
+    check("transcript empty", status == 200 and body.get("messages") == [], str(body))
 
 status, _, body = http_json("GET", "/api/profiles", headers=auth)
 check("/api/profiles", status == 200 and body.get("profiles"), str(body))

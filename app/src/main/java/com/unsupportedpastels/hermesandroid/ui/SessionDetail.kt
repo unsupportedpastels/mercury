@@ -174,6 +174,7 @@ import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
 import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
 import com.unsupportedpastels.hermesandroid.gateway.SlashCompletionItem
 import com.unsupportedpastels.hermesandroid.gateway.ValidReasoningEfforts
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
 import com.unsupportedpastels.hermesandroid.files.HostFileContent
 import com.unsupportedpastels.hermesandroid.files.HostFileListing
 import com.unsupportedpastels.hermesandroid.theme.LocalHermesSemanticColors
@@ -456,6 +457,8 @@ internal fun SessionDetailScreen(
     showBack: Boolean,
     onBack: () -> Unit,
     onLoadManagedImage: suspend (String) -> Result<ByteArray>,
+    onLoadManagedVideo: (suspend (String) -> Result<ManagedVideoMedia>)? = null,
+    onPeekManagedVideo: (suspend (String) -> ManagedVideoMedia?)? = null,
     onLoadHostFiles: suspend (String?) -> Result<HostFileListing>,
     onLoadManagedFile: suspend (String) -> Result<HostFileContent>,
     onAttachHostReference: (String) -> Unit,
@@ -715,6 +718,8 @@ internal fun SessionDetailScreen(
                                     loadManagedImage = { path ->
                                         onLoadManagedImage(path).getOrThrow()
                                     },
+                                    loadManagedVideo = onLoadManagedVideo,
+                                    peekManagedVideo = onPeekManagedVideo,
                                 )
                                 return@items
                             }
@@ -734,6 +739,8 @@ internal fun SessionDetailScreen(
                                     loadManagedImage = { path ->
                                         onLoadManagedImage(path).getOrThrow()
                                     },
+                                    loadManagedVideo = onLoadManagedVideo,
+                                    peekManagedVideo = onPeekManagedVideo,
                                 )
                                 return@items
                             }
@@ -773,6 +780,8 @@ internal fun SessionDetailScreen(
                                             loadManagedImage = { path ->
                                                 onLoadManagedImage(path).getOrThrow()
                                             },
+                                            loadManagedVideo = onLoadManagedVideo,
+                                            peekManagedVideo = onPeekManagedVideo,
                                         )
                                     }
                                     message.role == ChatMessageRole.User -> {
@@ -802,6 +811,8 @@ internal fun SessionDetailScreen(
                                                     loadManagedImage = { path ->
                                                         onLoadManagedImage(path).getOrThrow()
                                                     },
+                                                    loadManagedVideo = onLoadManagedVideo,
+                                                    peekManagedVideo = onPeekManagedVideo,
                                                 )
                                             }
                                         }
@@ -821,6 +832,8 @@ internal fun SessionDetailScreen(
                                                 loadManagedImage = { path ->
                                                     onLoadManagedImage(path).getOrThrow()
                                                 },
+                                                loadManagedVideo = onLoadManagedVideo,
+                                                peekManagedVideo = onPeekManagedVideo,
                                             )
                                         }
                                         val streamingTail = renderedText.substring(stableLength)
@@ -838,6 +851,8 @@ internal fun SessionDetailScreen(
                                             loadManagedImage = { path ->
                                                 onLoadManagedImage(path).getOrThrow()
                                             },
+                                            loadManagedVideo = onLoadManagedVideo,
+                                            peekManagedVideo = onPeekManagedVideo,
                                         )
                                     }
                                 }
@@ -1435,6 +1450,8 @@ internal fun SessionDetailScreen(
             artifacts = sessionArtifacts,
             onDismiss = { showArtifacts = false },
             onLoadManagedImage = onLoadManagedImage,
+            onLoadManagedVideo = onLoadManagedVideo,
+            onPeekManagedVideo = onPeekManagedVideo,
             onLoadManagedFile = onLoadManagedFile,
         )
     }
@@ -1556,6 +1573,8 @@ private fun ArtifactBrowserSheet(
     artifacts: List<Artifact>,
     onDismiss: () -> Unit,
     onLoadManagedImage: suspend (String) -> Result<ByteArray>,
+    onLoadManagedVideo: (suspend (String) -> Result<ManagedVideoMedia>)? = null,
+    onPeekManagedVideo: (suspend (String) -> ManagedVideoMedia?)? = null,
     onLoadManagedFile: suspend (String) -> Result<HostFileContent>,
 ) {
     val context = LocalContext.current
@@ -1743,6 +1762,16 @@ private fun ArtifactBrowserSheet(
                                 artifact.origin == ArtifactOrigin.ManagedPath
                             ) {
                                 ManagedAudioPlayer(artifact, onLoadManagedFile)
+                            }
+                            if (
+                                artifact.type == ArtifactType.Video &&
+                                artifact.origin == ArtifactOrigin.ManagedPath
+                            ) {
+                                ManagedVideoBlock(
+                                    source = artifact.source,
+                                    onLoadManagedVideo = onLoadManagedVideo,
+                                    onPeekManagedVideo = onPeekManagedVideo,
+                                )
                             }
                             HorizontalDivider()
                         }
@@ -2587,6 +2616,8 @@ private fun ToolMessageBlock(
     expanded: Boolean,
     onToggle: () -> Unit,
     loadManagedImage: (suspend (String) -> ByteArray)? = null,
+    loadManagedVideo: (suspend (String) -> Result<ManagedVideoMedia>)? = null,
+    peekManagedVideo: (suspend (String) -> ManagedVideoMedia?)? = null,
 ) {
     val preview = remember(text) {
         text.replace('\n', ' ').trim().take(80)
@@ -2642,6 +2673,8 @@ private fun ToolMessageBlock(
                 MarkdownMessage(
                     text,
                     loadManagedImage = loadManagedImage,
+                    loadManagedVideo = loadManagedVideo,
+                    peekManagedVideo = peekManagedVideo,
                 )
             }
         }
@@ -2661,6 +2694,8 @@ private fun TranscriptToolRunGroup(
     onToggle: () -> Unit,
     sessionKey: String,
     loadManagedImage: (suspend (String) -> ByteArray)? = null,
+    loadManagedVideo: (suspend (String) -> Result<ManagedVideoMedia>)? = null,
+    peekManagedVideo: (suspend (String) -> ManagedVideoMedia?)? = null,
 ) {
     val semanticColors = LocalHermesSemanticColors.current
     val noun = if (tools.size == 1) "action" else "actions"
@@ -2720,6 +2755,8 @@ private fun TranscriptToolRunGroup(
                             expanded = showToolMessage,
                             onToggle = { showToolMessage = !showToolMessage },
                             loadManagedImage = loadManagedImage,
+                            loadManagedVideo = loadManagedVideo,
+                            peekManagedVideo = peekManagedVideo,
                         )
                     }
                 }
@@ -2741,6 +2778,8 @@ private fun WorkBurstGroup(
     onToggle: () -> Unit,
     sessionKey: String,
     loadManagedImage: (suspend (String) -> ByteArray)? = null,
+    loadManagedVideo: (suspend (String) -> Result<ManagedVideoMedia>)? = null,
+    peekManagedVideo: (suspend (String) -> ManagedVideoMedia?)? = null,
 ) {
     val stepCount = reasoning.size + tools.size
     val noun = if (stepCount == 1) "step" else "steps"
@@ -2809,6 +2848,8 @@ private fun WorkBurstGroup(
                         onToggle = { toolsExpanded = !toolsExpanded },
                         sessionKey = sessionKey,
                         loadManagedImage = loadManagedImage,
+                        loadManagedVideo = loadManagedVideo,
+                        peekManagedVideo = peekManagedVideo,
                     )
                 }
             }

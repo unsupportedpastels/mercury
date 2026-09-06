@@ -84,15 +84,14 @@ final class ProjectMetadataController {
             guard loadGeneration == generation, connection === owned else { return }
             tree = loaded
             isLoading = false
-            if case .relay = source {
-                // Relay metadata borrows the selected controller admission.
-                // Do not infer runtime ownership from process-global presence
-                // polling; child lifecycle uses the scoped recovery reducer.
-                activeListSupported = false
-            } else {
-                let shouldPoll = await refreshActiveSessions(connection: owned, generation: loadGeneration)
-                if shouldPoll { beginActivityPolling(connection: owned, generation: loadGeneration) }
-            }
+            // Working-presence polling is read-only observer state and is safe
+            // on BOTH transports: `session.active_list` enumerates live runtimes
+            // without resuming, activating, or rebinding any transport, and the
+            // tracker only feeds the inbox running/unread indicators. Relay
+            // previously skipped this poll, which left every home-screen row
+            // permanently idle even while a turn ran on the host.
+            let shouldPoll = await refreshActiveSessions(connection: owned, generation: loadGeneration)
+            if shouldPoll { beginActivityPolling(connection: owned, generation: loadGeneration) }
         } catch is ChatMethodNotFoundError {
             guard loadGeneration == generation else { return }
             isUnsupported = true

@@ -36,6 +36,10 @@ import com.unsupportedpastels.hermesandroid.cache.CacheScope
 import com.unsupportedpastels.hermesandroid.cache.CachedSession
 import com.unsupportedpastels.hermesandroid.cache.EncryptedOfflineCacheRepository
 import com.unsupportedpastels.hermesandroid.cache.OfflineCacheRepository
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoCache
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import com.unsupportedpastels.hermesandroid.files.HostFileContent
 import com.unsupportedpastels.hermesandroid.files.HostFileListing
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
@@ -336,7 +340,12 @@ class HermesConnectionViewModel(
     private val notifications: TurnNotificationController = NoOpTurnNotificationController,
     private val sessionFilterRepository: SessionFilterRepository? = null,
     private val speechStreamConnector: SpeechStreamConnector? = null,
+    private val videoCache: ManagedVideoCache? = null,
 ) : ViewModel() {
+    // Serializes downloads targeting the same origin/path cache entry, so two
+    // concurrent players of the same path never race on the shared `.part` file.
+    private val videoDownloadLocks = ConcurrentHashMap<String, Mutex>()
+
     private val mutableSnapshots = MutableStateFlow(HermesGatewaySnapshot())
     val snapshots: StateFlow<HermesGatewaySnapshot> = mutableSnapshots.asStateFlow()
 
@@ -1931,6 +1940,80 @@ class HermesConnectionViewModel(
         return job
     }
 
+    /**
+     * Silent one-shot refresh of working-state presence: reads the read-only
+     * `session.active_list` snapshot and publishes the set of durable session
+     * IDs currently running a turn. The Home screen calls this on a short
+     * timer while visible — never a full-screen reload. Fails closed: an
+     * unsupported or failed RPC leaves the previous value untouched rather
+     * than showing stale spinners, and an empty snapshot clears them.
+     */
+    fun refreshActiveWorkingSessions(): Job {
+        activeRelayTarget?.let { target ->
+            val expectedGeneration = generation
+            return viewModelScope.launch {
+                try {
+                    withRelayReader(target, mutableSnapshots.value.selectedProfile) { session ->
+                        session.loadActiveSessionPresence()
+                    }.let { working ->
+                        if (generation == expectedGeneration && activeRelayTarget?.id == target.id) {
+                            mutableSnapshots.value = mutableSnapshots.value.copy(
+                                activeWorkingSessionIds = working,
+                            )
+                        }
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // Fail closed to an empty working set rather than
+                    // preserving stale spinners.
+                    if (generation == expectedGeneration && activeRelayTarget?.id == target.id) {
+                        mutableSnapshots.value = mutableSnapshots.value.copy(
+                            activeWorkingSessionIds = emptySet(),
+                        )
+                    }
+                }
+            }
+        }
+        val serverOrigin = activeOrigin
+        val originGeneration = generation
+        if (serverOrigin == null || !isCurrentProjectLoad(serverOrigin, originGeneration)) {
+            return viewModelScope.launch { }
+        }
+        return viewModelScope.launch {
+            try {
+                val working = withProjectMetadataSession(
+                    serverOrigin = serverOrigin,
+                    originGeneration = originGeneration,
+                    accessToken = accessTokenForRequest(serverOrigin, originGeneration)
+                        ?: return@launch,
+                ) { session -> session.loadActiveSessionPresence() }
+                if (isCurrentProjectLoad(serverOrigin, originGeneration)) {
+                    mutableSnapshots.value = mutableSnapshots.value.copy(
+                        activeWorkingSessionIds = working,
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: HermesChatMethodNotFoundException) {
+                // Older server without the snapshot: fail closed to empty.
+                if (isCurrentProjectLoad(serverOrigin, originGeneration)) {
+                    mutableSnapshots.value = mutableSnapshots.value.copy(
+                        activeWorkingSessionIds = emptySet(),
+                    )
+                }
+            } catch (_: Exception) {
+                // Fail closed to an empty working set rather than
+                // preserving stale spinners.
+                if (isCurrentProjectLoad(serverOrigin, originGeneration)) {
+                    mutableSnapshots.value = mutableSnapshots.value.copy(
+                        activeWorkingSessionIds = emptySet(),
+                    )
+                }
+            }
+        }
+    }
+
     fun loadManagementSettings(
         profile: String = mutableSnapshots.value.selectedProfile,
         refreshStatus: Boolean = true,
@@ -2821,6 +2904,69 @@ class HermesConnectionViewModel(
             mutableSnapshots.value.selectedProfile != profile
         ) throw CancellationException("Image connection changed")
         bytes
+    }
+
+    /**
+     * Previously downloaded managed video for [path], if present in the
+     * origin-scoped cache. Never touches the network; powers poster previews.
+     */
+    suspend fun peekManagedVideo(path: String): ManagedVideoMedia? {
+        val cache = videoCache ?: return null
+        val scope = operationGuard.currentScope() ?: return null
+        if (scope.relayTargetId != null || !com.unsupportedpastels.mercury.core.artifacts.ManagedVideoPolicy.isManagedVideoPath(path)) return null
+        var acquired: ManagedVideoMedia? = null
+        try {
+            return operationGuard.run(scope) {
+                withContext(Dispatchers.IO) { cache.acquire(scope.origin, path).also { acquired = it } }
+            }
+        } catch (failure: Throwable) {
+            acquired?.close()
+            throw failure
+        }
+    }
+
+    /**
+     * Download the managed video at [path] into the origin-scoped disk cache and
+     * return the local file for playback. Previously completed downloads are
+     * reused without hitting the network, and concurrent callers targeting the
+     * same entry are serialized behind a shared cache check.
+     */
+    suspend fun downloadManagedVideo(path: String): ManagedVideoMedia {
+        if (!com.unsupportedpastels.mercury.core.artifacts.ManagedVideoPolicy.isManagedVideoPath(path)) {
+            throw HermesConnectionException("Host video path is invalid")
+        }
+        val cache = videoCache ?: throw HermesConnectionException("Managed videos are unavailable")
+        var acquired: ManagedVideoMedia? = null
+        try {
+            return withHermesRestOperation { serverOrigin, accessToken ->
+                val lock = videoDownloadLocks.computeIfAbsent(
+                    "${serverOrigin.value}\u0000$path",
+                ) { Mutex() }
+                lock.withLock {
+                    withContext(Dispatchers.IO) {
+                        cache.acquire(serverOrigin, path)?.also { acquired = it } ?: run {
+                            val reservation = cache.reserve(serverOrigin, path)
+                            acquired = reservation
+                            try {
+                                val downloaded = client.streamManagedVideoToFile(
+                                    serverOrigin, accessToken, path, reservation.file,
+                                )
+                                val media = ManagedVideoMedia(downloaded.file, downloaded.mimeType) { reservation.close() }
+                                acquired = media
+                                cache.prune(serverOrigin, keep = media.file)
+                                media
+                            } catch (failure: Throwable) {
+                                reservation.close()
+                                throw failure
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (failure: Throwable) {
+            acquired?.close()
+            throw failure
+        }
     }
 
     suspend fun createProject(
@@ -6755,6 +6901,7 @@ class HermesConnectionViewModel(
                     ticketClient = KtorWsTicketClient(httpClient),
                     socketFactory = KtorSpeechWebSocketFactory(httpClient),
                 ),
+                videoCache = ManagedVideoCache(File(context.cacheDir, "managed-video")),
             ) as T
         }
     }

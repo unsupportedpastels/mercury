@@ -101,6 +101,7 @@ import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
 import com.unsupportedpastels.hermesandroid.relay.RelayUiState
 import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
 import com.unsupportedpastels.mercury.core.relay.RelayTargetStatus
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
 import com.unsupportedpastels.hermesandroid.files.HostFileContent
 import com.unsupportedpastels.hermesandroid.files.HostFileListing
 import com.unsupportedpastels.hermesandroid.navigation.HomeRoute
@@ -218,6 +219,7 @@ fun HermesApp(
     onToggleCronJobRuns: (String) -> Unit = {},
     isHomeRefreshing: Boolean = false,
     onRefreshHome: () -> Unit = {},
+    onRefreshWorkingPresence: () -> Unit = {},
     onLoadRecentSessions: () -> Unit = {},
     onLoadMoreRecentSessions: () -> Unit = {},
     onRenameSession: suspend (DurableSessionId, String) -> Result<Unit> = { _, _ -> Result.success(Unit) },
@@ -261,6 +263,10 @@ fun HermesApp(
     onLoadManagedImage: suspend (String) -> Result<ByteArray> = {
         Result.failure(UnsupportedOperationException("Managed images are unavailable"))
     },
+    onLoadManagedVideo: suspend (String) -> Result<ManagedVideoMedia> = {
+        Result.failure(UnsupportedOperationException("Managed videos are unavailable"))
+    },
+    onPeekManagedVideo: suspend (String) -> ManagedVideoMedia? = { null },
     modelPickerState: ModelPickerState = ModelPickerState.Closed,
     onOpenModelPicker: (DurableSessionId) -> Unit = {},
     onDismissModelPicker: () -> Unit = {},
@@ -721,6 +727,7 @@ fun HermesApp(
                     showDockOwnedActions = !supportsNavigationRail,
                     isRefreshing = isHomeRefreshing,
                     onRefresh = onRefreshHome,
+                    onRefreshWorkingPresence = onRefreshWorkingPresence,
                     onLoadManagementSettings = onLoadManagementSettings,
                     onRefreshDurableSessions = onRefreshDurableSessions,
                     onConfigureServer = openServerSettings,
@@ -755,6 +762,7 @@ fun HermesApp(
                     onBack = navigateBack,
                     onLoad = onLoadRecentSessions,
                     onLoadMore = onLoadMoreRecentSessions,
+                    onRefreshWorkingPresence = onRefreshWorkingPresence,
                     onSessionSelected = navigateToSession,
                 )
             }
@@ -921,6 +929,8 @@ fun HermesApp(
                         showBack = !supportsListDetail,
                         onBack = navigateBack,
                         onLoadManagedImage = onLoadManagedImage,
+                        onLoadManagedVideo = onLoadManagedVideo.takeIf { snapshot.relayTargetId == null },
+                        onPeekManagedVideo = onPeekManagedVideo.takeIf { snapshot.relayTargetId == null },
                         onLoadHostFiles = onLoadHostFiles,
                         onLoadManagedFile = onLoadManagedFile,
                         onAttachHostReference = { reference ->

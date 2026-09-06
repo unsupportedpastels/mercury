@@ -1,4 +1,5 @@
 import Foundation
+import MercuryCore
 
 /// Thrown when a response body exceeds the 64 KiB safety cap.
 struct ResponseTooLargeError: Error {}
@@ -136,6 +137,41 @@ final class HermesHTTPClient {
         request.httpMethod = "DELETE"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         return try await run(request)
+    }
+
+    /// Video uses the same origin-scoped credentials, but a bounded disk stream
+    /// rather than the JSON/Data transport. AVKit receives only the resulting file.
+    func downloadManagedVideo(path: String, profile: String) async throws -> ManagedVideoFile {
+        guard MercuryCore.ManagedVideoPolicy.shared.isManagedVideoPath(path: path),
+              ServerOrigin.normalize(origin) == origin else { throw URLError(.badURL) }
+        var components = try urlComponents(path: "/api/files/download")
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        guard let url = components.url else { throw URLError(.badURL) }
+        let directory = try ManagedVideoCache.directory(origin: origin, profile: profile)
+        func request() -> URLRequest {
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue("video/*", forHTTPHeaderField: "Accept")
+            if let bearerToken, !bearerToken.isEmpty {
+                request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+            }
+            if let cookies = session.configuration.httpCookieStorage?.cookies(for: url), !cookies.isEmpty {
+                request.setValue(HTTPCookie.requestHeaderFields(with: cookies)["Cookie"], forHTTPHeaderField: "Cookie")
+            }
+            return request
+        }
+        try Task.checkCancellation()
+        do {
+            return try await ManagedVideoDownload().download(request: request(), directory: directory,
+                                                             configuration: session.configuration)
+        } catch let failure as ManagedVideoHTTPFailure {
+            guard failure.statusCode == 401, refreshTokenProvider != nil,
+                  await refreshAndApplyToken() else { throw failure }
+            try Task.checkCancellation()
+            // Fresh bounded stream, once only; the rejected attempt cleaned its partial file.
+            return try await ManagedVideoDownload().download(request: request(), directory: directory,
+                                                             configuration: session.configuration)
+        }
     }
 
     // MARK: - Internals

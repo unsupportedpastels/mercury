@@ -2041,10 +2041,25 @@ struct ChatView: View {
     @ViewBuilder
     private func managedImages(in text: String) -> some View {
         let artifacts = MediaDirectiveExtractor.extract(text)
-            .filter { $0.origin == .managedPath && $0.type == .image }
+            .filter { ($0.origin == .managedPath && $0.type == .image) || $0.type == .video }
         ForEach(artifacts, id: \.stableIdentity) { artifact in
-            RemoteManagedImage(path: artifact.source, scope: managedImageScope) { path in
-                try await loadManagedImage(path: path)
+            Group {
+                if artifact.type == .video, artifact.origin == .remoteURL {
+                    if let url = URL(string: artifact.source), url.scheme?.lowercased() == "https" {
+                        Link(destination: url) {
+                            Label("Open video: \(artifact.displayName)", systemImage: "arrow.up.right.video")
+                        }
+                    }
+                } else if artifact.type == .video {
+                    RemoteManagedVideo(path: artifact.source, scope: managedImageScope,
+                                       available: appModel.activeRelayTarget == nil) { path in
+                        try await loadManagedVideo(path: path)
+                    }
+                } else {
+                    RemoteManagedImage(path: artifact.source, scope: managedImageScope) { path in
+                        try await loadManagedImage(path: path)
+                    }
+                }
             }
             .id(managedImageScope + "|" + artifact.source)
         }
@@ -2057,6 +2072,21 @@ struct ChatView: View {
         let transport = appModel.activeRelayTarget.map { "relay:\($0.relayOrigin)|\($0.id)" }
             ?? "direct:\(appModel.serverOrigin ?? "unconfigured")"
         return "\(transport)|\(appModel.activeProfile)|\(connection.map { String(describing: ObjectIdentifier($0)) } ?? "disconnected")"
+    }
+
+    private func loadManagedVideo(path: String) async throws -> ManagedVideoFile {
+        // Relay's image_read base64 contract is not a bounded video file stream.
+        // No relay route is invented or used as a direct-mode dependency.
+        guard appModel.activeRelayTarget == nil else { throw ManagedVideoUnavailable() }
+        guard let origin = appModel.serverOrigin else { throw URLError(.userAuthenticationRequired) }
+        let scope = managedImageScope
+        let profile = appModel.activeProfile
+        try Task.checkCancellation()
+        let file = try await makeHTTPClient(origin: origin).downloadManagedVideo(path: path, profile: profile)
+        try Task.checkCancellation()
+        guard managedImageScope == scope, appModel.activeRelayTarget == nil,
+              appModel.serverOrigin == origin, appModel.activeProfile == profile else { throw CancellationError() }
+        return file
     }
 
     private func loadManagedImage(path: String) async throws -> Data {

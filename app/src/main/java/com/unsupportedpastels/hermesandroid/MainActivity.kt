@@ -535,6 +535,7 @@ internal fun HermesAppHost(
         },
         isHomeRefreshing = homeRefreshing,
         onRefreshHome = { connectionViewModel?.refreshHomeData() },
+        onRefreshWorkingPresence = { connectionViewModel?.refreshActiveWorkingSessions() },
         onLoadRecentSessions = { connectionViewModel?.loadRecentSessions() },
         onLoadMoreRecentSessions = { connectionViewModel?.loadMoreRecentSessions() },
         onRenameSession = { sessionId, title ->
@@ -629,6 +630,16 @@ internal fun HermesAppHost(
             connectionViewModel?.let { viewModel ->
                 resultPreservingCancellation { viewModel.downloadManagedImage(path) }
             } ?: Result.failure(IllegalStateException("Managed images unavailable"))
+        },
+        onLoadManagedVideo = { path ->
+            connectionViewModel?.let { viewModel ->
+                resultPreservingCancellation { viewModel.downloadManagedVideo(path) }
+            } ?: Result.failure(IllegalStateException("Managed videos unavailable"))
+        },
+        onPeekManagedVideo = { path ->
+            connectionViewModel?.let { viewModel ->
+                resultPreservingCancellation { viewModel.peekManagedVideo(path) }.getOrNull()
+            }
         },
         modelPickerState = modelPickerState,
         onOpenModelPicker = { sessionId -> connectionViewModel?.openModelPicker(sessionId) },

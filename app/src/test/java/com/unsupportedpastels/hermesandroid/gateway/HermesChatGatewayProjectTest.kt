@@ -1,5 +1,6 @@
 package com.unsupportedpastels.hermesandroid.gateway
 
+import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.ProjectId
 import com.unsupportedpastels.hermesandroid.app.MAX_PROCESS_ROWS
 import com.unsupportedpastels.hermesandroid.app.RunTodoItem
@@ -174,6 +175,65 @@ class HermesChatGatewayProjectTest {
         assertFalse(result.paused)
         assertEquals(2, result.maxSpawnDepth)
         assertEquals(3, result.maxConcurrentChildren)
+        connection.close()
+    }
+
+    @Test
+    fun activeSessionPresenceJoinsBySessionKeyAndOnlyReportsWorking() = runTest {
+        val socket = MetadataSocket()
+        socket.onSend = { frame ->
+            val request = Json.parseToJsonElement(frame).jsonObject
+            assertEquals("session.active_list", request["method"]!!.jsonPrimitive.content)
+            assertEquals(
+                "",
+                request["params"]!!.jsonObject["current_session_id"]!!.jsonPrimitive.content,
+            )
+            socket.offer(
+                """{"jsonrpc":"2.0","id":${request["id"]!!.jsonPrimitive.content},"result":{"sessions":[{"id":"runtime-1","session_key":"dur-1","title":"Build","status":"working"},{"id":"runtime-2","session_key":"dur-2","status":"idle"},{"id":"runtime-3","session_key":"dur-3","status":"waiting"},{"id":"runtime-4","session_key":"dur-4","status":"starting"},{"id":"missing-key","status":"working"},{"id":"runtime-5","session_key":"dur-5","status":"future"}],"future":true}}""",
+            )
+        }
+        val connection = HermesChatGateway(
+            origin = ServerOrigin.parse("https://hermes.example"),
+            accessToken = "access-token",
+            ticketClient = object : WsTicketClient {
+                override suspend fun mintTicket(origin: ServerOrigin, accessToken: String) =
+                    WsTicket("ticket", 30)
+            },
+            socketFactory = object : ChatWebSocketFactory { override suspend fun connect(url: String) = socket },
+            parentScope = backgroundScope,
+        ).connect()
+
+        val presence = connection.loadActiveSessionPresence()
+
+        // Only `working` rows, joined by the durable session_key — never the
+        // runtime id — and malformed rows are dropped, not fatal.
+        assertEquals(setOf(DurableSessionId("dur-1")), presence)
+        connection.close()
+    }
+
+    @Test
+    fun activeSessionPresenceEmptySnapshotReportsNoWorkingSessions() = runTest {
+        val socket = MetadataSocket()
+        socket.onSend = { frame ->
+            val request = Json.parseToJsonElement(frame).jsonObject
+            assertEquals("session.active_list", request["method"]!!.jsonPrimitive.content)
+            socket.offer(
+                """{"jsonrpc":"2.0","id":${request["id"]!!.jsonPrimitive.content},"result":{"sessions":[]}}""",
+            )
+        }
+        val connection = HermesChatGateway(
+            origin = ServerOrigin.parse("https://hermes.example"),
+            accessToken = "access-token",
+            ticketClient = object : WsTicketClient {
+                override suspend fun mintTicket(origin: ServerOrigin, accessToken: String) =
+                    WsTicket("ticket", 30)
+            },
+            socketFactory = object : ChatWebSocketFactory { override suspend fun connect(url: String) = socket },
+            parentScope = backgroundScope,
+        ).connect()
+
+        val presence = connection.loadActiveSessionPresence()
+        assertEquals(emptySet<DurableSessionId>(), presence)
         connection.close()
     }
 

@@ -7,6 +7,7 @@ import MercuryCore
 enum ArtifactType: Sendable, Equatable {
     case image
     case audio
+    case video
     case file
 }
 
@@ -138,7 +139,8 @@ private extension Artifact {
             stableIdentity: core.stableIdentity,
             type: core.type == MercuryCore.ArtifactType.image
                 ? .image
-                : (core.type == MercuryCore.ArtifactType.audio ? .audio : .file),
+                : (core.type == MercuryCore.ArtifactType.video ? .video
+                    : (core.type == MercuryCore.ArtifactType.audio ? .audio : .file)),
             origin: core.origin == MercuryCore.ArtifactOrigin.managedpath ? .managedPath : .remoteURL,
             source: core.source,
             displayName: core.displayName

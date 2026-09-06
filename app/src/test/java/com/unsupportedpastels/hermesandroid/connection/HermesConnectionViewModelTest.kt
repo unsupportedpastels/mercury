@@ -4,6 +4,8 @@ import com.unsupportedpastels.hermesandroid.cache.CacheScope
 import com.unsupportedpastels.hermesandroid.cache.CachedSession
 import com.unsupportedpastels.hermesandroid.cache.OfflineCacheRepository
 import com.unsupportedpastels.hermesandroid.cache.OfflineCacheSnapshot
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoCache
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
 import com.unsupportedpastels.hermesandroid.gateway.CacheSource
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
@@ -61,9 +63,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.nio.file.Files
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
@@ -126,6 +132,149 @@ class HermesConnectionViewModelTest {
         assertTrue(snapshot.nativeOAuthSupported)
         assertEquals(listOf("nous"), snapshot.authProviders.map { it.name })
         assertEquals(listOf(origin), client.probedOrigins)
+    }
+
+    @Test
+    fun videoDownloadCannotReturnOldOriginMediaAfterSettingsChange() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val other = ServerOrigin.parse("https://other.example")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val cacheRoot = Files.createTempDirectory("video-origin-race").toFile()
+        try {
+            val client = GatedVideoDownloadClient()
+            val cache = ManagedVideoCache(cacheRoot)
+            val viewModel = HermesConnectionViewModel(settings, client, videoCache = cache)
+            client.connection.complete(HermesConnectionInfo(
+                version = "0.20.0", authRequired = false, nativeOAuthSupported = false, providers = emptyList(),
+            ))
+            advanceUntilIdle()
+            assertEquals(AuthenticationState.NotRequired, viewModel.snapshots.value.authenticationState)
+            val pending = async { runCatching { viewModel.downloadManagedVideo("/a/clip.mp4") } }
+            client.firstDownloadStarted.await()
+            settings.value = ServerSettingsState.Ready(other)
+            advanceUntilIdle()
+            client.gate.complete(Unit)
+            val result = pending.await()
+            assertTrue(result.exceptionOrNull() is kotlinx.coroutines.CancellationException)
+            val staleMedia = cache.destinationFor(origin, "/a/clip.mp4")
+            cache.prune(origin, budgetBytes = 0L)
+            assertFalse(staleMedia.exists())
+            assertEquals(null, viewModel.peekManagedVideo("/a/clip.mp4"))
+        } finally {
+            cacheRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun concurrentDownloadsOfTheSamePathSerializeBehindOneCacheEntry() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val cacheRoot = Files.createTempDirectory("video-cache").toFile()
+        val client = GatedVideoDownloadClient()
+        val viewModel = HermesConnectionViewModel(
+            settings,
+            client,
+            videoCache = ManagedVideoCache(cacheRoot),
+        )
+
+        runCurrent()
+        client.connection.complete(
+            HermesConnectionInfo(
+                version = "0.20.0",
+                authRequired = false,
+                nativeOAuthSupported = false,
+                providers = emptyList(),
+            ),
+        )
+        advanceUntilIdle()
+
+        val first = async { viewModel.downloadManagedVideo("/a/clip.mp4") }
+        val second = async { viewModel.downloadManagedVideo("/a/clip.mp4") }
+        client.firstDownloadStarted.await()
+
+        // The second caller must wait behind the first instead of streaming into
+        // the same .part file concurrently.
+        assertEquals(1, client.started)
+        assertEquals(1, client.active)
+        client.gate.complete(Unit)
+        advanceUntilIdle()
+
+        val firstMedia = first.await()
+        val secondMedia = second.await()
+        assertEquals(1, client.started)
+        assertEquals(firstMedia.file.absolutePath, secondMedia.file.absolutePath)
+        assertTrue(secondMedia.file.isFile)
+
+        cacheRoot.deleteRecursively()
+    }
+
+    @Test
+    fun failedVideoDownloadReleasesItsCacheLease() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val cacheRoot = Files.createTempDirectory("video-failed-download").toFile()
+        try {
+            val client = FailedVideoDownloadClient()
+            val cache = ManagedVideoCache(cacheRoot)
+            val viewModel = HermesConnectionViewModel(
+                settings,
+                client,
+                videoCache = cache,
+            )
+            runCurrent()
+            client.connection.complete(
+                HermesConnectionInfo(
+                    version = "0.20.0",
+                    authRequired = false,
+                    nativeOAuthSupported = false,
+                    providers = emptyList(),
+                ),
+            )
+            advanceUntilIdle()
+
+            assertTrue(runCatching { viewModel.downloadManagedVideo("/a/clip.mp4") }.isFailure)
+            val destination = cache.destinationFor(origin, "/a/clip.mp4")
+            cache.prune(origin, budgetBytes = 0L)
+            assertFalse("a failed download must release its lease", destination.exists())
+        } finally {
+            cacheRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun cancelledVideoDownloadReleasesItsCacheLease() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val cacheRoot = Files.createTempDirectory("video-cancelled-download").toFile()
+        try {
+            val client = CancelledVideoDownloadClient()
+            val cache = ManagedVideoCache(cacheRoot)
+            val viewModel = HermesConnectionViewModel(
+                settings,
+                client,
+                videoCache = cache,
+            )
+            runCurrent()
+            client.connection.complete(
+                HermesConnectionInfo(
+                    version = "0.20.0",
+                    authRequired = false,
+                    nativeOAuthSupported = false,
+                    providers = emptyList(),
+                ),
+            )
+            advanceUntilIdle()
+
+            val pending = async { viewModel.downloadManagedVideo("/a/clip.mp4") }
+            client.started.await()
+            pending.cancelAndJoin()
+
+            val destination = cache.destinationFor(origin, "/a/clip.mp4")
+            cache.prune(origin, budgetBytes = 0L)
+            assertFalse("a cancelled download must release its lease", destination.exists())
+        } finally {
+            cacheRoot.deleteRecursively()
+        }
     }
 
     @Test
@@ -299,6 +448,44 @@ class HermesConnectionViewModelTest {
         advanceUntilIdle()
 
         assertEquals(listOf(CacheScope(origin, "default")), cache.clearedTranscriptScopes)
+    }
+
+    @Test
+    fun refreshActiveWorkingSessionsPublishesPresenceAndFailsClosed() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val client = AuthenticatingHermesConnectionClient()
+        val metadata = PresenceAwareMetadataSession(
+            ProjectTreeResult(emptyList()),
+            presence = setOf(DurableSessionId("dur-1")),
+        )
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(ServerSettingsState.Ready(origin)),
+            client = client,
+            tokenStore = FixedTokenStore(),
+            projectConnector = HermesChatConnector { _, _ -> metadata },
+        )
+        runCurrent()
+        client.probeResponse.complete(authRequiredInfo())
+        runCurrent()
+        client.authenticationResponse.complete(AuthenticatedHermesConnection("user", emptyList()))
+        advanceUntilIdle()
+
+        assertEquals(AuthenticationState.Authenticated, viewModel.snapshots.value.authenticationState)
+
+        viewModel.refreshActiveWorkingSessions().join()
+        assertEquals(
+            setOf(DurableSessionId("dur-1")),
+            viewModel.snapshots.value.activeWorkingSessionIds,
+        )
+
+        // Fail closed: a failing read-only poll clears the working set instead
+        // of preserving stale spinners.
+        metadata.failure = RuntimeException("transient")
+        viewModel.refreshActiveWorkingSessions().join()
+        assertEquals(
+            emptySet<DurableSessionId>(),
+            viewModel.snapshots.value.activeWorkingSessionIds,
+        )
     }
 
     @Test
@@ -3385,6 +3572,71 @@ private class FakeHermesConnectionClient : HermesConnectionClient {
     }
 }
 
+private class GatedVideoDownloadClient : HermesConnectionClient {
+    val connection = CompletableDeferred<HermesConnectionInfo>()
+    val gate = CompletableDeferred<Unit>()
+    val firstDownloadStarted = CompletableDeferred<Unit>()
+    var started = 0
+    var active = 0
+
+    override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo = connection.await()
+
+    override suspend fun streamManagedVideoToFile(
+        serverOrigin: ServerOrigin,
+        accessToken: String?,
+        path: String,
+        destination: File,
+    ): ManagedVideoMedia {
+        started += 1
+        active += 1
+        firstDownloadStarted.complete(Unit)
+        try {
+            gate.await()
+            destination.parentFile?.mkdirs()
+            destination.writeBytes(byteArrayOf(1, 2, 3))
+        } finally {
+            active -= 1
+        }
+        return ManagedVideoMedia(destination, "video/mp4")
+    }
+}
+
+private class FailedVideoDownloadClient : HermesConnectionClient {
+    val connection = CompletableDeferred<HermesConnectionInfo>()
+
+    override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo = connection.await()
+
+    override suspend fun streamManagedVideoToFile(
+        serverOrigin: ServerOrigin,
+        accessToken: String?,
+        path: String,
+        destination: File,
+    ): ManagedVideoMedia {
+        destination.parentFile?.mkdirs()
+        destination.writeBytes(byteArrayOf(1, 2, 3))
+        throw HermesConnectionException("download failed")
+    }
+}
+
+private class CancelledVideoDownloadClient : HermesConnectionClient {
+    val connection = CompletableDeferred<HermesConnectionInfo>()
+    val started = CompletableDeferred<Unit>()
+
+    override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo = connection.await()
+
+    override suspend fun streamManagedVideoToFile(
+        serverOrigin: ServerOrigin,
+        accessToken: String?,
+        path: String,
+        destination: File,
+    ): ManagedVideoMedia {
+        destination.parentFile?.mkdirs()
+        destination.writeBytes(byteArrayOf(1, 2, 3))
+        started.complete(Unit)
+        awaitCancellation()
+    }
+}
+
 private class UnauthenticatedRecentSessionsClient : HermesConnectionClient {
     var recentSessionPageCalls = 0
     var sawNullAccessToken = false
@@ -3817,6 +4069,19 @@ private class MetadataOnlyProjectSession private constructor(
 
     override suspend fun close() {
         closed = true
+    }
+}
+
+/** Metadata session that also answers the read-only presence snapshot. */
+private class PresenceAwareMetadataSession(
+    tree: ProjectTreeResult,
+    private val presence: Set<DurableSessionId>,
+) : HermesChatSession by MetadataOnlyProjectSession(tree) {
+    var failure: Throwable? = null
+
+    override suspend fun loadActiveSessionPresence(): Set<DurableSessionId> {
+        failure?.let { throw it }
+        return presence
     }
 }
 
