@@ -44,7 +44,8 @@ class RelayConnectPanelTest {
             }
         }
 
-        compose.onNodeWithText("Scan QR code").performClick()
+        compose.onNodeWithText("Pair with QR code").performClick()
+        compose.onNodeWithText("Paste pairing code instead").performClick()
         compose.onNodeWithContentDescription("Relay pairing code input").performTextInput("secret-qr-payload")
         compose.onNodeWithText("Pair").performClick()
 

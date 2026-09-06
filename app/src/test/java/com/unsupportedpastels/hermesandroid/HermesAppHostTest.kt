@@ -1,7 +1,9 @@
 package com.unsupportedpastels.hermesandroid
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -79,15 +81,19 @@ class HermesAppHostTest {
                 HermesAppHost(
                     viewModel = viewModel,
                     snapshot = HermesGatewaySnapshot(),
+                    relayState = RelayUiState(isLoaded = true),
                 )
             }
         }
 
-        composeRule.onNodeWithText("Configure server").performClick()
-        composeRule.onNodeWithContentDescription("Open Servers settings").performClick()
+        composeRule.onNodeWithText("Connect to Hermes").assertIsDisplayed()
+        composeRule.onNodeWithText("Self-hosted").assertIsDisplayed()
+        composeRule.onNodeWithText("Hermes Cloud").assertIsDisplayed()
+        composeRule.onNodeWithText("Relay").assertIsDisplayed()
+        composeRule.onAllNodesWithContentDescription("Open Servers settings").assertCountEquals(0)
         composeRule.onNodeWithContentDescription("Server origin input")
             .performTextInput("https://hermes.example/")
-        composeRule.onNodeWithText("Save").performScrollTo().performClick()
+        composeRule.onNodeWithText("Continue").performScrollTo().performClick()
         composeRule.waitForIdle()
 
         composeRule.onNodeWithText("Server configured").assertIsDisplayed()

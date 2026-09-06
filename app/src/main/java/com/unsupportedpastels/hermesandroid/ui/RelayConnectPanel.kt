@@ -22,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,42 +52,57 @@ internal fun RelayConnectPanel(
     onRetry: () -> Unit = {},
 ) {
     var pastedCode by rememberSaveable { mutableStateOf("") }
+    var showPasteCode by rememberSaveable { mutableStateOf(false) }
+    val canStartPairing = state.phase is RelayPairingPhase.Idle ||
+        state.phase is RelayPairingPhase.Failed ||
+        state.phase is RelayPairingPhase.Approved
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
         Column(
             modifier = Modifier.widthIn(max = 640.dp).fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-        Text(
-            "Pair end-to-end with the Mercury Relay running beside your Hermes host.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        OutlinedButton(onClick = onScan, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
-            Text("Scan QR code", modifier = Modifier.padding(start = 8.dp))
-        }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedTextField(
-                value = pastedCode,
-                onValueChange = { pastedCode = it.take(1_024) },
-                label = { Text("Paste pairing code") },
-                singleLine = true,
-                modifier = Modifier
-                    .weight(1f)
-                    .semantics { contentDescription = "Relay pairing code input" },
+        if (canStartPairing) {
+            Text(
+                "Pair end-to-end with the Mercury Relay running beside your Hermes host.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Button(
-                enabled = pastedCode.isNotBlank() && state.phase !is RelayPairingPhase.Pairing,
-                modifier = Modifier.heightIn(min = 56.dp),
-                onClick = {
-                    val code = pastedCode
-                    pastedCode = ""
-                    onPair(code)
-                },
-            ) { Text("Pair") }
+            Button(onClick = onScan, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
+                Text("Pair with QR code", modifier = Modifier.padding(start = 8.dp))
+            }
+            if (!showPasteCode) {
+                TextButton(
+                    onClick = { showPasteCode = true },
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                ) {
+                    Text("Paste pairing code instead")
+                }
+            } else {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = pastedCode,
+                        onValueChange = { pastedCode = it.take(1_024) },
+                        label = { Text("Pairing code") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .weight(1f)
+                            .semantics { contentDescription = "Relay pairing code input" },
+                    )
+                    Button(
+                        enabled = pastedCode.isNotBlank(),
+                        modifier = Modifier.heightIn(min = 56.dp),
+                        onClick = {
+                            val code = pastedCode
+                            pastedCode = ""
+                            onPair(code)
+                        },
+                    ) { Text("Pair") }
+                }
+            }
         }
 
         when (val phase = state.phase) {
@@ -109,7 +125,7 @@ internal fun RelayConnectPanel(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedButton(onClick = onCancelPairing) { Text("Cancel") }
+                OutlinedButton(onClick = onCancelPairing) { Text("Cancel pairing") }
             }
             is RelayPairingPhase.Approved -> Text(
                 "Device approved. Select the paired host below.",

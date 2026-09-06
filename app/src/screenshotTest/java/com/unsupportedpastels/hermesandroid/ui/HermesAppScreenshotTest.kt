@@ -565,6 +565,40 @@ fun HermesServerDialogScreenshot() {
     }
 }
 
+@Composable
+private fun OnboardingScreenshotContent() {
+    ScreenshotNavigationHost {
+        HermesAndroidTheme(darkTheme = true) {
+            ServerSettingsScreen(
+                serverOrigin = null,
+                snapshot = HermesGatewaySnapshot(),
+                showBack = false,
+                onBack = {},
+                onSave = { Result.success(Unit) },
+                visibleSections = setOf(SettingsSection.Servers),
+                isInitialOnboarding = true,
+                title = "Connect to Hermes",
+                cloudState = com.unsupportedpastels.hermesandroid.connection.CloudConnectState.SignedOut,
+            )
+        }
+    }
+}
+
+@PreviewTest
+@Preview(name = "Compact onboarding", widthDp = 400, heightDp = 900, showBackground = true)
+@Composable
+fun MercuryOnboardingCompactScreenshot() = OnboardingScreenshotContent()
+
+@PreviewTest
+@Preview(name = "Medium onboarding", widthDp = 610, heightDp = 900, showBackground = true)
+@Composable
+fun MercuryOnboardingMediumScreenshot() = OnboardingScreenshotContent()
+
+@PreviewTest
+@Preview(name = "Expanded onboarding", widthDp = 900, heightDp = 900, showBackground = true)
+@Composable
+fun MercuryOnboardingExpandedScreenshot() = OnboardingScreenshotContent()
+
 private val screenshotRelayState = RelayUiState(
     phase = RelayPairingPhase.AwaitingApproval(
         targetId = "00000000-0000-4000-8000-000000000001",

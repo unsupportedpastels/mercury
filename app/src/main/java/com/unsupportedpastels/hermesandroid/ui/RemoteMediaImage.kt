@@ -60,6 +60,7 @@ import java.util.LinkedHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
 
 private const val MAX_REMOTE_IMAGE_BYTES = 10 * 1024 * 1024
 private const val MAX_REMOTE_IMAGE_SOURCE_DIMENSION = 16_384
@@ -116,7 +117,7 @@ internal fun validateGatewayMediaPath(value: String): Boolean =
         '\u0000' !in value &&
         value.length in 2..4_096 &&
         value.substringAfterLast('.', missingDelimiterValue = "")
-            .lowercase() in setOf("png", "jpg", "jpeg", "webp", "gif")
+            .lowercase() in setOf("png", "jpg", "jpeg", "webp", "gif", "bmp")
 
 internal fun HttpClientConfig<*>.configureRemoteImageHttpClient() {
     followRedirects = false
@@ -207,10 +208,13 @@ private suspend fun io.ktor.client.statement.HttpResponse.readImageBodyBounded(
     }
 }
 
+internal val LocalManagedImageScope = androidx.compose.runtime.staticCompositionLocalOf { "unconfigured" }
+
 private sealed interface RemoteImageUiState {
     data object Loading : RemoteImageUiState
     data class Loaded(val bitmap: ImageBitmap) : RemoteImageUiState
     data object Failed : RemoteImageUiState
+    data object Unsupported : RemoteImageUiState
 }
 
 private object RemoteImageRuntime {
@@ -241,14 +245,17 @@ internal fun RemoteMediaImage(
     loadManagedImage: (suspend (String) -> ByteArray)? = null,
     onImageClick: (() -> Unit)? = null,
 ) {
+    val scope = LocalManagedImageScope.current
+    val cacheKey = if (source.startsWith('/')) "$scope|$source" else source
+    androidx.compose.runtime.key(cacheKey) {
     val state by produceState<RemoteImageUiState>(
-        initialValue = RemoteImageRuntime.cached(source)
+        initialValue = RemoteImageRuntime.cached(cacheKey)
             ?.let(RemoteImageUiState::Loaded)
             ?: RemoteImageUiState.Loading,
-        key1 = source,
+        key1 = cacheKey,
         key2 = loadManagedImage,
     ) {
-        RemoteImageRuntime.cached(source)?.let {
+        RemoteImageRuntime.cached(cacheKey)?.let {
             value = RemoteImageUiState.Loaded(it)
             return@produceState
         }
@@ -259,6 +266,8 @@ internal fun RemoteMediaImage(
                     RemoteImageDownloadResult.Success(loader(source))
                 } catch (cancelled: CancellationException) {
                     throw cancelled
+                } catch (_: com.unsupportedpastels.hermesandroid.relay.RelayImageUnsupportedException) {
+                    return@withContext RemoteImageUiState.Unsupported
                 } catch (_: Exception) {
                     RemoteImageDownloadResult.TransportFailure
                 }
@@ -271,7 +280,8 @@ internal fun RemoteMediaImage(
                     if (bitmap == null) {
                         RemoteImageUiState.Failed
                     } else {
-                        RemoteImageRuntime.cache(source, bitmap)
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        RemoteImageRuntime.cache(cacheKey, bitmap)
                         RemoteImageUiState.Loaded(bitmap)
                     }
                 }
@@ -309,9 +319,9 @@ internal fun RemoteMediaImage(
         is RemoteImageUiState.Loaded -> {
             LoadedRemoteMediaImage(current.bitmap, modifier, onClick = onImageClick)
         }
-        RemoteImageUiState.Failed -> {
+        RemoteImageUiState.Failed, RemoteImageUiState.Unsupported -> {
             Text(
-                text = "Image unavailable",
+                text = if (current == RemoteImageUiState.Unsupported) "This Relay host does not support image reads" else "Image unavailable",
                 modifier = fallbackModifier
                     .fillMaxWidth()
                     .background(
@@ -324,6 +334,8 @@ internal fun RemoteMediaImage(
             )
         }
     }
+}
+
 }
 
 @Composable

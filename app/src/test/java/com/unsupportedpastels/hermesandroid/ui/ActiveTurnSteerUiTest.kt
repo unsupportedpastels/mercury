@@ -40,6 +40,7 @@ class ActiveTurnSteerUiTest {
     fun activeControllerKeepsComposerForTrimmedSteerAndLeavesAttachmentsUnavailable() {
         val sessionId = DurableSessionId("durable-steer")
         var steered: Pair<DurableSessionId, String>? = null
+        val acceptedText = androidx.compose.runtime.mutableStateOf<String?>(null)
         composeRule.setContent {
             HermesAndroidTheme {
                 HermesApp(
@@ -50,6 +51,8 @@ class ActiveTurnSteerUiTest {
                         chatSessions = mapOf(
                             sessionId to ChatSessionSnapshot(
                                 isSending = true,
+                                acceptedSubmissionCount = if (acceptedText.value == null) 0 else 1,
+                                acceptedSubmissionText = acceptedText.value,
                                 notice = "Guidance queued for the active turn",
                                 error = "A later steer was rejected",
                             ),
@@ -65,7 +68,10 @@ class ActiveTurnSteerUiTest {
                     ),
                     initialRoute = SessionDetailRoute(sessionId),
                     serverSettingsState = ServerSettingsState.Ready(null),
-                    onSendMessage = { id, text -> steered = id to text },
+                    onSendMessage = { id, text ->
+                        steered = id to text
+                        acceptedText.value = text
+                    },
                 )
             }
         }

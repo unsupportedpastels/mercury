@@ -1,9 +1,13 @@
 package com.unsupportedpastels.hermesandroid.ui
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.performClick
@@ -26,6 +30,36 @@ import org.robolectric.annotation.Config
 class ServerSettingsCatalogTest {
     @get:Rule
     val composeRule = createComposeRule()
+
+    @Test
+    fun onboardingKeepsQrDiscoverableInEveryModeAndLabelsTypedAddress() {
+        composeRule.setContent {
+            HermesAndroidTheme {
+                ServerSettingsScreen(
+                    serverOrigin = null,
+                    snapshot = HermesGatewaySnapshot(),
+                    showBack = false,
+                    onBack = {},
+                    onSave = { Result.success(Unit) },
+                    cloudState = CloudConnectState.SignedOut,
+                    isInitialOnboarding = true,
+                )
+            }
+        }
+        val helper = "Relay pairs with your Hermes host by scanning a QR code."
+        composeRule.onNodeWithText(helper).assertIsDisplayed()
+        composeRule.onNodeWithText("Continue").assertIsNotEnabled()
+        composeRule.onNodeWithContentDescription("Server origin input").performTextInput("hermes.example.com")
+        composeRule.onNodeWithText("Server address").assertIsDisplayed()
+        composeRule.onNodeWithText("Example: hermes.example.com or host:port").assertIsDisplayed()
+        composeRule.onNodeWithText("Turn off only for a plain HTTP server").assertIsDisplayed()
+        composeRule.onNodeWithText("Continue").assertIsEnabled()
+        composeRule.onNodeWithText("Hermes Cloud").performClick()
+        composeRule.onNodeWithText(helper).assertIsDisplayed()
+        composeRule.onNodeWithText("Relay").performClick()
+        composeRule.onNodeWithText(helper).assertIsDisplayed()
+        composeRule.onNodeWithText("Pair with QR code").assertIsDisplayed()
+    }
 
     @Test
     fun selectionAndInactiveRemovalUseExplicitConfirmation() {
@@ -93,8 +127,10 @@ class ServerSettingsCatalogTest {
             }
         }
 
-        composeRule.onNodeWithText("Mercury Relay").performClick()
-        composeRule.onNodeWithText("Scan QR code").assertIsDisplayed()
+        composeRule.onNodeWithText("Relay").performClick()
+        composeRule.onNodeWithText("Pair with QR code").assertIsDisplayed()
+        composeRule.onAllNodesWithContentDescription("Relay pairing code input").assertCountEquals(0)
+        composeRule.onNodeWithText("Paste pairing code instead").performClick()
         composeRule.onNodeWithContentDescription("Relay pairing code input").assertIsDisplayed()
     }
 }
