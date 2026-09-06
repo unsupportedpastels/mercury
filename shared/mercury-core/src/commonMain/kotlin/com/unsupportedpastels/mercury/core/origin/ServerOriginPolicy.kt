@@ -110,6 +110,14 @@ object ServerOriginPolicy {
         return hostIsLoopbackOrPrivate(host)
     }
 
+    /**
+     * The host to show for an origin or dashboard URL in lists: no scheme, no
+     * port, no path, IPv6 without brackets. Null when the value has no host.
+     * Both apps label server and cloud-agent rows with this so the two lists
+     * read the same; a user-set label always wins over it.
+     */
+    fun displayHost(originOrUrl: String): String? = hostOf(originOrUrl.trim())
+
     /** Cleartext HTTP is acceptable only for loopback, local, or RFC1918 hosts. */
     fun allowsCleartextHttp(origin: String): Boolean =
         origin.startsWith("http://") && isLoopbackOrPrivate(origin)

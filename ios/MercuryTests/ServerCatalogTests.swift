@@ -114,4 +114,17 @@ private struct PersistedServerCatalogFixture: Codable {
 
 private extension Array {
     var onlyElement: Element? { count == 1 ? first : nil }
+
+    /// Server rows show the hostname unless the user set a label (Android parity).
+    func testDisplayLabelIsHostnameUnlessLabelled() throws {
+        let plain = try ServerCatalogEntry(id: UUID(), origin: "https://hermes.example.com:8443")
+        XCTAssertEqual(plain.displayLabel, "hermes.example.com")
+        let labelled = try ServerCatalogEntry(id: UUID(), origin: "https://hermes.example.com", label: "Home box")
+        XCTAssertEqual(labelled.displayLabel, "Home box")
+        let agent = CloudAgent(id: "a", name: "Atlas", status: "active",
+                               dashboardURL: "https://atlas.hermes.cloud/dashboard", gatewayState: nil)
+        XCTAssertEqual(agent.displayLabel, "atlas.hermes.cloud")
+        let provisioning = CloudAgent(id: "b", name: "Beacon", status: "provisioning", dashboardURL: nil, gatewayState: nil)
+        XCTAssertEqual(provisioning.displayLabel, "Beacon")
+    }
 }

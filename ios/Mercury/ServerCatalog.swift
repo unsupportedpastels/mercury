@@ -37,7 +37,10 @@ struct ServerCatalogEntry: Identifiable, Equatable, Sendable {
     var label: String
     var lastUsedEpochSeconds: Int64?
 
-    var displayLabel: String { label.isEmpty ? origin : label }
+    /// A user label wins; otherwise the hostname alone (shared display decision).
+    var displayLabel: String {
+        label.isEmpty ? (ServerOrigin.displayHost(origin) ?? origin) : label
+    }
 
     init(
         id: UUID,

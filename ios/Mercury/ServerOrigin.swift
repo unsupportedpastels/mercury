@@ -29,6 +29,12 @@ enum ServerOrigin {
         MercuryCore.ServerOriginPolicy.shared.webSocketValue(origin: origin)
     }
 
+    /// The host to show for an origin or dashboard URL in lists (shared
+    /// display decision: no scheme, port, or path). Nil when there is no host.
+    static func displayHost(_ originOrURL: String) -> String? {
+        MercuryCore.ServerOriginPolicy.shared.displayHost(originOrUrl: originOrURL)
+    }
+
     /// True when the host of a normalized origin is loopback or RFC1918-private.
     static func isLoopbackOrPrivate(_ origin: String) -> Bool {
         MercuryCore.ServerOriginPolicy.shared.isLoopbackOrPrivate(origin: origin)

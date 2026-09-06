@@ -153,14 +153,14 @@ internal fun HermesCloudConnectPanel(
                         val connectable = agent.isConnectable
                         ListItem(
                             headlineContent = {
-                                Text(agent.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(cloudAgentDisplayLabel(agent), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             },
                             supportingContent = {
                                 Text(
                                     if (connectable) {
-                                        agent.dashboardUrl.orEmpty()
+                                        agent.name
                                     } else {
-                                        "${agent.status.lowercase()} · provisioning…"
+                                        "${agent.name} · ${agent.status.lowercase()} · provisioning…"
                                     },
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
@@ -218,3 +218,12 @@ internal fun rememberConnectMode(initialCloud: Boolean): androidx.compose.runtim
         mutableStateOf(if (initialCloud) ConnectMode.Cloud else ConnectMode.ServerUrl)
     }
 }
+
+/**
+ * Cloud agents are labelled by the hostname of their dashboard, like server
+ * rows, and fall back to the agent name while provisioning (no dashboard yet).
+ */
+internal fun cloudAgentDisplayLabel(agent: CloudAgent): String =
+    agent.dashboardUrl
+        ?.let { com.unsupportedpastels.mercury.core.origin.ServerOriginPolicy.displayHost(it) }
+        ?: agent.name

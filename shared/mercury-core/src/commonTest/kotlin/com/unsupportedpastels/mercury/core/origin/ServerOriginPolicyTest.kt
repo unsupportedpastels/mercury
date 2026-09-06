@@ -140,4 +140,14 @@ class ServerOriginPolicyTest {
         assertFalse(ServerOriginPolicy.allowsCleartextHttp("http://example.com"))
         assertFalse(ServerOriginPolicy.allowsCleartextHttp("https://192.168.1.5"))
     }
+
+    @Test
+    fun displayHostDropsSchemePortAndPath() {
+        assertEquals("hermes.example.com", ServerOriginPolicy.displayHost("https://hermes.example.com"))
+        assertEquals("hermes.example.com", ServerOriginPolicy.displayHost("https://Hermes.Example.com:8443/dashboard/x"))
+        assertEquals("192.168.1.20", ServerOriginPolicy.displayHost("http://192.168.1.20:8080"))
+        assertEquals("::1", ServerOriginPolicy.displayHost("http://[::1]:9119"))
+        assertEquals(null, ServerOriginPolicy.displayHost("hermes.example.com"))
+        assertEquals(null, ServerOriginPolicy.displayHost(""))
+    }
 }

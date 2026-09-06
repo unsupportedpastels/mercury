@@ -257,6 +257,10 @@ struct ChatView: View {
         currentModelSelection?.model.split(separator: "/").last.map(String.init)
     }
 
+    private var contextControlsSupported: Bool {
+        usageSupported || breakdownSupported || compressSupported || undoSupported || branchSupported
+    }
+
     private var composerContextPercent: Double? {
         if let percent = sessionUsage?.contextPercent { return percent }
         if let used = sessionUsage?.contextUsedTokens,
@@ -364,15 +368,24 @@ struct ChatView: View {
                 onOpenModelPicker: modelFeatureSupported ? openModelPicker : nil,
                 onReasoningSelected: applyReasoning,
                 onFastSelected: applyFast,
-                onOpenContext: (usageSupported || breakdownSupported || compressSupported || undoSupported || branchSupported)
-                    ? openContextSheet
-                    : nil
+                onOpenContext: contextControlsSupported ? openContextSheet : nil
             )
         }
         .navigationTitle(titleText.isEmpty ? "Session" : titleText)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.canvas, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
+        .toolbar {
+            if contextControlsSupported {
+                ToolbarItem(placement: .topBarTrailing) {
+                    ContextRingButton(
+                        percent: composerContextPercent,
+                        artifactCount: 0,
+                        action: openContextSheet
+                    )
+                }
+            }
+        }
         .task {
             // Visibility can change while SwiftUI retains this view and restarts
             // its task. Restore it even when the connection is already owned.
@@ -596,6 +609,9 @@ struct ChatView: View {
                         Label(generating, systemImage: "gearshape")
                             .font(.caption)
                             .foregroundStyle(Color.secondary)
+                    }
+                    if turnInFlight, let status = transcript.latestStatusText, !status.isEmpty {
+                        RunStatusPill(text: status)
                     }
                     Color.clear.frame(height: 1).id(lastRowID)
                 }

@@ -229,8 +229,8 @@ struct ConnectView: View {
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(agent.name).fontWeight(.semibold)
-                                Text(agent.gatewayState ?? agent.status)
+                                Text(agent.displayLabel).fontWeight(.semibold)
+                                Text("\(agent.name) · \(agent.gatewayState ?? agent.status)")
                                     .font(.caption)
                                     .foregroundStyle(Color.secondary)
                             }
