@@ -32,6 +32,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      - name: Check vendored relay vectors against the public plugin release
+        run: tools/check-relay-vectors.sh
+
       - name: Verify fake Hermes contract rig
         shell: bash
         run: |
