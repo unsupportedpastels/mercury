@@ -340,24 +340,24 @@ struct ConnectView: View {
                         }
                     }
                 }
-                .confirmationDialog(
-                    "Remove this relay pairing from this phone?",
-                    isPresented: Binding(
-                        get: { relayPendingRemoval != nil },
-                        set: { if !$0 { relayPendingRemoval = nil } }
-                    ),
-                    titleVisibility: .visible,
-                    presenting: relayPendingRemoval
-                ) { target in
-                    Button("Remove \(target.displayLabel)", role: .destructive) {
-                        Task {
-                            if appModel.activeRelayTarget?.id == target.id { appModel.disconnect() }
-                            await relay.removeTarget(target)
-                        }
+            }
+            .confirmationDialog(
+                "Remove this relay pairing from this phone?",
+                isPresented: Binding(
+                    get: { relayPendingRemoval != nil },
+                    set: { if !$0 { relayPendingRemoval = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: relayPendingRemoval
+            ) { target in
+                Button("Remove \(target.displayLabel)", role: .destructive) {
+                    Task {
+                        if appModel.activeRelayTarget?.id == target.id { appModel.disconnect() }
+                        await relay.removeTarget(target)
                     }
-                } message: { _ in
-                    Text("The host still lists this device until you revoke it there. You can pair again with a new QR code.")
                 }
+            } message: { _ in
+                Text("The host still lists this device until you revoke it there. You can pair again with a new QR code.")
             }
         }
 
