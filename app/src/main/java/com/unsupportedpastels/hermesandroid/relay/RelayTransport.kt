@@ -27,7 +27,12 @@ interface RelayBinarySocket {
     suspend fun send(data: ByteArray)
     suspend fun receive(): ByteArray?
     suspend fun close()
+    /** Router/host WebSocket close code seen on this socket, when known. */
+    fun lastCloseCode(): Int? = null
 }
+
+/** Router close code: no Hermes host is attached to this installation. */
+const val RELAY_CLOSE_NO_HOST = 4004
 
 fun interface RelayBinarySocketFactory {
     suspend fun connect(url: String, routingToken: String?): RelayBinarySocket
@@ -35,8 +40,13 @@ fun interface RelayBinarySocketFactory {
 
 enum class RelayConnectionFailure {
     Offline,
+    /** The host closed the channel: this device is pending, denied, or revoked. */
     NotAuthorized,
     ProtocolViolation,
+    /** The router refused the socket: the pairing's routing token is missing, expired, or invalid. */
+    RoutingRejected,
+    /** The router accepted the socket but no Hermes host is attached right now. */
+    NoHost,
 }
 
 class RelayConnectionException(
@@ -100,7 +110,10 @@ object RelayConnector {
             val admitted = withTimeoutOrNull(RELAY_NOISE_NEGOTIATION_TIMEOUT_MILLIS) {
                 socket.send(createdChannel.writeHandshake())
                 val second = socket.receive()
-                    ?: throw RelayConnectionException(RelayConnectionFailure.NotAuthorized)
+                    ?: throw RelayConnectionException(
+                        if (socket.lastCloseCode() == RELAY_CLOSE_NO_HOST) RelayConnectionFailure.NoHost
+                        else RelayConnectionFailure.NotAuthorized,
+                    )
                 createdChannel.readHandshake(second)
                 attempt.recordSuccess(RelayDiagnosticPhase.Handshake)
                 phase = RelayDiagnosticPhase.Admission

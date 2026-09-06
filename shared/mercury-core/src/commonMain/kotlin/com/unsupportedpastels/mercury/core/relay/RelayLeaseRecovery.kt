@@ -12,6 +12,12 @@ data class RelayLeaseSnapshot(
     val bindings: List<RelayLeaseBinding>,
     val tasks: List<String>,
     val truncated: Boolean,
+    /**
+     * A renewed router admission token delivered inside the authenticated
+     * attach preamble. Clients persist it onto the paired target so the
+     * credential never ages out while the device keeps connecting.
+     */
+    val routingToken: String? = null,
 ) {
     /** Recorded bindings are evidence, not permission to take over another runtime. */
     fun hasLiveBinding(durableId: String, profile: String): Boolean =
@@ -76,8 +82,13 @@ class RelayLeaseRecoveryEngine(private val profile: String) {
             .filter { it.profile == profile }.distinctBy { it.runtimeId }
         val tasks = (p["task_snapshot"] as? JsonArray).orEmpty().take(64)
             .mapNotNull { (it as? JsonObject)?.toString() }
+        val routingToken = p.text("relay_token")?.takeIf { token ->
+            token.isNotEmpty() && token.length <= RelayProtocolPolicy.maxRoutingTokenCharacters &&
+                token.all { it.code in 0x21..0x7e }
+        }
         val attached = RelayLeaseSnapshot(id, last, p.flag("replay_gap") ?: fail(),
-            p.flag("recovery_reset") ?: false, bindings, tasks, p.flag("snapshot_truncated") ?: false)
+            p.flag("recovery_reset") ?: false, bindings, tasks, p.flag("snapshot_truncated") ?: false,
+            routingToken)
         snapshot = attached
         received = cursor
         return attached

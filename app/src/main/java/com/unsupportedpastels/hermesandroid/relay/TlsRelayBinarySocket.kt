@@ -128,7 +128,7 @@ class TlsRelayBinarySocketFactory(
     private fun validateHandshake(input: InputStream, key: String) {
         val status = input.readAsciiLine() ?: fail(RelayConnectionFailure.Offline)
         val statusCode = status.split(' ').getOrNull(1)?.toIntOrNull()
-        if (statusCode == 401 || statusCode == 403) fail(RelayConnectionFailure.NotAuthorized)
+        if (statusCode == 401 || statusCode == 403) fail(RelayConnectionFailure.RoutingRejected)
         if (statusCode != 101) fail(RelayConnectionFailure.Offline)
         val headers = LinkedHashMap<String, String>()
         repeat(MAX_RELAY_HANDSHAKE_HEADERS) {
@@ -182,6 +182,9 @@ private class TlsRelayBinarySocket(
     private val sendMutex = Mutex()
     private val receiveMutex = Mutex()
     private val closed = AtomicBoolean(false)
+    @Volatile private var closeCode: Int? = null
+
+    override fun lastCloseCode(): Int? = closeCode
 
     override suspend fun send(data: ByteArray) {
         if (data.size > MAX_RELAY_WEBSOCKET_MESSAGE_BYTES) fail(RelayConnectionFailure.ProtocolViolation)
@@ -206,6 +209,9 @@ private class TlsRelayBinarySocket(
                     fragmented = payload
                 }
                 0x8 -> {
+                    if (payload.size >= 2) {
+                        closeCode = ((payload[0].toInt() and 0xff) shl 8) or (payload[1].toInt() and 0xff)
+                    }
                     closeImmediately()
                     return@withLock null
                 }

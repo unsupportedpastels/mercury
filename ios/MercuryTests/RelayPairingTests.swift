@@ -10,6 +10,8 @@ final class FakeRelaySocket: RelayBinarySocketing, @unchecked Sendable {
     private var inbound: AsyncStream<Data>.AsyncIterator
     private let outbound: AsyncStream<Data>.Continuation
     private(set) var closed = false
+    /// Simulates the router's close code (for example 4004 no-host).
+    var closeCodeOverride: Int?
 
     fileprivate init(
         inbound: AsyncStream<Data>.AsyncIterator,
@@ -32,7 +34,7 @@ final class FakeRelaySocket: RelayBinarySocketing, @unchecked Sendable {
         outbound.finish()
     }
 
-    func lastCloseCode() -> Int? { nil }
+    func lastCloseCode() -> Int? { closeCodeOverride }
     func lastErrorDetail() -> String? { nil }
 }
 

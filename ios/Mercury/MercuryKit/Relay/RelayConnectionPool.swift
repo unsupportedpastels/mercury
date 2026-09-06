@@ -36,6 +36,12 @@ actor RelayConnectionPool {
     private var slots: [String: Slot] = [:]
     private var selectionGeneration = UUID()
     private let socketFactory: any RelayBinarySocketFactorying
+    /// Receives a router token the host renewed inside the attach preamble.
+    private var routingTokenSink: (@Sendable (RelayPairedTarget, String) async -> Void)?
+
+    func setRoutingTokenSink(_ sink: (@Sendable (RelayPairedTarget, String) async -> Void)?) {
+        routingTokenSink = sink
+    }
 
     init(socketFactory: any RelayBinarySocketFactorying = URLSessionRelaySocketFactory(),
          selectionRequired: Bool = false) {
@@ -105,6 +111,7 @@ actor RelayConnectionPool {
         slot.scope = requested
         slot.connection = nil
         let factory = socketFactory
+        let tokenSink = routingTokenSink
         // Publish the flight BEFORE any await, including cursor acquisition and
         // old-channel draining. Actor reentrancy must not create two candidates.
         let task = Task<ChatConnection, Error> {
@@ -132,6 +139,12 @@ actor RelayConnectionPool {
                     _ = try await group.next()
                 }
                 try Task.checkCancellation()
+                // The host renews the router token on every attach; persist
+                // it so the pairing never ages out and needs a re-pair.
+                if let tokenSink, let renewed = await socket.recoverySnapshot()?.routingToken,
+                   renewed != target.relayRoutingToken {
+                    await tokenSink(target, renewed)
+                }
                 let candidate = try ChatConnection(socket: socket)
                 candidate.startReading()
                 return candidate

@@ -68,6 +68,12 @@ private final class URLSessionRelaySocket: RelayBinarySocketing, @unchecked Send
         errorLock.unlock()
     }
 
+    /// The HTTP status the router answered the upgrade with, when it refused.
+    private var refusedUpgradeStatus: Int? {
+        guard let http = task.response as? HTTPURLResponse else { return nil }
+        return http.statusCode == 101 ? nil : http.statusCode
+    }
+
     func send(_ data: Data) async throws {
         do {
             try await task.send(.data(data))
@@ -75,6 +81,9 @@ private final class URLSessionRelaySocket: RelayBinarySocketing, @unchecked Send
             throw error
         } catch {
             record(error)
+            if let status = refusedUpgradeStatus, status == 401 || status == 403 {
+                throw RelayConnectionError.routingRejected
+            }
             // Ciphertext must never appear in errors.
             throw RelayConnectionError.offline
         }
@@ -96,6 +105,9 @@ private final class URLSessionRelaySocket: RelayBinarySocketing, @unchecked Send
             throw error
         } catch {
             record(error)
+            if let status = refusedUpgradeStatus, status == 401 || status == 403 {
+                throw RelayConnectionError.routingRejected
+            }
             // Peer close and receive errors share nil, like ChatSocketing.
             return nil
         }
@@ -133,7 +145,15 @@ enum RelayConnectionError: Error, Equatable {
     /// The pairing offer was rejected (consumed, expired host-side, or
     /// capability mismatch).
     case pairingRejected
+    /// The router refused the socket: the pairing's routing token is
+    /// missing, expired, or invalid. Only re-pairing fixes it.
+    case routingRejected
+    /// The router accepted the socket but no Hermes host is attached.
+    case noHost
 }
+
+/// Router close code: no Hermes host is attached to this installation.
+let relayCloseNoHost = 4004
 
 // MARK: - Established connection
 
@@ -183,7 +203,11 @@ enum RelayConnector {
             )
             try await socket.send(channel.writeHandshake())
             guard let second = try await socket.receive() else {
-                throw RelayConnectionError.notAuthorized
+                // The router closes with 4004 when no host is attached; any
+                // other silent close is the host refusing this device.
+                throw socket.lastCloseCode() == relayCloseNoHost
+                    ? RelayConnectionError.noHost
+                    : RelayConnectionError.notAuthorized
             }
             try Task.checkCancellation()
             _ = try channel.readHandshake(second)

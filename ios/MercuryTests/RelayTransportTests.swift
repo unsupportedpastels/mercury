@@ -497,6 +497,58 @@ final class RelayTransportTests: XCTestCase {
         }
     }
 
+    /// The router's 4004 close means no host is attached, not a refused device.
+    func testRouterNoHostCloseIsDistinctFromHostRefusal() async throws {
+        let (device, host) = InMemoryRelayTransport.pair()
+        device.closeCodeOverride = relayCloseNoHost
+        let factory = FakeRelaySocketFactory(sockets: [device])
+        let hostTask = Task {
+            _ = try? await host.receive()
+            await host.close()
+        }
+        do {
+            _ = try await RelayConnector.connect(
+                target: makeTarget(), profile: "default", socketFactory: factory
+            )
+            XCTFail("expected noHost")
+        } catch {
+            XCTAssertEqual(error as? RelayConnectionError, .noHost)
+        }
+        await hostTask.value
+    }
+
+    /// A router token renewed in the attach preamble reaches the sink once.
+    func testRenewedRoutingTokenFromAttachPreambleReachesTheSink() async throws {
+        let (device, hostSocket) = InMemoryRelayTransport.pair()
+        let pool = RelayConnectionPool(socketFactory: FakeRelaySocketFactory(sockets: [device]))
+        let renewed = RenewedTokens()
+        await pool.setRoutingTokenSink { target, token in await renewed.record(target.id, token) }
+        let target = makeTarget()
+        let host = Task {
+            let admitted = try await admit(socket: hostSocket)
+            try await sendFrame(["jsonrpc": "2.0", "method": "relay.lease.attached", "params": [
+                "recovery_version": 1, "lease_id": "lease", "last_seq": 0, "resume_cursor": 0,
+                "replay_gap": false, "recovery_reset": false, "bindings": [], "task_snapshot": [],
+                "relay_token": "renewed-token-1"
+            ]], socket: hostSocket, channel: admitted.channel)
+            try await sendFrame(["jsonrpc": "2.0", "method": "relay.lease.replay_complete",
+                                 "params": ["lease_id": "lease", "last_seq": 0]],
+                                socket: hostSocket, channel: admitted.channel)
+        }
+        let connection = try await pool.acquire(target: target, profile: "default")
+        try await host.value
+        let seen = await renewed.entries
+        XCTAssertEqual(seen.map(\.0), [target.id])
+        XCTAssertEqual(seen.map(\.1), ["renewed-token-1"])
+        await connection.close()
+        await hostSocket.close()
+    }
+
+    private actor RenewedTokens {
+        var entries: [(UUID, String)] = []
+        func record(_ id: UUID, _ token: String) { entries.append((id, token)) }
+    }
+
     func testUnadmittedDeviceSeesNotAuthorizedOnHostClose() async throws {
         let (device, host) = InMemoryRelayTransport.pair()
         let factory = FakeRelaySocketFactory(sockets: [device])
