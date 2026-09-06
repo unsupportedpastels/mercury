@@ -184,7 +184,7 @@ struct ModelPickerSheet: View {
                 Text(provider.name)
                     .font(.subheadline.weight(.semibold))
             }
-            .foregroundStyle(selected ? Color.amoledBlack : Color.primary)
+            .foregroundStyle(selected ? Color.canvas : Color.primary)
             .padding(.horizontal, 13)
             .frame(minHeight: 36)
             .background(selected ? Color.accentPrimary : Color.surfaceMid, in: Capsule())

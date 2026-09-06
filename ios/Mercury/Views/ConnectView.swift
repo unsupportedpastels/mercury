@@ -388,3 +388,9 @@ struct ConnectView: View {
         .environment(AppModel())
         .preferredColorScheme(.dark)
 }
+
+#Preview("Light") {
+    ConnectView()
+        .environment(AppModel())
+        .preferredColorScheme(.light)
+}

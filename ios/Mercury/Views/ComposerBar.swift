@@ -132,7 +132,7 @@ struct ComposerBar: View {
             }
             .padding(6)
             .background(
-                Color.composerSurface,
+                Color.surfaceMid,
                 in: RoundedRectangle(cornerRadius: 30, style: .continuous)
             )
 
@@ -218,7 +218,7 @@ struct ComposerBar: View {
         } label: {
             Image(systemName: "plus")
                 .font(.title3)
-                .foregroundStyle(Color.composerSecondaryContent)
+                .foregroundStyle(Color.secondaryContent)
                 .frame(width: 44, height: 44)
         }
         .accessibilityLabel("Attach files")
@@ -398,12 +398,12 @@ struct ComposerBar: View {
 
     private var primaryActionBackground: Color {
         guard primaryActionEnabled else { return Color.white.opacity(0.10) }
-        return showStop ? .composerActive : .composerPrimary
+        return showStop ? .statusActive : .accentPrimary
     }
 
     private var primaryActionForeground: Color {
         guard primaryActionEnabled else { return Color.white.opacity(0.38) }
-        return showStop ? .composerOnActive : .composerOnPrimary
+        return showStop ? .onStatusActive : .onAccentPrimary
     }
 
     private var dictationStatePublisher: AnyPublisher<DictationState, Never> {

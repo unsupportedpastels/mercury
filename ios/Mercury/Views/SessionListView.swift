@@ -689,3 +689,9 @@ private struct AllSessionsView: View {
         .environment(AppModel())
         .preferredColorScheme(.dark)
 }
+
+#Preview("Light") {
+    SessionListView()
+        .environment(AppModel())
+        .preferredColorScheme(.light)
+}

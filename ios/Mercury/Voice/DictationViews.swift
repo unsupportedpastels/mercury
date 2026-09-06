@@ -13,14 +13,14 @@ struct DictationButton: View {
                 case .requestingPermission:
                     ProgressView()
                         .controlSize(.small)
-                        .tint(Color.composerPrimary)
+                        .tint(Color.accentPrimary)
                 case .recording:
                     Image(systemName: "stop.fill")
-                        .foregroundStyle(Color.composerPrimary)
+                        .foregroundStyle(Color.accentPrimary)
                 case .idle, .failed:
                     Image(systemName: "mic.fill")
                         .foregroundStyle(
-                            enabled ? Color.composerSecondaryContent : Color.white.opacity(0.38)
+                            enabled ? Color.secondaryContent : Color.white.opacity(0.38)
                         )
                 }
             }

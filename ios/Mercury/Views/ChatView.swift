@@ -371,7 +371,7 @@ struct ChatView: View {
         }
         .navigationTitle(titleText.isEmpty ? "Session" : titleText)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.amoledBlack, for: .navigationBar)
+        .toolbarBackground(.canvas, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .task {
             // Visibility can change while SwiftUI retains this view and restarts
@@ -706,12 +706,11 @@ struct ChatView: View {
             let fetched: [TranscriptMessage]
             var relayPage: RelayTranscriptPage?
             if isRelay {
-                // The router permits one device socket: a standalone read
-                // while any chat connection exists (or is mid-handshake in a
-                // reconnect) would supersede it and force a reconnect loop.
-                // Standalone is safe only for the initial pre-connect load;
-                // later reads must ride an existing connection, and
-                // reconnects refresh from the resume snapshot anyway.
+                // Reads ride the live chat connection when one exists (it
+                // already carries this session's lease). A standalone read
+                // over the pool's default channel serves only the initial
+                // pre-connect load; reconnects refresh from the resume
+                // snapshot anyway.
                 let live = liveConnection ?? connection
                 if live == nil && !allowStandaloneRelayRead { return false }
                 let page = try await relayTranscriptMessages(
@@ -758,9 +757,8 @@ struct ChatView: View {
 
     /// Fetches one transcript page over the relay's in-process read
     /// (`relay.session.transcript`, same shape as the REST endpoint). The
-    /// live chat connection carries the read on its own encrypted channel;
-    /// before one exists, a short-lived relay connection serves it (the
-    /// router permits one device socket, so never both at once).
+    /// live chat connection carries the read on its own lease channel;
+    /// before one exists, the pool's default channel serves it.
     private func relayTranscriptMessages(
         transcriptID: String,
         limit: Int,
@@ -822,8 +820,8 @@ struct ChatView: View {
             let fetchedOlder: [TranscriptMessage]
             var relayPage: RelayTranscriptPage?
             if isRelay {
-                // Backfill only rides the live chat connection; a standalone
-                // socket would supersede it (one device socket per install).
+                // Backfill only rides the live chat connection, which owns
+                // this session's lease and its recovery cursor.
                 guard let live = connection else { return }
                 let page = try await relayTranscriptMessages(
                     transcriptID: transcriptID,
@@ -931,12 +929,13 @@ struct ChatView: View {
             let candidate: ChatConnection
             if let relayTarget = appModel.activeRelayTarget {
                 // Relay mode: same Hermes JSON-RPC contract through the
-                // E2EE channel. The router permits one device socket per
-                // installation, so while this chat is open it owns the app's
-                // only relay connection (list refreshes pause while a chat
-                // is visible).
+                // E2EE channel. Each chat owns its own lease channel on the
+                // host, so several sessions can be open at once and list
+                // refreshes keep using the default channel.
                 candidate = try await RelayConnectionPool.shared.acquire(
-                    target: relayTarget, profile: appModel.activeProfile
+                    target: relayTarget,
+                    profile: appModel.activeProfile,
+                    channel: RelayAdmissionEnvelope.channelForSession(durableID ?? sessionID)
                 )
             } else {
                 guard let origin = appModel.serverOrigin else { return false }

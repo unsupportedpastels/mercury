@@ -92,7 +92,7 @@ struct ActivityStackView: View {
     private func todoRow(_ todo: ActivityTodo) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Text(todoMarker(todo.status))
-                .foregroundStyle(todo.status == .completed ? Color.green : Color.accentColor)
+                .foregroundStyle(todo.status == .completed ? Color.statusHealthy : Color.accentPrimary)
             Text(todo.content).font(.caption).frame(maxWidth: .infinity, alignment: .leading)
             Text(todoLabel(todo.status)).font(.caption2).foregroundStyle(.secondary)
         }

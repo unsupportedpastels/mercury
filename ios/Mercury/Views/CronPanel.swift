@@ -59,7 +59,7 @@ struct CronPanel: View {
                 Spacer()
                 Text(job.displayStatus)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(job.requiresAttention ? Color.red : Color.secondary)
+                    .foregroundStyle(job.requiresAttention ? Color.statusAlert : Color.secondary)
             }
             Text(job.schedule).font(.subheadline.monospaced()).foregroundStyle(.secondary)
             detail("Next run", job.nextRunAt)

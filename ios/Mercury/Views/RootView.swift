@@ -30,3 +30,9 @@ struct RootView: View {
         .environment(AppModel())
         .preferredColorScheme(.dark)
 }
+
+#Preview("Light") {
+    RootView()
+        .environment(AppModel())
+        .preferredColorScheme(.light)
+}
