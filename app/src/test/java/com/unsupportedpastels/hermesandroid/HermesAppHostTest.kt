@@ -1,7 +1,9 @@
 package com.unsupportedpastels.hermesandroid
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -28,6 +30,11 @@ import com.unsupportedpastels.hermesandroid.gateway.HermesGatewaySnapshot
 import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
 import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
 import com.unsupportedpastels.hermesandroid.theme.HermesAndroidTheme
+import com.unsupportedpastels.hermesandroid.relay.RelayUiState
+import com.unsupportedpastels.mercury.core.relay.AndroidRelayCrypto
+import com.unsupportedpastels.mercury.core.relay.RelayBase64
+import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
+import com.unsupportedpastels.mercury.core.relay.RelayTargetStatus
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
@@ -44,6 +51,28 @@ class HermesAppHostTest {
     val composeRule = createComposeRule()
 
     @Test
+    fun savedRelayTargetConnectsFromHomeWithoutOpeningSettings() {
+        val repository = FakeServerSettingsRepository()
+        val viewModel = ServerSettingsViewModel(repository)
+        val target = relayTarget()
+        var connectedTarget: RelayPairedTarget? = null
+        composeRule.setContent {
+            HermesAndroidTheme {
+                HermesAppHost(
+                    viewModel = viewModel,
+                    snapshot = HermesGatewaySnapshot(),
+                    relayState = RelayUiState(targets = listOf(target)),
+                    onRelayConnect = { connectedTarget = it },
+                )
+            }
+        }
+
+        composeRule.waitForIdle()
+
+        composeRule.runOnIdle { assertEquals(target, connectedTarget) }
+    }
+
+    @Test
     fun savedOriginFlowsBackIntoTheApp() {
         val repository = FakeServerSettingsRepository()
         val viewModel = ServerSettingsViewModel(repository)
@@ -52,15 +81,19 @@ class HermesAppHostTest {
                 HermesAppHost(
                     viewModel = viewModel,
                     snapshot = HermesGatewaySnapshot(),
+                    relayState = RelayUiState(isLoaded = true),
                 )
             }
         }
 
-        composeRule.onNodeWithText("Configure server").performClick()
-        composeRule.onNodeWithContentDescription("Open Servers settings").performClick()
+        composeRule.onNodeWithText("Connect to Hermes").assertIsDisplayed()
+        composeRule.onNodeWithText("Self-hosted").assertIsDisplayed()
+        composeRule.onNodeWithText("Hermes Cloud").assertIsDisplayed()
+        composeRule.onNodeWithText("Relay").assertIsDisplayed()
+        composeRule.onAllNodesWithContentDescription("Open Servers settings").assertCountEquals(0)
         composeRule.onNodeWithContentDescription("Server origin input")
             .performTextInput("https://hermes.example/")
-        composeRule.onNodeWithText("Save").performScrollTo().performClick()
+        composeRule.onNodeWithText("Continue").performScrollTo().performClick()
         composeRule.waitForIdle()
 
         composeRule.onNodeWithText("Server configured").assertIsDisplayed()
@@ -224,6 +257,20 @@ class HermesAppHostTest {
         }
     }
 }
+
+private fun relayTarget() = RelayPairedTarget(
+    id = "00000000-0000-4000-8000-000000000001",
+    label = "Saved relay",
+    relayOrigin = "https://relay.example.com",
+    installationId = ByteArray(32) { (it + 0x80).toByte() },
+    hostPublicKey = AndroidRelayCrypto.x25519PublicKey(ByteArray(32) { (it + 0x20).toByte() }),
+    deviceId = RelayBase64.urlSafeEncode(ByteArray(16) { (it + 3).toByte() }),
+    deviceStaticPrivateKey = ByteArray(32) { (it + 0x40).toByte() },
+    fingerprint = "0123456789abcdef",
+    status = RelayTargetStatus.Approved,
+    createdAtEpochSeconds = 1,
+    lastUsedEpochSeconds = 2,
+)
 
 private class FakeServerSettingsRepository : ServerSettingsRepository {
     private val mutableOrigin = MutableStateFlow<ServerOrigin?>(null)

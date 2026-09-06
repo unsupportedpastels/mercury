@@ -1,0 +1,192 @@
+{
+  "generator_version": "2",
+  "protocol": {
+    "cipher": "ChaChaPoly",
+    "dh": "X25519",
+    "hash": "SHA256",
+    "initiator": "mobile",
+    "max_ciphertext_record_bytes": 65535,
+    "max_plaintext_record_bytes": 65519,
+    "noise_revision": 34,
+    "pairing_capability_location": "final_handshake_payload",
+    "prologue_prefix_hex": "6d6572637572792d72656c61792f763100",
+    "responder": "host"
+  },
+  "schema_version": "mercury.noise.corpus.v1",
+  "vectors": [
+    {
+      "channel_binding": "9b112311dd467931d5ade1904bd013edb473921930352f50bfd55d4a632dd3e2",
+      "handshake_hash": "9b112311dd467931d5ade1904bd013edb473921930352f50bfd55d4a632dd3e2",
+      "handshake_messages": [
+        "79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a7048ea999fb97158d9191debb321903e",
+        "675dd574ed7789310b3d2e7681f3790b466c773b1521fecf36577958371ea52fac1241ed64f88c316d477c626119be4f",
+        "da3e5f03959b6df33cd42baa389c8b9c7373e3d6521c4ffbaa0c54aabb5071a3b551e612df9469e0e4c7f1c2e60e79ec7df8cabde9df9270fbea57b0ceb455ab8b07f5e2ef4198261355100d38267df1bf295b1bceade0bc8e4af5582ad561ed"
+      ],
+      "handshake_payloads": [
+        "",
+        "",
+        "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+      ],
+      "id": "pairing-xk-capability",
+      "keys": {
+        "initiator_ephemeral_private": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+        "initiator_static_private": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "initiator_static_public": "8f40c5adb68f25624ae5b214ea767a6ec94d829d3d7b5e1ad1ba6f3e2138285f",
+        "installation_id": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "pairing_capability": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+        "responder_ephemeral_private": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+        "responder_static_private": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+        "responder_static_public": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254"
+      },
+      "negative_cases": [
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "wrong-responder-identity"
+        },
+        {
+          "applicable": true,
+          "expected": "authorization_failed_close_channel",
+          "id": "wrong-pairing-capability"
+        },
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "wrong-prologue"
+        },
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "tampered-handshake"
+        },
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "truncated-handshake"
+        },
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "tampered-ciphertext"
+        },
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "truncated-ciphertext"
+        },
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "wrong-direction"
+        },
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "duplicate-replay"
+        }
+      ],
+      "prologue_hex": "6d6572637572792d72656c61792f763100808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "protocol_name": "Noise_XK_25519_ChaChaPoly_SHA256",
+      "synthetic": true,
+      "transport_messages": [
+        {
+          "ciphertext_hex": "f3c9f250444f2fb3d47e2c3dd1e4b562b18595adedf7c7098ea8f7111a9dfa6bc3f0aa4b450d",
+          "direction": "initiator_to_responder",
+          "plaintext_hex": "66697874757265206d6f62696c6520746f20686f7374"
+        },
+        {
+          "ciphertext_hex": "b52cffb42cb8e8b499831690daba05013885fee220addb48ce4666cd2fe191ca27aca3b386d3",
+          "direction": "responder_to_initiator",
+          "plaintext_hex": "6669787475726520686f737420746f206d6f62696c65"
+        }
+      ]
+    },
+    {
+      "channel_binding": "d49a883d6ca9646202dd7254ba4a6827f6d57dc20c9f8e271fb5d55df3edf6dd",
+      "handshake_hash": "d49a883d6ca9646202dd7254ba4a6827f6d57dc20c9f8e271fb5d55df3edf6dd",
+      "handshake_messages": [
+        "79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a7048ea999fb97158d9191debb321903e",
+        "675dd574ed7789310b3d2e7681f3790b466c773b1521fecf36577958371ea52fac1241ed64f88c316d477c626119be4f",
+        "da3e5f03959b6df33cd42baa389c8b9c7373e3d6521c4ffbaa0c54aabb5071a3b551e612df9469e0e4c7f1c2e60e79ec8ee3d36dae3538be2431e4788ab82c82"
+      ],
+      "handshake_payloads": [
+        "",
+        "",
+        ""
+      ],
+      "id": "reconnect-xk",
+      "keys": {
+        "initiator_ephemeral_private": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+        "initiator_static_private": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "initiator_static_public": "8f40c5adb68f25624ae5b214ea767a6ec94d829d3d7b5e1ad1ba6f3e2138285f",
+        "installation_id": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "pairing_capability": null,
+        "responder_ephemeral_private": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+        "responder_static_private": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+        "responder_static_public": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254"
+      },
+      "negative_cases": [
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "wrong-responder-identity"
+        },
+        {
+          "applicable": false,
+          "expected": "authorization_failed_close_channel",
+          "id": "wrong-pairing-capability"
+        },
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "wrong-prologue"
+        },
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "tampered-handshake"
+        },
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "truncated-handshake"
+        },
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "tampered-ciphertext"
+        },
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "truncated-ciphertext"
+        },
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "wrong-direction"
+        },
+        {
+          "applicable": true,
+          "expected": "authentication_failed_close_channel",
+          "id": "duplicate-replay"
+        }
+      ],
+      "prologue_hex": "6d6572637572792d72656c61792f763100808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "protocol_name": "Noise_XK_25519_ChaChaPoly_SHA256",
+      "synthetic": true,
+      "transport_messages": [
+        {
+          "ciphertext_hex": "f3c9f250444f2fb3d47e2c3dd1e4b562b18595adedf7c7098ea8f7111a9dfa6bc3f0aa4b450d",
+          "direction": "initiator_to_responder",
+          "plaintext_hex": "66697874757265206d6f62696c6520746f20686f7374"
+        },
+        {
+          "ciphertext_hex": "b52cffb42cb8e8b499831690daba05013885fee220addb48ce4666cd2fe191ca27aca3b386d3",
+          "direction": "responder_to_initiator",
+          "plaintext_hex": "6669787475726520686f737420746f206d6f62696c65"
+        }
+      ]
+    }
+  ]
+}

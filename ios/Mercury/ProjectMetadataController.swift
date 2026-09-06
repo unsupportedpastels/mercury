@@ -27,10 +27,21 @@ final class ProjectMetadataController {
     private var profile = "default"
     private var activeListSupported = true
 
+    /// Which transport carries the metadata connection.
+    enum Source {
+        case direct(origin: String, accessToken: String?)
+        case relay(RelayPairedTarget)
+    }
+
     func start(origin: String, accessToken: String?, profile: String) async {
+        await start(source: .direct(origin: origin, accessToken: accessToken), profile: profile)
+    }
+
+    func start(source: Source, profile: String, isRetry: Bool = false) async {
         generation &+= 1
         let loadGeneration = generation
         await closeOwnedConnection()
+        guard loadGeneration == generation, !Task.isCancelled else { return }
 
         self.profile = profile
         tree = nil
@@ -45,18 +56,23 @@ final class ProjectMetadataController {
         isLoading = true
 
         do {
-            let gateway = try ChatGateway(
-                origin: origin,
-                accessToken: accessToken,
-                ticketClient: WsTicketClient(session: .shared),
-                socketFactory: URLSessionChatWebSocketFactory()
-            )
-            let socket = try await gateway.connect()
+            let owned: ChatConnection
+            switch source {
+            case let .direct(origin, accessToken):
+                let gateway = try ChatGateway(
+                    origin: origin,
+                    accessToken: accessToken,
+                    ticketClient: WsTicketClient(session: .shared),
+                    socketFactory: URLSessionChatWebSocketFactory()
+                )
+                owned = try ChatConnection(socket: try await gateway.connect())
+            case let .relay(target):
+                owned = try await RelayConnectionPool.shared.acquire(target: target, profile: profile)
+            }
             guard loadGeneration == generation else {
-                await socket.close()
+                await RelayConnectionPool.release(owned)
                 return
             }
-            let owned = try ChatConnection(socket: socket)
             connection = owned
             let stream = owned.start()
             readTask = Task { [weak owned] in
@@ -68,8 +84,15 @@ final class ProjectMetadataController {
             guard loadGeneration == generation, connection === owned else { return }
             tree = loaded
             isLoading = false
-            let shouldPoll = await refreshActiveSessions(connection: owned, generation: loadGeneration)
-            if shouldPoll { beginActivityPolling(connection: owned, generation: loadGeneration) }
+            if case .relay = source {
+                // Relay metadata borrows the selected controller admission.
+                // Do not infer runtime ownership from process-global presence
+                // polling; child lifecycle uses the scoped recovery reducer.
+                activeListSupported = false
+            } else {
+                let shouldPoll = await refreshActiveSessions(connection: owned, generation: loadGeneration)
+                if shouldPoll { beginActivityPolling(connection: owned, generation: loadGeneration) }
+            }
         } catch is ChatMethodNotFoundError {
             guard loadGeneration == generation else { return }
             isUnsupported = true
@@ -80,6 +103,17 @@ final class ProjectMetadataController {
             return
         } catch {
             guard loadGeneration == generation else { return }
+            if case .relay = source, !isRetry {
+                // Cold-start race: the session list's initial relay read and
+                // this connection supersede each other on the host's
+                // one-live-stream-per-device rule, so whichever loses throws.
+                // One quiet retry after the list read finishes wins; only a
+                // second failure is a real error worth a banner.
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard loadGeneration == generation else { return }
+                await start(source: source, profile: profile, isRetry: true)
+                return
+            }
             isLoading = false
             errorMessage = "Could not load projects from this server."
         }
@@ -254,6 +288,6 @@ final class ProjectMetadataController {
         readTask = nil
         let owned = connection
         connection = nil
-        await owned?.close()
+        if let owned { await RelayConnectionPool.release(owned) }
     }
 }

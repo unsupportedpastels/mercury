@@ -15,12 +15,14 @@ import UIKit
 /// `Artifact` with origin `.managedPath` from `MediaDirectiveExtractor`.
 struct RemoteManagedImage: View {
     let path: String
+    var scope: String = "preview"
     var load: (String) async throws -> Data
 
     private enum LoadState {
         case loading
         case loaded(UIImage)
         case failed
+        case unsupported
     }
 
     @State private var state: LoadState = .loading
@@ -40,9 +42,11 @@ struct RemoteManagedImage: View {
                 loadedImage(image)
             case .failed:
                 failedPlaceholder
+            case .unsupported:
+                Text("This Relay host does not support image reads").font(.footnote).foregroundStyle(.secondary)
             }
         }
-        .task(id: path) {
+        .task(id: scope + "|" + path) {
             await fetch()
         }
     }
@@ -102,7 +106,7 @@ struct RemoteManagedImage: View {
     // MARK: - Loading
 
     private func fetch() async {
-        if let cached = ManagedImageCache.image(for: path) {
+        if let cached = ManagedImageCache.image(for: scope + "|" + path) {
             state = .loaded(cached)
             return
         }
@@ -114,15 +118,22 @@ struct RemoteManagedImage: View {
         }
         do {
             let data = try await load(path)
+            try Task.checkCancellation()
             guard data.count <= Self.maxImageBytes,
                   let decoded = Self.decode(data)
             else {
                 state = .failed
                 return
             }
-            ManagedImageCache.store(decoded, for: path)
+            ManagedImageCache.store(decoded, for: scope + "|" + path)
             state = .loaded(decoded)
+        } catch is CancellationError {
+            return
+        } catch is RelayImageUnsupportedError {
+            guard !Task.isCancelled else { return }
+            state = .unsupported
         } catch {
+            guard !Task.isCancelled else { return }
             state = .failed
         }
     }

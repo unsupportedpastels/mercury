@@ -32,8 +32,23 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      - name: Verify fake Hermes contract rig
+        shell: bash
+        run: |
+          python3 -m unittest discover -s tools/fake-hermes -p 'test_*.py' -v
+          python3 tools/fake-hermes/fake_hermes.py 8787 > "$RUNNER_TEMP/fake-hermes.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for _ in {1..20}; do
+            if python3 -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8787/api/status", timeout=1)' 2>/dev/null; then
+              break
+            fi
+            sleep 0.25
+          done
+          python3 tools/fake-hermes/verify.py 8787
+
       - name: Run verification gates
-        run: ./gradlew testDebugUnitTest lintDebug assembleDebug validateDebugScreenshotTest
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug validateDebugScreenshotTest :shared:mercury-core:check
 
       - name: Upload reports on failure
         if: failure()

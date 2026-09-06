@@ -36,9 +36,9 @@ final class TranscriptReducerTests: XCTestCase {
 
     // MARK: - messageStart
 
-    /// messageStart appends a fresh incomplete assistant row; nil start text
-    /// becomes empty string.
-    func testMessageStartAppendsIncompleteAssistantRow() {
+    /// messageStart creates an incomplete assistant row and reuses an existing
+    /// optimistic/open row instead of manufacturing a duplicate bubble.
+    func testMessageStartCreatesOrReusesIncompleteAssistantRow() {
         var state = makeState()
         state.apply(.messageStart(sessionID: "s1", text: nil))
         XCTAssertEqual(state.rows.count, 1)
@@ -47,9 +47,9 @@ final class TranscriptReducerTests: XCTestCase {
         XCTAssertFalse(state.rows[0].completed)
 
         state.apply(.messageStart(sessionID: "s1", text: "hello"))
-        XCTAssertEqual(state.rows.count, 2)
-        XCTAssertEqual(state.rows[1].text, "hello")
-        XCTAssertFalse(state.rows[1].completed)
+        XCTAssertEqual(state.rows.count, 1)
+        XCTAssertEqual(state.rows[0].text, "hello")
+        XCTAssertFalse(state.rows[0].completed)
     }
 
     // MARK: - messageDelta
@@ -218,15 +218,16 @@ final class TranscriptReducerTests: XCTestCase {
         XCTAssertTrue(noop.rows.isEmpty)
     }
 
-    /// Completion marks only the last open assistant row; earlier rows stay
-    /// untouched.
-    func testMessageCompleteFinalizesOnlyLastOpenAssistantRow() {
+    /// Completion finalizes the latest open segment while an earlier sealed
+    /// interim segment stays untouched.
+    func testMessageCompleteFinalizesOnlyLatestOpenSegment() {
         var state = makeState()
         state.apply(.messageStart(sessionID: "s1", text: "one"))
+        state.apply(.messageInterim(sessionID: "s1", text: "one", alreadyStreamed: true))
         state.apply(.messageStart(sessionID: "s1", text: "two"))
         state.apply(complete(text: "two-final"))
         XCTAssertEqual(state.rows.count, 2)
-        XCTAssertFalse(state.rows[0].completed)
+        XCTAssertTrue(state.rows[0].completed)
         XCTAssertEqual(state.rows[0].text, "one")
         XCTAssertTrue(state.rows[1].completed)
         XCTAssertEqual(state.rows[1].text, "two-final")

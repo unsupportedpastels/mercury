@@ -22,11 +22,20 @@ enum ConnectionPhase: Equatable {
 @MainActor
 @Observable
 final class AppModel {
+    /// In-memory last-known child evidence, isolated by origin/profile/durable session.
+    var backgroundTasksBySession: [String: BackgroundTasks] = [:]
 
     // MARK: - Published state
 
     private(set) var connectionPhase: ConnectionPhase = .disconnected
     private(set) var serverOrigin: String?
+
+    /// Non-nil while the app is connected through Mercury Relay instead of a
+    /// direct HTTPS origin. Relay mode reuses the normal connected UI; the
+    /// origin-scoped REST features guard on `serverOrigin` and quietly stand
+    /// down because it stays nil.
+    private(set) var activeRelayTarget: RelayPairedTarget?
+    private(set) var relaySelectionGeneration: UInt64 = 0
     private(set) var hermesVersion: String?
     var profiles: [String] = ["default"]
     var sessions: [SessionRow] = []
@@ -469,6 +478,7 @@ final class AppModel {
         guard ProcessInfo.processInfo.arguments.contains("-uitest-reset-local-state") else { return }
         KeychainServerCatalogPersistence().clearCatalogData()
         UserDefaultsLegacyServerOrigin().clearLegacyOrigin()
+        try? await RelayTargetStore().removeAll()
         try? await offlineCacheStore.clear()
         serverCatalog = .empty
         sessions = []
@@ -591,6 +601,12 @@ final class AppModel {
 
     /// Switches the active profile and reloads the session list from offset 0.
     func switchProfile(_ profile: String) async {
+        relaySelectionGeneration &+= 1
+        let token = relaySelectionGeneration
+        if let target = activeRelayTarget {
+            await RelayConnectionPool.shared.select(target: target, profile: profile)
+            guard relaySelectionGeneration == token else { return }
+        }
         setActiveProfile(profile)
         await controller.loadSessions()
     }
@@ -615,6 +631,13 @@ final class AppModel {
     /// (origin-scoped Keychain delete) and its host's cookies, then resets
     /// transient connection state. No-op when no server origin is set.
     func signOut() async {
+        if activeRelayTarget != nil {
+            // Relay "sign out" is a local disconnect. The pairing — and the
+            // host-side authorization — stays until removed or revoked
+            // explicitly from the pairing management surfaces.
+            disconnect()
+            return
+        }
         guard let origin = serverOrigin else { return }
         notificationCoordinator.reset(origin: origin)
         await runActivityCoordinator.endAllForSignOut()
@@ -833,8 +856,11 @@ final class AppModel {
     func fireTestNotification() async {
         let origin = serverOrigin ?? "https://simulator.test"
         notificationCoordinator.configure(origin: origin)
+        // Each invocation represents a new synthetic session. Reusing the same
+        // completed session correctly hits persisted notification deduplication
+        // on subsequent UI-test runs and therefore produces no banner.
         let event = ChatEvent.messageComplete(
-            sessionID: "sim-test-session",
+            sessionID: "sim-test-session-\(UUID().uuidString)",
             text: "Simulator test — your task finished.",
             status: "finished",
             error: nil,
@@ -930,12 +956,30 @@ final class AppModel {
 
     // MARK: - Local transitions
 
+    private func endRelaySelection() {
+        relaySelectionGeneration &+= 1
+        let token = relaySelectionGeneration
+        Task { @MainActor in
+            guard relaySelectionGeneration == token else { return }
+            await RelayConnectionPool.shared.select(target: nil, profile: activeProfile)
+        }
+    }
+
     func connect() {
         connectionPhase = .connecting
     }
 
     func disconnect() {
+        endRelaySelection()
+        activeRelayTarget = nil
         connectionPhase = .disconnected
+    }
+
+    /// Connects through a paired, approved Mercury Relay target and enters
+    /// the normal connected experience.
+    func connectRelay(_ target: RelayPairedTarget) async {
+        relaySelectionGeneration &+= 1
+        await controller.connectRelay(target: target)
     }
 
     func signedOutPreservingServer(_ origin: String) {
@@ -953,6 +997,8 @@ final class AppModel {
 
     /// Clears transient connection state without touching stored credentials.
     func reset() {
+        endRelaySelection()
+        activeRelayTarget = nil
         serverOrigin = nil
         hermesVersion = nil
         sessionsError = nil
@@ -991,6 +1037,7 @@ final class AppModel {
         }
     }
     func setServerOrigin(_ origin: String?) { serverOrigin = origin }
+    func setActiveRelayTarget(_ target: RelayPairedTarget?) { activeRelayTarget = target }
     func setHermesVersion(_ version: String?) { hermesVersion = version }
     func setSessionsError(_ message: String?) { sessionsError = message }
     func setAuthProviders(_ providers: [AuthProvider]) { authProviders = providers }

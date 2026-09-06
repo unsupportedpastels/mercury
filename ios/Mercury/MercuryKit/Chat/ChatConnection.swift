@@ -1,4 +1,5 @@
 import Foundation
+import MercuryCore
 
 // MARK: - Chat connection state machine
 //
@@ -24,16 +25,26 @@ final class ChatConnection: @unchecked Sendable {
     private let socket: any ChatSocketing
     private let maxFrameBytes: Int
 
+    var relaySocket: RelayChatSocket? { socket as? RelayChatSocket }
+    var isClosed: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return closed
+    }
+
     // MARK: Lifecycle state
 
     private let stateLock = NSLock()
     private var closed = false
     private var nextRequestID: Int64 = 1
+    private let requestNamespace: String?
+    private var readerStarted = false
 
     /// id → continuation for in-flight RPCs. Also mirrors method names so a
     /// -32601 failure can name the unsupported method.
-    private var pendingRequests: [Int64: CheckedContinuation<[String: Any], Error>] = [:]
-    private var pendingRequestMethods: [Int64: String] = [:]
+    private var pendingRequests: [String: CheckedContinuation<[String: Any], Error>] = [:]
+    private var pendingRequestMethods: [String: String] = [:]
+    private var pendingBindingParams: [String: [String: Any]] = [:]
 
     // MARK: Event stream
 
@@ -58,6 +69,7 @@ final class ChatConnection: @unchecked Sendable {
     init(socket: any ChatSocketing, maxFrameBytes configured: Int? = nil) throws {
         let resolvedLimit = try validatedMaxFrameBytes(configured ?? 36 * 1024 * 1024)
         self.socket = socket
+        self.requestNamespace = socket is RelayChatSocket ? UUID().uuidString : nil
         self.maxFrameBytes = resolvedLimit
     }
 
@@ -69,7 +81,7 @@ final class ChatConnection: @unchecked Sendable {
 
     /// Starts the read loop. Returns a multiplexed event stream; multiple
     /// consumers each receive every event. Call exactly once per connection.
-    func start() -> AsyncStream<ChatEvent> {
+    func start(replayBuffered: Bool = true) -> AsyncStream<ChatEvent> {
         let id = UUID()
         let stream = AsyncStream<ChatEvent>(bufferingPolicy: .unbounded) { continuation in
             let lock = self.stateLock
@@ -79,20 +91,46 @@ final class ChatConnection: @unchecked Sendable {
                 continuation.finish()
                 return
             }
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.stateLock.lock()
+                self.continuations.removeValue(forKey: id)
+                self.stateLock.unlock()
+            }
             self.continuations[id] = continuation
             // Replay anything already buffered so early events are not lost.
-            for event in self.eventBuffer.snapshot() {
-                continuation.yield(event)
+            for event in replayBuffered ? self.eventBuffer.snapshot() : [] {
+                if self.relaySocket != nil {
+                    guard case .backgroundTask(let session, var evidence) = event else { continue }
+                    // A newly attached presentation is replaying local evidence,
+                    // not observing fresh worker activity at this instant.
+                    evidence.historical = true
+                    continuation.yield(.backgroundTask(sessionID: session, evidence: evidence))
+                } else {
+                    continuation.yield(event)
+                }
             }
             lock.unlock()
         }
-        Task { await readLoop() }
+        startReading()
         return stream
+    }
+
+    func startReading() {
+        stateLock.lock()
+        let shouldStart = !readerStarted && !closed
+        readerStarted = true
+        stateLock.unlock()
+        if shouldStart { Task { await readLoop() } }
     }
 
     // MARK: - Public RPC surface (Android-parity subset)
 
-    func resume(durableSessionID: String, profile: String?) async throws -> ResumedChatSession {
+    func resume(durableSessionID: String, profile: String?, automaticRecovery: Bool = false) async throws -> ResumedChatSession {
+        if automaticRecovery, let relaySocket,
+           !(await relaySocket.canAutomaticallyResume(durable: durableSessionID, profile: profile)) {
+            throw ChatError.transport("Retained session unavailable")
+        }
         var params: [String: Any] = [
             "session_id": durableSessionID,
             "close_on_disconnect": false,
@@ -597,6 +635,26 @@ final class ChatConnection: @unchecked Sendable {
         return try await request(method, params)
     }
 
+    /// Sends one correlated JSON-RPC request without the direct-mode
+    /// operations allowlist, for the Mercury Relay v1 method set
+    /// (`gateway.ping`, `session.*`, `prompt.submit`, …) and the `relay.*`
+    /// in-process reads the host intercepts at the lease layer. The relay
+    /// method policy is the authority over what is permitted on the wire.
+    func relayRequest(_ method: String, params: [String: Any] = [:]) async throws -> [String: Any] {
+        try await request(method, params)
+    }
+
+    /// Process-local registry: callers may only reconcile IDs already observed on their own runtime.
+    func backgroundTaskStatuses() async throws -> [String: String] {
+        let result = try await request("delegation.status", [:])
+        var statuses: [String: String] = [:]
+        for row in (result["active"] as? [[String: Any]] ?? []).prefix(64) {
+            if let id = row["subagent_id"] as? String, !id.isEmpty, id.count <= 256,
+               let status = row["status"] as? String, status.count <= 40 { statuses[id] = status }
+        }
+        return statuses
+    }
+
     func close() async {
         stateLock.lock()
         if closed {
@@ -607,6 +665,7 @@ final class ChatConnection: @unchecked Sendable {
         let pending = pendingRequests
         pendingRequests.removeAll()
         pendingRequestMethods.removeAll()
+        pendingBindingParams.removeAll()
         stateLock.unlock()
 
         let error = ChatError.transport("Hermes chat connection closed")
@@ -623,13 +682,14 @@ final class ChatConnection: @unchecked Sendable {
             stateLock.unlock()
             throw ChatError.transport("Hermes chat connection is closed")
         }
-        let id = nextRequestID
+        let number = nextRequestID
+        let id = requestNamespace.map { "\($0):\(number)" } ?? String(number)
         nextRequestID += 1
         stateLock.unlock()
 
         let frame: [String: Any] = [
             "jsonrpc": "2.0",
-            "id": id,
+            "id": requestNamespace == nil ? (number as Any) : (id as Any),
             "method": method,
             "params": params,
         ]
@@ -651,6 +711,9 @@ final class ChatConnection: @unchecked Sendable {
             }
             pendingRequests[id] = continuation
             pendingRequestMethods[id] = method
+            if method == "session.resume" || method == "session.create" {
+                pendingBindingParams[id] = params
+            }
             stateLock.unlock()
 
             Task {
@@ -660,6 +723,7 @@ final class ChatConnection: @unchecked Sendable {
                     self.stateLock.lock()
                     let registered = self.pendingRequests.removeValue(forKey: id)
                     self.pendingRequestMethods.removeValue(forKey: id)
+                    self.pendingBindingParams.removeValue(forKey: id)
                     self.stateLock.unlock()
                     if let registered {
                         registered.resume(throwing: ChatError.transport("Could not send Hermes chat request"))
@@ -692,7 +756,7 @@ final class ChatConnection: @unchecked Sendable {
             }
             do {
                 try ensureFrameSize(frame)
-                try handleFrame(frame)
+                try await handleFrame(frame)
             } catch {
                 failure = error
                 break
@@ -706,6 +770,7 @@ final class ChatConnection: @unchecked Sendable {
         let pending = pendingRequests
         pendingRequests.removeAll()
         pendingRequestMethods.removeAll()
+        pendingBindingParams.removeAll()
         stateLock.unlock()
 
         let error = failure ?? ChatError.transport("Hermes chat connection closed")
@@ -716,7 +781,7 @@ final class ChatConnection: @unchecked Sendable {
 
     // MARK: - Frame handling
 
-    private func handleFrame(_ frame: String) throws {
+    private func handleFrame(_ frame: String) async throws {
         let raw: Any
         do {
             raw = try JSONSerialization.jsonObject(with: Data(frame.utf8))
@@ -730,14 +795,15 @@ final class ChatConnection: @unchecked Sendable {
         guard let version = message["jsonrpc"] as? String, version == "2.0" else { return }
 
         if (message["method"] as? String) == "event" {
-            handleEvent(message)
+            handleSharedEvent(message)
             return
         }
 
-        guard let id = int64Field("id", in: message) else { return }
+        guard let id = (message["id"] as? String) ?? int64Field("id", in: message).map(String.init) else { return }
         stateLock.lock()
         let continuation = pendingRequests.removeValue(forKey: id)
         let method = pendingRequestMethods.removeValue(forKey: id)
+        let bindingParams = pendingBindingParams.removeValue(forKey: id)
         stateLock.unlock()
         guard let continuation else { return }
 
@@ -756,261 +822,87 @@ final class ChatConnection: @unchecked Sendable {
             continuation.resume(throwing: ChatError.protocolError("Hermes response was incomplete"))
             return
         }
+        // Install the authenticated correlated binding before reading the next
+        // frame, not in the resumed caller (which races the pooled read loop).
+        if let relaySocket, let bindingParams {
+            if method == "session.resume", let durable = bindingParams["session_id"] as? String,
+               let resumed = try? parseResumeResult(result, requestedDurableSessionID: durable) {
+                await relaySocket.bindTaskRuntime(runtime: resumed.runtimeSessionID, durable: durable,
+                                                   profile: bindingParams["profile"] as? String)
+            } else if method == "session.create",
+                      let runtime = boundedRequiredField("session_id", in: result, maxChars: maxEventIDChars),
+                      let durable = boundedRequiredField("stored_session_id", in: result, maxChars: maxEventNameChars) {
+                await relaySocket.bindTaskRuntime(runtime: runtime, durable: durable,
+                                                   profile: bindingParams["profile"] as? String)
+            }
+        }
         continuation.resume(returning: result)
     }
 
     // MARK: - Event decoding
 
-    /// Known event types, copied verbatim from Android's knownTypes list.
-    /// Types outside this set are ignored (forward compatibility).
-    private static let knownEventTypes: Set<String> = [
-        "message.start", "message.delta", "message.complete", "error",
-        "tool.start", "tool.complete", "tool.generating", "status.update",
-        "clarify.request", "clarify.expire", "approval.request", "approval.expire",
-        "secret.request", "secret.expire", "sudo.request", "sudo.expire",
-        "terminal.read.request", "terminal.read.expire",
-        "preview.read.request", "preview.read.expire",
-        "window.read.request", "window.read.expire",
-        "session.info", "session.title", "reasoning.delta", "reasoning.available",
-        "message.interim",
-        // Intentionally ignored (no mobile surface): gateway.ready, skin.changed,
-        // sessions.changed, cron.changed, pet.changed, thinking.delta, reaction,
-        // moa.*, voice.*, wake.detected, browser.progress, terminal.close,
-        // notification.clear, preview.restart.progress.
-    ]
-
-    private func handleEvent(_ message: [String: Any]) {
+    private func handleSharedEvent(_ message: [String: Any]) {
+        if let params = message["params"] as? [String: Any],
+           let sessionID = boundedRequiredField("session_id", in: params, maxChars: maxEventIDChars),
+           let type = params["type"] as? String,
+           let payload = params["payload"] as? [String: Any],
+           var evidence = BackgroundTaskEvidence.decode(type: type, payload: payload) {
+            if relaySocket != nil {
+                evidence.eventID = params["relay_event_id"] as? String
+                evidence.historical = params["relay_replay"] as? Bool == true
+            }
+            emit(.backgroundTask(sessionID: sessionID, evidence: evidence))
+            return
+        }
         guard let params = message["params"] as? [String: Any],
-              let sessionIDRaw = boundedRequiredField("session_id", in: params, maxChars: maxEventIDChars),
-              !sessionIDRaw.isEmpty,
+              let sessionID = boundedRequiredField("session_id", in: params, maxChars: maxEventIDChars),
               let type = stringField("type", in: params),
-              Self.knownEventTypes.contains(type),
-              let payload = params["payload"] as? [String: Any]
+              let payload = params["payload"] as? [String: Any],
+              let data = try? JSONSerialization.data(withJSONObject: payload),
+              let payloadJSON = String(data: data, encoding: .utf8),
+              let shared = MercuryCore.ChatEventDecoder.shared.decode(
+                type: type,
+                sessionId: sessionID,
+                payloadJson: payloadJSON
+              ),
+              var event = ChatEvent(shared: shared)
         else { return }
 
-        let event: ChatEvent?
-        switch type {
-        case "message.start":
-            event = .messageStart(
-                sessionID: sessionIDRaw,
-                text: boundedTextField("text", in: payload, maxChars: maxMessageTextChars)
-            )
-
-        case "message.delta":
-            if let text = boundedTextField("text", in: payload, maxChars: maxMessageTextChars) {
-                event = .messageDelta(sessionID: sessionIDRaw, text: text)
-            } else {
-                event = nil
-            }
-
-        case "message.complete":
-            let billing = (payload["billing"] as? [String: Any]).map { billing in
-                BillingInfo(
-                    provider: boundedOptionalField("provider", in: billing, maxChars: maxEventNameChars),
-                    billingURL: boundedOptionalField("billing_url", in: billing, maxChars: maxEventTextChars),
-                    isNous: boolField("is_nous", in: billing) ?? false,
-                    message: boundedOptionalField("message", in: billing, maxChars: maxEventTextChars)
-                )
-            }
-            event = .messageComplete(
-                sessionID: sessionIDRaw,
-                text: boundedTextField("text", in: payload, maxChars: maxMessageTextChars),
-                status: boundedOptionalField("status", in: payload, maxChars: maxEventNameChars),
-                error: boundedOptionalField("error", in: payload, maxChars: maxEventTextChars),
-                reasoning: boundedTextField("reasoning", in: payload, maxChars: maxMessageTextChars),
-                warning: boundedOptionalField("warning", in: payload, maxChars: maxEventTextChars),
-                failureReason: boundedOptionalField("failure_reason", in: payload, maxChars: maxEventTextChars),
-                recoverable: boolField("recoverable", in: payload) ?? false,
-                billing: billing
-            )
-
-        case "reasoning.delta", "reasoning.available":
-            if let text = boundedTextField("text", in: payload, maxChars: maxMessageTextChars) {
-                event = .reasoningDelta(
-                    sessionID: sessionIDRaw,
-                    text: text,
-                    replace: type == "reasoning.available"
-                )
-            } else {
-                event = nil
-            }
-
-        case "message.interim":
-            if let text = boundedTextField("text", in: payload, maxChars: maxMessageTextChars) {
-                event = .messageInterim(
-                    sessionID: sessionIDRaw,
-                    text: text,
-                    alreadyStreamed: boolField("already_streamed", in: payload) ?? false
-                )
-            } else {
-                event = nil
-            }
-
-        case "tool.generating":
-            if let name = boundedRequiredField("name", in: payload, maxChars: maxEventNameChars) {
-                event = .toolGenerating(sessionID: sessionIDRaw, name: name)
-            } else {
-                event = nil
-            }
-
-        case "session.title":
-            if let title = boundedRequiredField("title", in: payload, maxChars: maxEventNameChars) {
-                event = .sessionTitle(sessionID: sessionIDRaw, title: title)
-            } else {
-                event = nil
-            }
-
-        case "session.info":
-            event = .sessionInfo(
-                sessionID: sessionIDRaw,
-                storedSessionID: boundedOptionalField("stored_session_id", in: payload, maxChars: maxEventNameChars),
-                model: boundedOptionalField("model", in: payload, maxChars: maxEventNameChars),
-                provider: boundedOptionalField("provider", in: payload, maxChars: maxEventNameChars),
-                reasoningEffort: boundedOptionalField("reasoning_effort", in: payload, maxChars: maxEventNameChars),
-                fastMode: boolField("fast", in: payload),
-                title: boundedOptionalField("title", in: payload, maxChars: maxEventNameChars),
-                running: boolField("running", in: payload)
-            )
-
-        case "error":
-            if let text = boundedOptionalField("message", in: payload, maxChars: maxEventTextChars) {
-                event = .error(sessionID: sessionIDRaw, message: text)
-            } else {
-                event = nil
-            }
-
-        case "tool.start":
-            guard let toolID = boundedRequiredField("tool_id", in: payload, maxChars: maxEventIDChars),
-                  let name = boundedRequiredField("name", in: payload, maxChars: maxEventNameChars) else {
-                event = nil
-                break
-            }
-            event = .toolStart(
-                sessionID: sessionIDRaw,
-                toolID: toolID,
-                name: name,
-                context: boundedOptionalField("context", in: payload, maxChars: maxEventContextChars)
-            )
-
-        case "tool.complete":
-            guard let toolID = boundedRequiredField("tool_id", in: payload, maxChars: maxEventIDChars),
-                  let name = boundedRequiredField("name", in: payload, maxChars: maxEventNameChars) else {
-                event = nil
-                break
-            }
-            event = .toolComplete(
-                sessionID: sessionIDRaw,
-                toolID: toolID,
-                name: name,
-                summary: boundedOptionalField("summary", in: payload, maxChars: maxEventTextChars)
-            )
-
-        case "status.update":
-            guard let kind = boundedRequiredField("kind", in: payload, maxChars: maxEventNameChars),
-                  let text = boundedRequiredField("text", in: payload, maxChars: maxEventTextChars) else {
-                event = nil
-                break
-            }
-            event = .statusUpdate(sessionID: sessionIDRaw, kind: kind, text: text)
-
-        case "clarify.request":
-            guard let requestID = boundedRequiredField("request_id", in: payload, maxChars: maxEventIDChars),
-                  let question = boundedRequiredField("question", in: payload, maxChars: maxEventTextChars) else {
-                event = nil
-                break
-            }
-            event = .clarifyRequest(
-                sessionID: sessionIDRaw,
-                requestID: requestID,
-                question: question,
-                choices: boundedChoices(in: payload),
-                multiSelect: boolField("multi_select", in: payload) ?? false
-            )
-
-        case "clarify.expire":
-            if let requestID = boundedRequiredField("request_id", in: payload, maxChars: maxEventIDChars) {
-                event = .clarifyExpire(sessionID: sessionIDRaw, requestID: requestID)
-            } else {
-                event = nil
-            }
-
-        case "approval.request":
-            let choices = boundedChoices(in: payload)
-            if choices.isEmpty {
-                event = nil
-                break
-            }
-            let approval = PendingApproval(
-                requestID: optionalStringField("request_id", in: payload),
-                command: boundedOptionalField("command", in: payload, maxChars: maxEventTextChars),
-                description: boundedOptionalField("description", in: payload, maxChars: maxEventTextChars),
-                choices: choices
-            )
-            stateLock.lock()
-            pendingApprovals[sessionIDRaw, default: []].append(approval)
-            stateLock.unlock()
-            event = Self.approvalEvent(for: approval, sessionID: sessionIDRaw)
-
-        case "approval.expire":
-            if let requestID = boundedRequiredField("request_id", in: payload, maxChars: maxEventIDChars) {
-                stateLock.lock()
-                if var queue = pendingApprovals[sessionIDRaw] {
-                    queue.removeAll { $0.requestID == requestID }
-                    if queue.isEmpty {
-                        pendingApprovals.removeValue(forKey: sessionIDRaw)
-                    } else {
-                        pendingApprovals[sessionIDRaw] = queue
-                    }
-                }
-                stateLock.unlock()
-                event = .approvalExpire(sessionID: sessionIDRaw, requestID: requestID)
-            } else {
-                event = nil
-            }
-
-        case "secret.request", "sudo.request", "terminal.read.request",
-             "preview.read.request", "window.read.request":
-            let kind: UnsupportedBlockingKind
-            switch type {
-            case "secret.request": kind = .secret
-            case "sudo.request": kind = .sudo
-            case "preview.read.request": kind = .previewRead
-            case "window.read.request": kind = .windowRead
-            default: kind = .terminalRead
-            }
-            if let requestID = boundedRequiredField("request_id", in: payload, maxChars: maxEventIDChars) {
-                event = .unsupportedBlockingRequest(
-                    sessionID: sessionIDRaw,
-                    kind: kind,
-                    requestID: requestID,
-                    prompt: boundedOptionalField("prompt", in: payload, maxChars: maxEventTextChars)
-                )
-            } else {
-                event = nil
-            }
-
-        case "secret.expire", "sudo.expire", "terminal.read.expire",
-             "preview.read.expire", "window.read.expire":
-            let kind: UnsupportedBlockingKind
-            switch type {
-            case "secret.expire": kind = .secret
-            case "sudo.expire": kind = .sudo
-            case "preview.read.expire": kind = .previewRead
-            case "window.read.expire": kind = .windowRead
-            default: kind = .terminalRead
-            }
-            if let requestID = boundedRequiredField("request_id", in: payload, maxChars: maxEventIDChars) {
-                event = .unsupportedBlockingExpire(sessionID: sessionIDRaw, kind: kind, requestID: requestID)
-            } else {
-                event = nil
-            }
-
-        default:
-            event = nil
+        if case .toolComplete(let session, let toolID, let name, _) = event, name == "delegate_task",
+           let result = payload["result"] as? [String: Any],
+           result["status"] as? String == "dispatched", result["mode"] as? String == "background" {
+            event = .toolComplete(sessionID: session, toolID: toolID, name: name, summary: "Started background tasks")
         }
 
-        if let event { emit(event) }
+        switch event {
+        case .approvalRequest(_, let requestID, let command, let description, let choices):
+            stateLock.lock()
+            pendingApprovals[sessionID, default: []].append(
+                PendingApproval(
+                    requestID: requestID,
+                    command: command,
+                    description: description,
+                    choices: choices
+                )
+            )
+            stateLock.unlock()
+        case .approvalExpire(_, let requestID):
+            stateLock.lock()
+            if var queue = pendingApprovals[sessionID] {
+                queue.removeAll { $0.requestID == requestID }
+                if queue.isEmpty {
+                    pendingApprovals.removeValue(forKey: sessionID)
+                } else {
+                    pendingApprovals[sessionID] = queue
+                }
+            }
+            stateLock.unlock()
+        default:
+            break
+        }
+        emit(event)
     }
+
 
     private static func approvalEvent(for approval: PendingApproval, sessionID: String) -> ChatEvent {
         .approvalRequest(
@@ -1240,9 +1132,6 @@ final class ChatConnection: @unchecked Sendable {
         object[name] as? String
     }
 
-    private func optionalStringField(_ name: String, in object: [String: Any]) -> String? {
-        object[name] as? String
-    }
 
     private func int64Field(_ name: String, in object: [String: Any]) -> Int64? {
         switch object[name] {
@@ -1396,19 +1285,6 @@ final class ChatConnection: @unchecked Sendable {
         return String(value.prefix(maxChars))
     }
 
-    private func boundedChoices(in payload: [String: Any]) -> [String] {
-        guard let raw = payload["choices"] as? [Any] else { return [] }
-        var seen = Set<String>()
-        var result: [String] = []
-        for element in raw {
-            guard let choice = element as? String else { continue }
-            let trimmed = choice.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, trimmed.count <= maxEventChoiceChars, seen.insert(trimmed).inserted else { continue }
-            result.append(trimmed)
-            if result.count >= maxEventChoiceCount { break }
-        }
-        return result
-    }
 
     // MARK: - Outbound input guards (boundedRpcInput parity)
 

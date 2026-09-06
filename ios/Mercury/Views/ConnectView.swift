@@ -10,8 +10,11 @@ struct ConnectView: View {
 
     @State private var mode: ConnectionMode = .selfHosted
     @State private var originText = ""
+    @State private var useTls = true
     @State private var validationError: String?
     @State private var showSavedServers = false
+    @State private var relay = RelayAppModel()
+    @State private var showRelayPairing = false
     /// Error banner text injected when arriving via `.failed(_)` phase.
     private let bannerMessage: String?
 
@@ -27,35 +30,53 @@ struct ConnectView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Spacer()
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
 
-            Text("Connect to Hermes")
-                .font(.largeTitle.bold())
-                .foregroundStyle(Color.primary)
+                    Text("Connect to Hermes")
+                        .font(.largeTitle.bold())
+                        .foregroundStyle(Color.primary)
 
-            Text("Mercury is a companion for the Hermes agent you already run — self-hosted or on Hermes Cloud. Official Hermes endpoints only.")
-                .font(.subheadline)
-                .foregroundStyle(Color.secondary)
+                    Text("Connect to the Hermes agent you already run.")
+                        .font(.subheadline)
+                        .foregroundStyle(Color.secondary)
 
-            Picker("Connection type", selection: $mode) {
-                ForEach(ConnectionMode.allCases) { m in
-                    Text(m.title).tag(m)
+                    Picker("Connection type", selection: $mode) {
+                        ForEach(ConnectionMode.allCases) { m in
+                            Text(m.title).tag(m)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text("Relay pairs with your Hermes host by scanning a QR code.")
+                        .font(.footnote)
+                        .foregroundStyle(Color.secondary)
+
+                    switch mode {
+                    case .selfHosted:
+                        selfHostedSection
+                    case .hermesCloud:
+                        cloudSection
+                    case .mercuryRelay:
+                        relaySection
+                    }
                 }
+                .frame(maxWidth: 520, alignment: .leading)
+                .padding(.horizontal, 24)
+                .padding(.top, max(24, geometry.size.height * 0.20))
+                .padding(.bottom, 24)
+                .frame(maxWidth: .infinity)
             }
-            .pickerStyle(.segmented)
-
-            switch mode {
-            case .selfHosted:
-                selfHostedSection
-            case .hermesCloud:
-                cloudSection
-            }
-
-            Spacer()
+            .scrollDismissesKeyboard(.interactively)
         }
-        .padding(24)
         .amoledScreen()
+        .task { await relay.loadTargets() }
+        .sheet(isPresented: $showRelayPairing, onDismiss: {
+            relay.cancelPairing()
+        }) {
+            RelayPairingView(relay: relay)
+        }
         .sheet(isPresented: $showSavedServers) {
             NavigationStack {
                 ServerListView(
@@ -80,21 +101,42 @@ struct ConnectView: View {
             errorBanner(bannerMessage)
         }
 
-        TextField("hermes.example.com", text: $originText)
-            .keyboardType(.URL)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .textContentType(.URL)
-            .padding(12)
-            .background(Color.surfaceLow, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(
-                        validationError == nil ? Color.separatorSubtle : Color.statusAlert.opacity(0.6)
-                    )
-            )
-            .submitLabel(.go)
-            .onSubmit(continueTapped)
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Server address")
+                .font(.subheadline.weight(.semibold))
+
+            TextField("Server address", text: $originText,
+                      prompt: Text("hermes.example.com").foregroundStyle(Color.secondary))
+                .foregroundStyle(Color.primary)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textContentType(.URL)
+                .padding(12)
+                .background(Color.surfaceMid, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(
+                            validationError == nil ? Color.separatorSubtle : Color.statusAlert.opacity(0.6)
+                        )
+                )
+                .submitLabel(.go)
+                .onSubmit(continueTapped)
+
+            Text("Example: hermes.example.com or host:port")
+                .font(.footnote)
+                .foregroundStyle(Color.secondary)
+        }
+
+        Toggle(isOn: $useTls) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Use HTTPS")
+                Text("Turn off only for a plain HTTP server")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 4)
 
         if let validationError {
             Text(validationError)
@@ -115,16 +157,12 @@ struct ConnectView: View {
         }
         .buttonStyle(.borderedProminent)
         .tint(Color.accentPrimary)
-        .disabled(isBusy)
+        .disabled(!canContinue)
 
         if !appModel.serverCatalog.entries.isEmpty {
             Button("Saved servers") { showSavedServers = true }
                 .buttonStyle(.bordered)
         }
-
-        Label(mode.subtitle, systemImage: mode.icon)
-            .font(.caption)
-            .foregroundStyle(Color.secondary)
     }
 
     // MARK: - Hermes Cloud
@@ -225,6 +263,79 @@ struct ConnectView: View {
         .padding(.top, 4)
     }
 
+    // MARK: - Mercury Relay
+
+    @ViewBuilder
+    private var relaySection: some View {
+        Button {
+            showRelayPairing = true
+        } label: {
+            HStack {
+                Image(systemName: "qrcode.viewfinder")
+                Text("Pair with QR code")
+                    .fontWeight(.semibold)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(Color.accentPrimary)
+
+        if let targetsError = relay.targetsError {
+            errorBanner(targetsError)
+        }
+
+        if !relay.targets.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Paired hosts").font(.headline)
+                ForEach(relay.targets) { target in
+                    Button {
+                        if target.status == .approved {
+                            Task { await appModel.connectRelay(target) }
+                        } else {
+                            showRelayPairing = true
+                        }
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(target.displayLabel).fontWeight(.semibold)
+                                Text(
+                                    target.status == .approved
+                                        ? "Approved"
+                                        : "Waiting for host approval"
+                                )
+                                .font(.caption)
+                                .foregroundStyle(Color.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            Task { await relay.removeTarget(target) }
+                        } label: {
+                            // Local removal only: revoking the device record
+                            // stays a host/dashboard management action.
+                            Label("Remove from this device", systemImage: "trash")
+                        }
+                    }
+                }
+            }
+        }
+
+        VStack(alignment: .leading, spacing: 8) {
+            Label("End-to-end encrypted — the relay only routes ciphertext.", systemImage: "lock.shield")
+            Label("Requires the Mercury Relay plugin on your Hermes host.", systemImage: "puzzlepiece.extension")
+            Label("The host operator approves each device by fingerprint.", systemImage: "checkmark.seal")
+        }
+        .font(.caption)
+        .foregroundStyle(Color.secondary)
+        .padding(.top, 4)
+    }
+
     private func errorBanner(_ text: String) -> some View {
         Label(text, systemImage: "exclamationmark.triangle.fill")
             .font(.footnote)
@@ -236,13 +347,18 @@ struct ConnectView: View {
 
     // MARK: - Actions
 
+    private var canContinue: Bool {
+        !isBusy && !originText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private func continueTapped() {
+        guard canContinue else { return }
         validationError = nil
-        guard ServerOrigin.normalize(originText) != nil else {
+        guard let canonical = ServerOrigin.normalize(originText, useTls: useTls) else {
             validationError = "That doesn't look like a server address. Try something like hermes.example.com or 192.168.1.20:8080."
             return
         }
-        Task { await appModel.probeSelfHosted(origin: originText) }
+        Task { await appModel.probeSelfHosted(origin: canonical) }
     }
 
     private func cloudSignInTapped() {

@@ -31,3 +31,4 @@ plugins {
 
 rootProject.name = "HAM"
 include(":app")
+include(":shared:mercury-core")

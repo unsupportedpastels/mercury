@@ -1582,6 +1582,15 @@ class HttpHermesConnectionClient(
                 null
             }
             if (text == null && reasoning == null) return@mapNotNull null
+            // Persisted interrupt sentinels are cancellation metadata written
+            // by servers that predate the upstream transcript fix; never
+            // render them as assistant prose.
+            if (role == ChatMessageRole.Assistant &&
+                text != null &&
+                com.unsupportedpastels.mercury.core.transcript.InterruptSentinel.isInterruptSentinel(text)
+            ) {
+                return@mapNotNull null
+            }
             ChatMessage(
                 role = role,
                 text = text.orEmpty(),

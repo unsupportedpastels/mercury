@@ -1,0 +1,765 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "retained-child-and-old-rpc",
+      "profile": "default",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 2,
+          "resume_cursor": 0,
+          "replay_gap": false,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": []
+        }
+      },
+      "frames": [
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.frame",
+          "params": {
+            "lease_id": "lease",
+            "seq": 1,
+            "replay": true,
+            "frame": "{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"session_id\":\"runtime\",\"type\":\"subagent.complete\",\"payload\":{\"subagent_id\":\"child\",\"status\":\"completed\",\"goal\":\"Synthetic task\"}}}"
+          }
+        },
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.frame",
+          "params": {
+            "lease_id": "lease",
+            "seq": 2,
+            "replay": true,
+            "frame": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"accepted\":true}}"
+          }
+        },
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.replay_complete",
+          "params": {
+            "lease_id": "lease",
+            "last_seq": 2
+          }
+        },
+        {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": {
+            "accepted": true
+          }
+        }
+      ],
+      "expectedDelivered": 2,
+      "expectedCursor": 2,
+      "expectedReplayComplete": true,
+      "expectedFailure": false
+    },
+    {
+      "name": "duplicate-child",
+      "profile": "default",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 1,
+          "resume_cursor": 0,
+          "replay_gap": false,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": []
+        }
+      },
+      "frames": [
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.frame",
+          "params": {
+            "lease_id": "lease",
+            "seq": 1,
+            "replay": true,
+            "frame": "{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"session_id\":\"runtime\",\"type\":\"subagent.complete\",\"payload\":{\"subagent_id\":\"child\",\"status\":\"completed\",\"goal\":\"Synthetic task\"}}}"
+          }
+        },
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.frame",
+          "params": {
+            "lease_id": "lease",
+            "seq": 1,
+            "replay": true,
+            "frame": "{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"session_id\":\"runtime\",\"type\":\"subagent.complete\",\"payload\":{\"subagent_id\":\"child\",\"status\":\"completed\",\"goal\":\"Synthetic task\"}}}"
+          }
+        },
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.replay_complete",
+          "params": {
+            "lease_id": "lease",
+            "last_seq": 1
+          }
+        }
+      ],
+      "expectedDelivered": 1,
+      "expectedCursor": 1,
+      "expectedReplayComplete": true,
+      "expectedFailure": false
+    },
+    {
+      "name": "gap-keeps-zero-cursor",
+      "profile": "default",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 3,
+          "resume_cursor": 0,
+          "replay_gap": true,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": []
+        }
+      },
+      "frames": [
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.frame",
+          "params": {
+            "lease_id": "lease",
+            "seq": 2,
+            "replay": true,
+            "frame": "{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"session_id\":\"runtime\",\"type\":\"subagent.complete\",\"payload\":{\"subagent_id\":\"child\",\"status\":\"completed\",\"goal\":\"Synthetic task\"}}}"
+          }
+        },
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.frame",
+          "params": {
+            "lease_id": "lease",
+            "seq": 3,
+            "replay": true,
+            "frame": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"accepted\":true}}"
+          }
+        },
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.replay_complete",
+          "params": {
+            "lease_id": "lease",
+            "last_seq": 3
+          }
+        }
+      ],
+      "expectedDelivered": 1,
+      "expectedCursor": 0,
+      "expectedReplayComplete": true,
+      "expectedFailure": false
+    },
+    {
+      "name": "non-gap-jump-rejected",
+      "profile": "default",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 3,
+          "resume_cursor": 0,
+          "replay_gap": false,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": []
+        }
+      },
+      "frames": [
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.frame",
+          "params": {
+            "lease_id": "lease",
+            "seq": 2,
+            "replay": true,
+            "frame": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"accepted\":true}}"
+          }
+        }
+      ],
+      "expectedDelivered": 0,
+      "expectedCursor": 0,
+      "expectedReplayComplete": false,
+      "expectedFailure": true
+    },
+    {
+      "name": "foreign-lease-rejected",
+      "profile": "default",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 1,
+          "resume_cursor": 0,
+          "replay_gap": false,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": []
+        }
+      },
+      "frames": [
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.frame",
+          "params": {
+            "lease_id": "foreign",
+            "seq": 1,
+            "replay": true,
+            "frame": "{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"session_id\":\"runtime\",\"type\":\"subagent.complete\",\"payload\":{\"subagent_id\":\"child\",\"status\":\"completed\",\"goal\":\"Synthetic task\"}}}"
+          }
+        }
+      ],
+      "expectedDelivered": 0,
+      "expectedCursor": 0,
+      "expectedReplayComplete": false,
+      "expectedFailure": true
+    },
+    {
+      "name": "watermark-mismatch",
+      "profile": "default",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 1,
+          "resume_cursor": 0,
+          "replay_gap": false,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": []
+        }
+      },
+      "frames": [
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.replay_complete",
+          "params": {
+            "lease_id": "lease",
+            "last_seq": 2
+          }
+        }
+      ],
+      "expectedDelivered": 0,
+      "expectedCursor": 0,
+      "expectedReplayComplete": false,
+      "expectedFailure": true
+    },
+    {
+      "name": "duplicate-preamble",
+      "profile": "default",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 0,
+          "resume_cursor": 0,
+          "replay_gap": false,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": []
+        }
+      },
+      "frames": [
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.attached",
+          "params": {
+            "recovery_version": 1,
+            "lease_id": "lease",
+            "last_seq": 0,
+            "resume_cursor": 0,
+            "replay_gap": false,
+            "recovery_reset": false,
+            "bindings": [],
+            "task_snapshot": []
+          }
+        }
+      ],
+      "expectedDelivered": 0,
+      "expectedCursor": 0,
+      "expectedReplayComplete": false,
+      "expectedFailure": true
+    },
+    {
+      "name": "live-child-and-reply",
+      "profile": "default",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 2,
+          "resume_cursor": 0,
+          "replay_gap": false,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": []
+        }
+      },
+      "frames": [
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.frame",
+          "params": {
+            "lease_id": "lease",
+            "seq": 1,
+            "replay": false,
+            "frame": "{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"session_id\":\"runtime\",\"type\":\"subagent.start\",\"payload\":{\"subagent_id\":\"child\",\"status\":\"completed\",\"goal\":\"Synthetic task\"}}}"
+          }
+        },
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.frame",
+          "params": {
+            "lease_id": "lease",
+            "seq": 2,
+            "replay": false,
+            "frame": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"accepted\":true}}"
+          }
+        }
+      ],
+      "expectedDelivered": 2,
+      "expectedCursor": 2,
+      "expectedReplayComplete": false,
+      "expectedFailure": false
+    },
+    {
+      "name": "foreground-replay-suppressed",
+      "profile": "default",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 1,
+          "resume_cursor": 0,
+          "replay_gap": false,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": []
+        }
+      },
+      "frames": [
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.frame",
+          "params": {
+            "lease_id": "lease",
+            "seq": 1,
+            "replay": true,
+            "frame": "{\"method\":\"event\",\"params\":{\"type\":\"message.delta\",\"payload\":{\"delta\":\"Synthetic partial\"}}}"
+          }
+        },
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.replay_complete",
+          "params": {
+            "lease_id": "lease",
+            "last_seq": 1
+          }
+        }
+      ],
+      "expectedDelivered": 0,
+      "expectedCursor": 1,
+      "expectedReplayComplete": true,
+      "expectedFailure": false
+    },
+    {
+      "name": "resume-cursor-not-acknowledged",
+      "profile": "default",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 4,
+          "resume_cursor": 4,
+          "replay_gap": false,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": []
+        }
+      },
+      "frames": [
+        {
+          "jsonrpc": "2.0",
+          "method": "relay.lease.replay_complete",
+          "params": {
+            "lease_id": "lease",
+            "last_seq": 4
+          }
+        }
+      ],
+      "expectedDelivered": 0,
+      "expectedCursor": 0,
+      "expectedReplayComplete": true,
+      "expectedFailure": false
+    },
+    {
+      "name": "unsupported-version",
+      "profile": "default",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 2,
+          "lease_id": "lease",
+          "last_seq": 2,
+          "resume_cursor": 0,
+          "replay_gap": false,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": []
+        }
+      },
+      "frames": [],
+      "expectedDelivered": 0,
+      "expectedCursor": 0,
+      "expectedReplayComplete": false,
+      "expectedFailure": true
+    },
+    {
+      "name": "future-cursor",
+      "profile": "default",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 2,
+          "resume_cursor": 3,
+          "replay_gap": false,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": []
+        }
+      },
+      "frames": [],
+      "expectedDelivered": 0,
+      "expectedCursor": 0,
+      "expectedReplayComplete": false,
+      "expectedFailure": true
+    },
+    {
+      "name": "string-boolean",
+      "profile": "default",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 2,
+          "resume_cursor": 0,
+          "replay_gap": "false",
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": []
+        }
+      },
+      "frames": [],
+      "expectedDelivered": 0,
+      "expectedCursor": 0,
+      "expectedReplayComplete": false,
+      "expectedFailure": true
+    }
+  ],
+  "taskCases": [
+    {
+      "name": "historical-terminal",
+      "profile": "default",
+      "durableId": "session",
+      "runtime": "replacement",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 8,
+          "resume_cursor": 0,
+          "replay_gap": true,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": [
+            {
+              "jsonrpc": "2.0",
+              "method": "event",
+              "params": {
+                "session_id": "runtime",
+                "type": "subagent.complete",
+                "payload": {
+                  "subagent_id": "child",
+                  "status": "completed",
+                  "goal": "Synthetic task"
+                },
+                "recovery_revision": 1,
+                "recovery_binding": {
+                  "runtime_session_id": "runtime",
+                  "durable_session_id": "session",
+                  "profile": "default",
+                  "live": false
+                }
+              }
+            }
+          ]
+        }
+      },
+      "expectedStatus": "Finished",
+      "expectedRows": 1,
+      "expectedAge": 0,
+      "expectedActiveCount": 0
+    },
+    {
+      "name": "historical-nonterminal",
+      "profile": "default",
+      "durableId": "session",
+      "runtime": "replacement",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 8,
+          "resume_cursor": 0,
+          "replay_gap": true,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": [
+            {
+              "jsonrpc": "2.0",
+              "method": "event",
+              "params": {
+                "session_id": "runtime",
+                "type": "subagent.start",
+                "payload": {
+                  "subagent_id": "child",
+                  "status": "running",
+                  "goal": "Synthetic task"
+                },
+                "recovery_revision": 1,
+                "recovery_binding": {
+                  "runtime_session_id": "runtime",
+                  "durable_session_id": "session",
+                  "profile": "default",
+                  "live": false
+                }
+              }
+            }
+          ]
+        }
+      },
+      "expectedStatus": "Unknown",
+      "expectedRows": 1,
+      "expectedAge": 0,
+      "expectedActiveCount": 0
+    },
+    {
+      "name": "live-snapshot-not-fresh",
+      "profile": "default",
+      "durableId": "session",
+      "runtime": "replacement",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 8,
+          "resume_cursor": 0,
+          "replay_gap": true,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": [
+            {
+              "jsonrpc": "2.0",
+              "method": "event",
+              "params": {
+                "session_id": "runtime",
+                "type": "subagent.start",
+                "payload": {
+                  "subagent_id": "child",
+                  "status": "running",
+                  "goal": "Synthetic task"
+                },
+                "recovery_revision": 1,
+                "recovery_binding": {
+                  "runtime_session_id": "runtime",
+                  "durable_session_id": "session",
+                  "profile": "default",
+                  "live": true
+                }
+              }
+            }
+          ]
+        }
+      },
+      "expectedStatus": "Active",
+      "expectedRows": 1,
+      "expectedAge": 0,
+      "expectedActiveCount": 0
+    },
+    {
+      "name": "snapshot-failed",
+      "profile": "default",
+      "durableId": "session",
+      "runtime": "replacement",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 8,
+          "resume_cursor": 0,
+          "replay_gap": true,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": [
+            {
+              "jsonrpc": "2.0",
+              "method": "event",
+              "params": {
+                "session_id": "runtime",
+                "type": "subagent.complete",
+                "payload": {
+                  "subagent_id": "child",
+                  "status": "timeout",
+                  "goal": "Synthetic task"
+                },
+                "recovery_revision": 1,
+                "recovery_binding": {
+                  "runtime_session_id": "runtime",
+                  "durable_session_id": "session",
+                  "profile": "default",
+                  "live": false
+                }
+              }
+            }
+          ]
+        }
+      },
+      "expectedStatus": "Failed",
+      "expectedRows": 1,
+      "expectedAge": 0,
+      "expectedActiveCount": 0
+    },
+    {
+      "name": "snapshot-stopped",
+      "profile": "default",
+      "durableId": "session",
+      "runtime": "replacement",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 8,
+          "resume_cursor": 0,
+          "replay_gap": true,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": [
+            {
+              "jsonrpc": "2.0",
+              "method": "event",
+              "params": {
+                "session_id": "runtime",
+                "type": "subagent.complete",
+                "payload": {
+                  "subagent_id": "child",
+                  "status": "interrupted",
+                  "goal": "Synthetic task"
+                },
+                "recovery_revision": 1,
+                "recovery_binding": {
+                  "runtime_session_id": "runtime",
+                  "durable_session_id": "session",
+                  "profile": "default",
+                  "live": false
+                }
+              }
+            }
+          ]
+        }
+      },
+      "expectedStatus": "Stopped",
+      "expectedRows": 1,
+      "expectedAge": 0,
+      "expectedActiveCount": 0
+    },
+    {
+      "name": "foreign-durable",
+      "profile": "default",
+      "durableId": "session",
+      "runtime": "replacement",
+      "attached": {
+        "jsonrpc": "2.0",
+        "method": "relay.lease.attached",
+        "params": {
+          "recovery_version": 1,
+          "lease_id": "lease",
+          "last_seq": 8,
+          "resume_cursor": 0,
+          "replay_gap": true,
+          "recovery_reset": false,
+          "bindings": [],
+          "task_snapshot": [
+            {
+              "jsonrpc": "2.0",
+              "method": "event",
+              "params": {
+                "session_id": "runtime",
+                "type": "subagent.complete",
+                "payload": {
+                  "subagent_id": "child",
+                  "status": "completed",
+                  "goal": "Synthetic task"
+                },
+                "recovery_revision": 1,
+                "recovery_binding": {
+                  "runtime_session_id": "runtime",
+                  "durable_session_id": "other",
+                  "profile": "default",
+                  "live": false
+                }
+              }
+            }
+          ]
+        }
+      },
+      "expectedStatus": null,
+      "expectedRows": 0,
+      "expectedAge": 0,
+      "expectedActiveCount": 0
+    }
+  ]
+}

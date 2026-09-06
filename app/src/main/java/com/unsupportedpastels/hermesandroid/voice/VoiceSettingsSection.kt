@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -33,6 +34,13 @@ data class ElevenLabsVoice(
     val label: String,
 )
 
+/** Identity of server-owned voice settings; never displayed or logged. */
+data class VoiceSettingsIdentity(
+    val origin: com.unsupportedpastels.hermesandroid.connection.ServerOrigin?,
+    val relayTargetId: String?,
+    val profile: String,
+)
+
 /**
  * Everything the Voice settings section needs. Null when the connected server
  * has no audio routes — the section is hidden entirely (fail-closed), never
@@ -48,6 +56,7 @@ data class VoiceSettings(
     /** Client-side opt-in: keep an active voice conversation running screen-off. */
     val screenOffContinuationEnabled: Boolean = false,
     val setScreenOffContinuation: (Boolean) -> Unit = {},
+    val identity: VoiceSettingsIdentity? = null,
 )
 
 /**
@@ -62,6 +71,13 @@ fun VoiceSettingsSection(
     modifier: Modifier = Modifier,
 ) {
     if (!settings.capabilities.audioRoutesPresent) return
+    key(settings.identity) {
+        VoiceSettingsContent(settings, modifier)
+    }
+}
+
+@Composable
+private fun VoiceSettingsContent(settings: VoiceSettings, modifier: Modifier) {
     val scope = rememberCoroutineScope()
     val config = settings.config
 
@@ -87,6 +103,7 @@ fun VoiceSettingsSection(
         // Server-backed auto-speak (voice.auto_tts) with optimistic rollback.
         var autoTts by remember(config.autoTts) { mutableStateOf(config.autoTts) }
         var autoTtsError by remember { mutableStateOf(false) }
+        var autoTtsPending by remember { mutableStateOf(false) }
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -105,13 +122,19 @@ fun VoiceSettingsSection(
             }
             Switch(
                 checked = autoTts,
+                enabled = !autoTtsPending,
                 onCheckedChange = { enabled ->
+                    autoTtsPending = true
                     autoTtsError = false
                     autoTts = enabled
                     scope.launch {
-                        if (!settings.setAutoTts(enabled)) {
-                            autoTts = !enabled
-                            autoTtsError = true
+                        try {
+                            if (!settings.setAutoTts(enabled)) {
+                                autoTts = !enabled
+                                autoTtsError = true
+                            }
+                        } finally {
+                            autoTtsPending = false
                         }
                     }
                 },
@@ -181,6 +204,7 @@ private fun ElevenLabsVoicePicker(settings: VoiceSettings) {
     }
     var expanded by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf(false) }
+    var pending by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         voices = settings.loadVoices()
@@ -193,12 +217,13 @@ private fun ElevenLabsVoicePicker(settings: VoiceSettings) {
 
     ExposedDropdownMenuBox(
         expanded = expanded,
-        onExpandedChange = { expanded = it },
+        onExpandedChange = { if (!pending) expanded = it },
     ) {
         OutlinedTextField(
             value = selectedLabel,
             onValueChange = {},
             readOnly = true,
+            enabled = !pending,
             label = { Text("ElevenLabs voice") },
             isError = error,
             supportingText = if (error) {
@@ -220,14 +245,20 @@ private fun ElevenLabsVoicePicker(settings: VoiceSettings) {
                 DropdownMenuItem(
                     text = { Text(voice.label.ifBlank { voice.name }) },
                     onClick = {
+                        if (pending) return@DropdownMenuItem
+                        pending = true
                         expanded = false
                         error = false
                         val previous = selectedId
                         selectedId = voice.voiceId
                         scope.launch {
-                            if (!settings.setElevenLabsVoice(voice.voiceId)) {
-                                selectedId = previous
-                                error = true
+                            try {
+                                if (!settings.setElevenLabsVoice(voice.voiceId)) {
+                                    selectedId = previous
+                                    error = true
+                                }
+                            } finally {
+                                pending = false
                             }
                         }
                     },

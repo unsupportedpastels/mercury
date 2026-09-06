@@ -52,6 +52,37 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.unsupportedpastels.mercury
         CODE_SIGN_ENTITLEMENTS: Mercury/Mercury.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # KMP Phase 0 spike (docs/plans/kmp-shared-core.md): where Gradle drops
+        # the static MercuryCore framework for Xcode consumption.
+        FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/mercury-core/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
+    # Builds the KMP framework before compiling Swift. MercuryCore is a hard
+    # dependency (AttachmentPolicy is a facade over it), so a JDK is required
+    # to build the iOS app — fail here with a clear message instead of a
+    # confusing "no such module MercuryCore" later.
+    preBuildScripts:
+      - name: Build MercuryCore KMP framework
+        basedOnDependencyAnalysis: false
+        script: |
+          set -eu
+          # Not embedAndSignAppleFrameworkForXcode: that task disables itself
+          # for a static framework with signing disallowed. Link the flavor
+          # Xcode asked for and copy it to the FRAMEWORK_SEARCH_PATHS dir.
+          if command -v java >/dev/null 2>&1 || [ -n "${JAVA_HOME:-}" ]; then
+            case "$SDK_NAME" in
+              iphonesimulator*) KT_TARGET=IosSimulatorArm64; KT_DIR=iosSimulatorArm64 ;;
+              iphoneos*)        KT_TARGET=IosArm64;          KT_DIR=iosArm64 ;;
+              *) echo "warning: unsupported SDK_NAME=$SDK_NAME for MercuryCore"; exit 0 ;;
+            esac
+            CONF_LC=$(printf %s "$CONFIGURATION" | tr '[:upper:]' '[:lower:]')
+            cd "$SRCROOT/.."
+            ./gradlew ":shared:mercury-core:link${CONFIGURATION}Framework${KT_TARGET}"
+            OUT="$SRCROOT/../shared/mercury-core/build/xcode-frameworks/$CONFIGURATION/$SDK_NAME"
+            mkdir -p "$OUT"
+            rsync -a --delete "$SRCROOT/../shared/mercury-core/build/bin/$KT_DIR/${CONF_LC}Framework/MercuryCore.framework" "$OUT/"
+          else
+            echo "error: building Mercury requires a JDK (brew install openjdk@17) to compile the MercuryCore KMP framework"
+            exit 1
+          fi
     info:
       path: Mercury/Info.plist
       properties:
@@ -60,7 +91,13 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         NSMicrophoneUsageDescription: Mercury uses the microphone only while you dictate a message draft.
         NSSpeechRecognitionUsageDescription: Mercury uses speech recognition to place dictated words into your message draft.
+        NSCameraUsageDescription: Mercury uses the camera only to scan a Mercury Relay pairing QR code.
         MercuryAppGroupIdentifier: $(MERCURY_APP_GROUP_IDENTIFIER)
+        # Plain-HTTP is a supported configuration for LAN self-hosted servers
+        # (the "Use HTTPS" checkbox off). Scoped ATS exception: local
+        # networking only — cleartext to public hosts stays blocked.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         # Best-effort background notifications (no APNs): iOS may opportunistically
         # wake the app to reconcile session state and post local notifications.
         UIBackgroundModes:
@@ -125,9 +162,16 @@ targets:
     platform: iOS
     sources:
       - MercuryTests
+      - path: ../shared/mercury-core/src/commonTest/resources/adapter-parity/chat-event-corpus.json
+        buildPhase: resources
+      - path: ../shared/mercury-core/src/commonTest/resources/adapter-parity/relay-recovery.json
+        buildPhase: resources
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+        # @testable import Mercury exposes public signatures backed by the
+        # static KMP module, so the test compiler must resolve MercuryCore too.
+        FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/mercury-core/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
     dependencies:
       - target: Mercury
       - target: MercuryShareKit

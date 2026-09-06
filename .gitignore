@@ -1,6 +1,8 @@
 *.iml
 .gradle
 .kotlin/
+__pycache__/
+*.pyc
 .env
 *.jks
 *.jks.b64
@@ -35,3 +37,12 @@ local.properties
 
 # Agent-authored implementation plans are local working artifacts.
 /docs/plans/
+
+# Internal security/bug review notes stay local until findings are fixed.
+/docs/security-review-*.md
+/docs/bug-review-*.md
+
+# Local-only developer gates and design notes never ship in the public tree.
+/tools/*-local.md
+/tools/*-local.sh
+**/DIAGNOSTICS.md

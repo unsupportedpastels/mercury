@@ -1342,6 +1342,7 @@ class HermesConnectionViewModelTest {
                     model = "deepseek/deepseek-v4-flash-0731",
                     provider = "nous",
                     reasoningEffort = "medium",
+                    fastMode = true,
                     running = true,
                 ),
                 HermesChatEvent.SessionInfo(
@@ -1371,6 +1372,7 @@ class HermesConnectionViewModelTest {
         assertEquals("deepseek/deepseek-v4-flash-0731", chat.model)
         assertEquals("nous", chat.provider)
         assertEquals("medium", chat.reasoningEffort)
+        assertEquals("fast", chat.fastMode)
     }
 
     @Test
@@ -1942,15 +1944,40 @@ class HermesConnectionViewModelTest {
     }
 
     @Test
-    fun staleCreateCannotOverwriteAliasFromNewerDraftOperation() = runTest(dispatcher) {
+    fun parentCompletionAndNextPromptRetainScopedBackgroundChild() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val session = TerminalToolChatSession(withBackgroundTask = true)
+        val client = AuthenticatingHermesConnectionClient()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin)),
+            client = client, tokenStore = FixedTokenStore(),
+            chatConnector = HermesChatConnector { _, _ -> session },
+        )
+        runCurrent()
+        client.probeResponse.complete(authRequiredInfo())
+        runCurrent()
+        client.authenticationResponse.complete(AuthenticatedHermesConnection("user", emptyList()))
+        advanceUntilIdle()
+        val id = viewModel.createNewSession()
+        viewModel.sendMessage(id, "research")
+        advanceUntilIdle()
+        val first = viewModel.snapshots.value.chatSessions.getValue(id)
+        assertFalse(first.isSending)
+        assertEquals("own-child", first.backgroundTasks.rows.single().id)
+        assertEquals(com.unsupportedpastels.hermesandroid.gateway.BackgroundTaskStatus.Active, first.backgroundTasks.rows.single().status)
+        viewModel.sendMessage(id, "next prompt")
+        advanceUntilIdle()
+        assertEquals("own-child", viewModel.snapshots.value.chatSessions.getValue(id).backgroundTasks.rows.single().id)
+    }
+
+    @Test
+    fun duplicateSendCannotReplacePendingDraftCreateOrItsCanonicalAlias() = runTest(dispatcher) {
         val origin = ServerOrigin.parse("https://hermes.example")
         val first = BlockingCreateProjectDraftChatSession("stale-canonical")
         val second = CanonicalProjectDraftChatSession("current-canonical")
-        val third = CanonicalProjectDraftChatSession("unused-canonical")
         val sessions = ArrayDeque<HermesChatSession>().apply {
             add(first)
             add(second)
-            add(third)
         }
         val client = AuthenticatingHermesConnectionClient()
         var connections = 0
@@ -1976,20 +2003,21 @@ class HermesConnectionViewModelTest {
         assertTrue(first.createStarted.isCompleted)
 
         viewModel.sendMessage(draftId, "current operation")
-        advanceUntilIdle()
-        assertEquals(2, connections)
-        assertEquals("current operation", second.submittedText)
+        runCurrent()
+        assertEquals(1, connections)
+        assertEquals(null, second.submittedText)
 
         first.releaseCreate.complete(Unit)
-        advanceUntilIdle()
-        second.closeEvents()
-        advanceUntilIdle()
+        runCurrent()
+        first.completeAndCloseEvents()
+        runCurrent()
 
         viewModel.sendMessage(draftId, "resume canonical")
-        advanceUntilIdle()
+        runCurrent()
 
-        assertEquals(3, connections)
-        assertEquals(DurableSessionId("current-canonical"), third.resumedDurableId)
+        assertEquals(2, connections)
+        assertEquals(DurableSessionId("stale-canonical"), second.resumedDurableId)
+        assertEquals("resume canonical", viewModel.snapshots.value.chatSessions.getValue(draftId).acceptedSubmissionText)
     }
 
     @Test
@@ -4163,6 +4191,11 @@ private class BlockingCreateProjectDraftChatSession(
     val createStarted = CompletableDeferred<Unit>()
     val releaseCreate = CompletableDeferred<Unit>()
 
+    fun completeAndCloseEvents() {
+        channel.trySend(HermesChatEvent.MessageComplete(RuntimeSessionId("runtime-$canonicalId"), "done", "done"))
+        channel.close()
+    }
+
     override suspend fun resume(
         durableSessionId: DurableSessionId,
         profile: String?,
@@ -4248,7 +4281,7 @@ private class CanonicalProjectDraftChatSession(
     }
 }
 
-private class TerminalToolChatSession : HermesChatSession {
+private class TerminalToolChatSession(private val withBackgroundTask: Boolean = false) : HermesChatSession {
     private val channel = Channel<HermesChatEvent>(Channel.UNLIMITED)
     private val runtimeSessionId = RuntimeSessionId("runtime-terminal-tools")
     override val events = channel.receiveAsFlow()
@@ -4276,6 +4309,16 @@ private class TerminalToolChatSession : HermesChatSession {
         text: String,
     ): PromptSubmission {
         channel.send(HermesChatEvent.ToolStart(runtimeSessionId, "tool-stale", "web_search", "query"))
+        if (withBackgroundTask) {
+            channel.send(com.unsupportedpastels.hermesandroid.gateway.BackgroundTaskEvent(
+                runtimeSessionId, com.unsupportedpastels.hermesandroid.gateway.BackgroundTaskEventKind.Start,
+                "own-child", "Review tests", null,
+            ))
+            channel.send(com.unsupportedpastels.hermesandroid.gateway.BackgroundTaskEvent(
+                RuntimeSessionId("stale-runtime"), com.unsupportedpastels.hermesandroid.gateway.BackgroundTaskEventKind.Start,
+                "foreign-child", "Must not appear", null,
+            ))
+        }
         channel.send(HermesChatEvent.MessageComplete(runtimeSessionId, "done", "done"))
         return PromptSubmission("streaming")
     }

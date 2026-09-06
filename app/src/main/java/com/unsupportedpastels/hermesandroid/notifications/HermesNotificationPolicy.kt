@@ -1,36 +1,22 @@
 package com.unsupportedpastels.hermesandroid.notifications
 
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
+import com.unsupportedpastels.mercury.core.notifications.NotificationTextPolicy
+import com.unsupportedpastels.mercury.core.notifications.NotificationVisibilityPolicy
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-private const val MAX_NOTIFICATION_PREVIEW_CHARS = 240
-private const val DEFAULT_NOTIFICATION_PREVIEW_LINES = 3
-
+/**
+ * Notification text and visibility now decide in the shared KMP core
+ * (docs/plans/kmp-shared-core.md, Phase 2) so Android and iOS stay
+ * identical. These wrappers keep the app's typed DurableSessionId surface.
+ */
 internal fun finalResponsePreview(
     text: String,
-    maxLines: Int = DEFAULT_NOTIFICATION_PREVIEW_LINES,
-): String {
-    val cleaned = text
-        .lineSequence()
-        .mapNotNull { line ->
-            val trimmed = line.trim()
-            if (trimmed.matches(Regex("^#{1,6}\\s+.+"))) return@mapNotNull null
-            trimmed
-                .replace("**", "")
-                .replace("__", "")
-                .replace("`", "")
-        }
-        .filter(String::isNotBlank)
-        .take(maxLines.coerceAtLeast(1))
-        .joinToString("\n")
-        .trim()
-    return cleaned.ifEmpty { "Response completed" }
-        .take(MAX_NOTIFICATION_PREVIEW_CHARS)
-}
+    maxLines: Int = NotificationTextPolicy.DEFAULT_PREVIEW_LINES,
+): String = NotificationTextPolicy.finalResponsePreview(text, maxLines)
 
-internal fun activeTurnTitle(count: Int): String =
-    if (count <= 1) "Hermes is working" else "Hermes is working in $count sessions"
+internal fun activeTurnTitle(count: Int): String = NotificationTextPolicy.activeTurnTitle(count)
 
 internal data class SessionNotificationVisibility(
     val appForeground: Boolean = false,
@@ -41,11 +27,14 @@ internal data class SessionNotificationVisibility(
 internal fun shouldPostSessionNotification(
     sessionId: DurableSessionId,
     visibility: SessionNotificationVisibility,
-): Boolean = !(
-    visibility.appForeground &&
-        visibility.windowFocused &&
-        visibility.visibleSessionId == sessionId
-    )
+): Boolean = NotificationVisibilityPolicy.shouldPost(
+    sessionId.value,
+    com.unsupportedpastels.mercury.core.notifications.SessionNotificationVisibility(
+        appForeground = visibility.appForeground,
+        windowFocused = visibility.windowFocused,
+        visibleSessionId = visibility.visibleSessionId?.value,
+    ),
+)
 
 internal object SessionNotificationVisibilityRegistry {
     private val mutableStates = MutableStateFlow(SessionNotificationVisibility())

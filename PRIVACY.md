@@ -2,7 +2,7 @@
 
 **Effective date:** August 15, 2026
 
-Mercury — a Hermes companion — is an Android client for a Hermes Agent server selected and controlled by the user.
+Mercury — a Hermes companion — is a native Android and iOS client for a Hermes Agent server selected and controlled by the user.
 
 ## Data Mercury handles
 
@@ -30,7 +30,9 @@ Host-file contents are downloaded only after an explicit preview, play, save, or
 
 ## Where data goes
 
-Mercury sends data only to the Hermes server origin you configure in the app. Mercury does **not** operate a shared hosted backend and does not include analytics, advertising, tracking, or telemetry SDKs.
+Mercury sends data only to the Hermes server origin you configure in the app or, when you explicitly enable Relay, through the end-to-end encrypted route described below. Mercury does **not** operate an application-data backend and does not include analytics, advertising, tracking, or telemetry SDKs.
+
+If you explicitly pair the optional **Mercury Relay** mode on Android or iOS, traffic to your host additionally passes through a hosted relay router. That router sees only opaque routing metadata (a random installation route and connection role) plus end-to-end encrypted ciphertext; it cannot read prompts, transcripts, credentials, or session content, and it stores no session data. Relay mode is never required and its device-only encrypted pairings can be removed at any time.
 
 When you explicitly choose **Voice input**, Mercury opens an installed Android speech-recognition activity. That service may capture and process audio under its own privacy policy; Mercury receives only the recognized text and does not store the recording.
 
@@ -44,7 +46,7 @@ Your chosen server’s operator and configuration determine how server-side data
 - **Microphone (`RECORD_AUDIO`)** — voice dictation, voice conversations, and barge-in; requested only when you first start a voice feature, used only while one is active.
 - **Foreground service / microphone and wake lock** — only for the opt-in screen-off voice continuation described above.
 
-Mercury does not request location, contacts, camera, or storage-wide file permissions. Attachments use Android’s user-mediated document picker. Device Voice input uses an installed Android speech service, which may request microphone access in its own interface; server-backed dictation and voice conversation use Mercury’s explicitly requested `RECORD_AUDIO` permission described above.
+Mercury does not request location, contacts, camera, or storage-wide file permissions. Relay QR scanning delegates the camera surface to Google Play services' on-device code scanner; Mercury receives only the decoded QR text and never receives camera frames. Attachments use Android’s user-mediated document picker. Device Voice input uses an installed Android speech service, which may request microphone access in its own interface; server-backed dictation and voice conversation use Mercury’s explicitly requested `RECORD_AUDIO` permission described above.
 
 ## iOS notifications and Live Activities
 

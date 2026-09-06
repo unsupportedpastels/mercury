@@ -4,9 +4,11 @@ import android.content.res.Configuration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
 import androidx.navigationevent.compose.rememberNavigationEventDispatcherOwner
@@ -44,6 +46,8 @@ import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
 import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
 import com.unsupportedpastels.hermesandroid.gateway.SlashCompletionItem
 import com.unsupportedpastels.hermesandroid.navigation.SessionDetailRoute
+import com.unsupportedpastels.hermesandroid.relay.RelayPairingPhase
+import com.unsupportedpastels.hermesandroid.relay.RelayUiState
 import com.unsupportedpastels.hermesandroid.theme.HermesAndroidTheme
 
 private val screenshotAlphaProjectId = ProjectId("project-alpha")
@@ -557,6 +561,95 @@ fun HermesServerDialogScreenshot() {
             showBack = true,
             onBack = {},
             onSave = { Result.success(Unit) },
+        )
+    }
+}
+
+@Composable
+private fun OnboardingScreenshotContent() {
+    ScreenshotNavigationHost {
+        HermesAndroidTheme(darkTheme = true) {
+            ServerSettingsScreen(
+                serverOrigin = null,
+                snapshot = HermesGatewaySnapshot(),
+                showBack = false,
+                onBack = {},
+                onSave = { Result.success(Unit) },
+                visibleSections = setOf(SettingsSection.Servers),
+                isInitialOnboarding = true,
+                title = "Connect to Hermes",
+                cloudState = com.unsupportedpastels.hermesandroid.connection.CloudConnectState.SignedOut,
+            )
+        }
+    }
+}
+
+@PreviewTest
+@Preview(name = "Compact onboarding", widthDp = 400, heightDp = 900, showBackground = true)
+@Composable
+fun MercuryOnboardingCompactScreenshot() = OnboardingScreenshotContent()
+
+@PreviewTest
+@Preview(name = "Medium onboarding", widthDp = 610, heightDp = 900, showBackground = true)
+@Composable
+fun MercuryOnboardingMediumScreenshot() = OnboardingScreenshotContent()
+
+@PreviewTest
+@Preview(name = "Expanded onboarding", widthDp = 900, heightDp = 900, showBackground = true)
+@Composable
+fun MercuryOnboardingExpandedScreenshot() = OnboardingScreenshotContent()
+
+private val screenshotRelayState = RelayUiState(
+    phase = RelayPairingPhase.AwaitingApproval(
+        targetId = "00000000-0000-4000-8000-000000000001",
+        fingerprint = "0123456789abcdef",
+    ),
+)
+
+@PreviewTest
+@Preview(name = "Compact relay pairing", widthDp = 400, heightDp = 500, showBackground = true)
+@Composable
+fun RelayPairingCompactScreenshot() {
+    HermesAndroidTheme(darkTheme = false) {
+        RelayConnectPanel(
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+            state = screenshotRelayState,
+            onScan = {},
+            onPair = {},
+            onConnect = {},
+            onRemove = {},
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "Medium relay pairing", widthDp = 610, heightDp = 500, showBackground = true)
+@Composable
+fun RelayPairingMediumScreenshot() {
+    HermesAndroidTheme(darkTheme = false) {
+        RelayConnectPanel(
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+            state = screenshotRelayState,
+            onScan = {},
+            onPair = {},
+            onConnect = {},
+            onRemove = {},
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "Expanded relay pairing", widthDp = 900, heightDp = 675, showBackground = true)
+@Composable
+fun RelayPairingExpandedScreenshot() {
+    HermesAndroidTheme(darkTheme = false) {
+        RelayConnectPanel(
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+            state = screenshotRelayState,
+            onScan = {},
+            onPair = {},
+            onConnect = {},
+            onRemove = {},
         )
     }
 }

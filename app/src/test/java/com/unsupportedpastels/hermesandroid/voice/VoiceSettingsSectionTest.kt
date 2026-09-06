@@ -1,6 +1,7 @@
 package com.unsupportedpastels.hermesandroid.voice
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -43,6 +44,28 @@ class VoiceSettingsSectionTest {
         composeRule.onNodeWithContentDescription("Speak replies automatically").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithContentDescription("Speak replies automatically").assertIsOn()
+    }
+
+    @Test
+    fun profileChangeCancelsPendingSettingAndResetsLocalUi() {
+        var cancelled = false
+        val current = androidx.compose.runtime.mutableStateOf(
+            settings(accepted = true).copy(
+                identity = VoiceSettingsIdentity(null, null, "default"),
+                setAutoTts = {
+                    try { kotlinx.coroutines.awaitCancellation() } finally { cancelled = true }
+                },
+            ),
+        )
+        composeRule.setContent { VoiceSettingsSection(current.value) }
+        composeRule.onNodeWithContentDescription("Speak replies automatically").performClick()
+        composeRule.onNodeWithContentDescription("Speak replies automatically").assertIsNotEnabled()
+        composeRule.runOnIdle {
+            current.value = settings(accepted = true).copy(identity = VoiceSettingsIdentity(null, null, "work"))
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("Speak replies automatically").assertIsOff()
+        org.junit.Assert.assertTrue(cancelled)
     }
 
     @Test

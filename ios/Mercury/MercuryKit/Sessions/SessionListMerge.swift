@@ -1,4 +1,5 @@
 import Foundation
+import MercuryCore
 
 // MARK: - Mergeable session surface
 
@@ -63,14 +64,14 @@ enum SessionListMerge {
         currentSessions: [Session],
         pendingDraftIDs: Set<String>
     ) -> [Session] {
-        if pendingDraftIDs.isEmpty { return serverSessions }
-        let serverIds = Set(serverSessions.map(\.id))
-        let preservedDrafts = currentSessions.filter { session in
-            session.isLocalDraft
-                && pendingDraftIDs.contains(session.id)
-                && !serverIds.contains(session.id)
-        }
-        if preservedDrafts.isEmpty { return serverSessions }
-        return preservedDrafts + serverSessions
+        let preserved = MercuryCore.SessionListMergePolicy.shared.preservedDraftIndices(
+            serverIds: serverSessions.map(\.id),
+            currentSessions: currentSessions.map {
+                MercuryCore.SessionMergeEntry(id: $0.id, isLocalDraft: $0.isLocalDraft)
+            },
+            pendingDraftIds: pendingDraftIDs
+        )
+        if preserved.isEmpty { return serverSessions }
+        return preserved.map { currentSessions[Int(truncating: $0)] } + serverSessions
     }
 }

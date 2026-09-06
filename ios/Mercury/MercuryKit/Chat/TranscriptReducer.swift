@@ -1,62 +1,70 @@
 import Foundation
+import MercuryCore
 
-// MARK: - Transcript state machine
+// MARK: - Transcript state machine (facade over the shared KMP core)
 //
-// Pure value-type model of the conversation transcript, extracted verbatim
-// from ChatView's event handling so it can be unit-tested hermetically
-// (no SwiftUI, no connection, no clock). ChatView owns the UI-only concerns
-// (scroll/follow-bottom intent, reconnect policy, sheet presentation) and
-// forwards every ChatEvent into `apply(_:)`.
-//
-// Deliberate parity notes — do not "simplify" these:
-// - Only `.sessionTitle` is filtered by session identity. Streaming,
-//   completion, and error events mutate state regardless of session ID,
-//   exactly as the pre-extraction ChatView did.
-// - No text bounding happens here: bounds are enforced upstream in
-//   ChatConnection's frame decoding (boundedTextField / boundedRPCInput).
-// - `messageComplete` with nil text keeps the streamed buffer; only a
-//   non-nil final text replaces it.
-// - Any approval/clarify expire clears whichever request is pending; expires
-//   are not matched by request ID or kind (pre-extraction behavior).
-// - Reasoning deltas land on the last incomplete assistant row (or open a
-//   fresh reasoning-only row); reasoning text survives completion so the UI
-//   can show it collapsed.
-// - Interim commentary seals the current streaming segment as completed; a
-//   later delta opens a fresh row. `alreadyStreamed` carries no extra
-//   reducer behavior (Android parity).
-// - Tool activity rows are bounded: at most 50 rows are retained, ids and
-//   names at 256 chars, context/summary at 4096 chars (String.prefix).
-// - messageComplete and error additionally finalize every running tool row
-//   and clear the transient "generating arguments" status.
-// - Event kinds this slice does not model (sessionInfo/unsupported blocking)
-//   fall through `default: break`.
+// The transcript reduction rules live in the shared core's TranscriptEngine
+// (shared/mercury-core, Phase 3 of docs/plans/kmp-shared-core.md). This file
+// keeps the exact pre-existing Swift value-type API — ChatView, the sheets,
+// and the 57-test TranscriptReducerTests suite are unchanged — while every
+// decision is delegated to the engine's immutable snapshots. The parity
+// notes that used to live here now live on the engine.
 
 /// Pure transcript state for one chat session.
 struct TranscriptState: Sendable, Equatable {
 
-    // MARK: Row model (moved verbatim from ChatView)
+    // MARK: Row model
 
     struct Row: Identifiable, Sendable, Equatable {
-        let id = UUID()
+        /// Engine-assigned stable identity (monotonic per state lineage).
+        let coreID: Int64
         var role: String
         var text: String
         var completed: Bool
-        /// Persisted tool identity used by the collapsed historical activity
-        /// renderer. Nil for ordinary conversation rows and live text events.
         var toolName: String? = nil
-        /// Accumulated chain-of-thought for this assistant segment. Empty for
-        /// user rows and assistant rows without reasoning. Retained after the
-        /// row completes so the UI can render it as a collapsed disclosure.
         var reasoningText: String = ""
 
-        /// Identity-stable equality: two rows describing the same message
-        /// content compare equal even though their UUIDs differ. This keeps
-        /// whole-state assertions practical in tests without letting row
-        /// identity (a view concern) leak into value semantics.
+        /// Stable UUID derived from the engine identity, for SwiftUI.
+        var id: UUID {
+            UUID(uuidString: String(
+                format: "00000000-0000-4000-8000-%012llx", coreID
+            )) ?? UUID()
+        }
+
+        /// Identity-stable equality: rows describing the same content compare
+        /// equal even when their engine ids differ.
         static func == (lhs: Row, rhs: Row) -> Bool {
             lhs.role == rhs.role && lhs.text == rhs.text && lhs.completed == rhs.completed
                 && lhs.toolName == rhs.toolName
                 && lhs.reasoningText == rhs.reasoningText
+        }
+
+        init(coreID: Int64 = 0, role: String, text: String, completed: Bool,
+             toolName: String? = nil, reasoningText: String = "") {
+            self.coreID = coreID
+            self.role = role
+            self.text = text
+            self.completed = completed
+            self.toolName = toolName
+            self.reasoningText = reasoningText
+        }
+
+        init(_ core: MercuryCore.TranscriptRow) {
+            self.init(
+                coreID: core.id,
+                role: core.role,
+                text: core.text,
+                completed: core.completed,
+                toolName: core.toolName,
+                reasoningText: core.reasoningText
+            )
+        }
+
+        var core: MercuryCore.TranscriptRow {
+            MercuryCore.TranscriptRow(
+                id: coreID, role: role, text: text, completed: completed,
+                toolName: toolName, reasoningText: reasoningText
+            )
         }
     }
 
@@ -65,16 +73,21 @@ struct TranscriptState: Sendable, Equatable {
         var content: String
         var toolName: String? = nil
         var reasoningText: String = ""
+
+        var core: MercuryCore.RestoredMessage {
+            MercuryCore.RestoredMessage(
+                role: role, content: content, toolName: toolName, reasoningText: reasoningText
+            )
+        }
     }
 
-    // MARK: Tool activity (bounded, Android parity)
+    // MARK: Tool activity
 
     enum ToolRowState: Sendable, Equatable {
         case running
         case completed
     }
 
-    /// One tool invocation shown in the transcript's activity feed.
     struct ToolRow: Sendable, Equatable {
         var toolID: String
         var name: String
@@ -83,475 +96,242 @@ struct TranscriptState: Sendable, Equatable {
         var state: ToolRowState
     }
 
-    /// Maximum retained tool rows; appends beyond this keep only the last 50.
-    static let maxToolRows = 50
+    static let maxToolRows = Int(MercuryCore.TranscriptEngine.shared.MAX_TOOL_ROWS)
+    static let maxToolFieldLength = Int(MercuryCore.TranscriptEngine.shared.MAX_TOOL_FIELD_LENGTH)
+    static let maxToolDetailLength = Int(MercuryCore.TranscriptEngine.shared.MAX_TOOL_DETAIL_LENGTH)
 
-    /// Stable prefix of the server's local interrupt status text
-    /// (`agent/conversation_loop.py` `INTERRUPT_WAITING_FOR_MODEL_PREFIX`).
-    /// Emitted as an interrupted turn's final text when a stop/steer lands
-    /// while the provider request is in flight. It is cancellation metadata,
-    /// not assistant prose; official surfaces suppress it and so do we —
-    /// both live (`messageComplete`) and from persisted history written by
-    /// servers that predate the upstream transcript fix.
-    static let interruptSentinelPrefix = "Operation interrupted: waiting for model response ("
+    static let interruptSentinelPrefix = MercuryCore.InterruptSentinel.shared.PREFIX
 
     static func isInterruptSentinel(_ text: String) -> Bool {
-        text.trimmingCharacters(in: .whitespacesAndNewlines)
-            .hasPrefix(interruptSentinelPrefix)
+        MercuryCore.InterruptSentinel.shared.isInterruptSentinel(text: text)
     }
-
-    /// Bound applied to tool ids and names.
-    static let maxToolFieldLength = 256
-    /// Bound applied to tool context and summary strings.
-    static let maxToolDetailLength = 4096
 
     // MARK: Pending interaction
 
-    /// The currently presented blocking request, mirroring
-    /// ApprovalSheet.Request's shape minus its SwiftUI ownership. The raw
-    /// event is retained so the presenting view can hand it to the sheet
-    /// unchanged.
     enum PendingRequest: Sendable, Equatable {
         case approval(ChatEvent)
         case clarify(ChatEvent)
     }
 
+    // MARK: Core snapshot
+
+    private var core: MercuryCore.TranscriptSnapshot
+    /// The original Swift event backing `pendingRequest`, kept alongside the
+    /// engine's decision so sheets receive the event unchanged.
+    private var pendingSwiftRequest: PendingRequest?
+
     // MARK: Configuration / session identity
 
-    /// Live title renames are adopted ONLY in the new-chat flow (the "+"
-    /// flow); existing sessions keep their navigation-supplied title until
-    /// the list refreshes. Seeded from ChatView's `isNewSession`.
-    var adoptsLiveTitles: Bool
+    var adoptsLiveTitles: Bool {
+        get { core.adoptsLiveTitles }
+        set { core = core.withAdoptsLiveTitles(value: newValue) }
+    }
 
-    /// Session IDs considered "ours" for title-adoption filtering. The view
-    /// seeds this exactly as its pre-extraction `isOurSession(_:)` compared:
-    /// the durable session id the screen was opened with (only when
-    /// non-empty), plus the runtime and durable ids once they are learned.
-    /// Membership in this set is equivalent to the original three-way
-    /// comparison because an empty navigation session id is never inserted.
-    var ownSessionIDs: Set<String> = []
+    var ownSessionIDs: Set<String> {
+        get { Set(core.ownSessionIds) }
+        set { core = core.withOwnSessionIds(ids: newValue) }
+    }
 
     // MARK: Observable transcript state
 
-    private(set) var rows: [Row] = []
+    var rows: [Row] { core.rows.map(Row.init) }
+    var lastError: String? { core.lastError }
+    var pendingRequest: PendingRequest? { pendingSwiftRequest }
+    var adoptedTitle: String? { core.adoptedTitle }
+    var latestStatusText: String? { core.latestStatusText }
+    var statusUpdateCount: Int { Int(core.statusUpdateCount) }
+    var generatingStatusText: String? { core.generatingStatusText }
 
-    /// Most recent `.error` payload. The view presents this as a composer
-    /// banner and clears its sending flag; recording here keeps the capture
-    /// testable without UIKit/SwiftUI.
-    private(set) var lastError: String?
-
-    /// Blocking request awaiting user interaction, if any.
-    private(set) var pendingRequest: PendingRequest?
-
-    /// Title adopted from a matching `.sessionTitle` event, if any.
-    private(set) var adoptedTitle: String?
-
-    /// Text of the most recent `.statusUpdate`. Pre-extraction, status text
-    /// was explicitly discarded (`_ = statusText`) and only cleared a
-    /// connection note; it is recorded here for observability while the
-    /// note-clearing itself stays a view concern.
-    private(set) var latestStatusText: String?
-
-    /// Monotonic count of `.statusUpdate` events seen, so a view can detect
-    /// that one arrived even when the text repeats the previous value.
-    private(set) var statusUpdateCount = 0
-
-    /// Bounded feed of tool invocations (most recent last). Appends beyond
-    /// `maxToolRows` keep only the trailing window.
-    private(set) var tools: [ToolRow] = []
-
-    /// Transient "Generating <tool> arguments…" status set by
-    /// `.toolGenerating` and cleared by toolStart/toolComplete (and by
-    /// messageComplete/error finalization).
-    private(set) var generatingStatusText: String?
+    var tools: [ToolRow] {
+        core.tools.map { tool in
+            ToolRow(
+                toolID: tool.toolId,
+                name: tool.name,
+                context: tool.context,
+                summary: tool.summary,
+                state: tool.state == MercuryCore.ToolRowState.running ? .running : .completed
+            )
+        }
+    }
 
     init(isNewSession: Bool = false) {
-        self.adoptsLiveTitles = isNewSession
+        core = MercuryCore.TranscriptEngine.shared.initial(isNewSession: isNewSession)
+    }
+
+    static func == (lhs: TranscriptState, rhs: TranscriptState) -> Bool {
+        lhs.core == rhs.core && lhs.pendingSwiftRequest == rhs.pendingSwiftRequest
     }
 
     // MARK: Event application
 
     mutating func apply(_ event: ChatEvent) {
+        guard let coreEvent = event.core else { return }
+        core = MercuryCore.TranscriptEngine.shared.apply(state: core, event: coreEvent)
         switch event {
-        case .messageStart(_, let text):
-            rows.append(Row(role: "assistant", text: text ?? "", completed: false))
-
-        case .messageDelta(_, let delta):
-            if let last = rows.lastIndex(where: { !$0.completed && $0.role == "assistant" }) {
-                rows[last].text += delta
-            } else {
-                // Deltas without a start frame still need a home.
-                rows.append(Row(role: "assistant", text: delta, completed: false))
-            }
-
-        case .messageComplete(_, let text, _, _, _, _, _, _, _):
-            // The server's "Operation interrupted: waiting for model response
-            // (Ns elapsed)." final text is cancellation metadata, not
-            // assistant prose — the TUI gateway, messaging gateway, and ACP
-            // adapter all suppress it (hermes-agent #7921). Treat it as nil
-            // final text so an interrupted turn keeps its streamed buffer,
-            // and drop the row entirely when nothing was streamed.
-            let sentinelSuppressed = text.map(Self.isInterruptSentinel) ?? false
-            let finalText = sentinelSuppressed ? nil : text
-            if let last = rows.lastIndex(where: { !$0.completed && $0.role == "assistant" }) {
-                // Authoritative final text replaces the streamed buffer when present.
-                if let finalText { rows[last].text = finalText }
-                rows[last].completed = true
-                if sentinelSuppressed,
-                   isBlank(rows[last].text),
-                   isBlank(rows[last].reasoningText) {
-                    // The interrupted turn produced nothing visible; a blank
-                    // completed bubble is worse than no bubble.
-                    rows.remove(at: last)
-                }
-            } else if let finalText {
-                rows.append(Row(role: "assistant", text: finalText, completed: true))
-            }
-            // A finished turn cannot leave tools running (Android parity).
-            finishRunningTools()
-
-        case .reasoningDelta(_, let text, let replace):
-            guard !isBlank(text) else { break }
-            if let last = rows.lastIndex(where: { !$0.completed && $0.role == "assistant" }) {
-                rows[last].reasoningText = replace ? text : rows[last].reasoningText + text
-            } else {
-                // Reasoning before any streamed content opens its own row;
-                // later message deltas land in its empty-text buffer.
-                rows.append(Row(role: "assistant", text: "", completed: false, reasoningText: text))
-            }
-
-        case .messageInterim(_, let text, _):
-            // `alreadyStreamed` carries no extra reducer behavior (Android
-            // parity): the interim text seals the segment either way.
-            guard !isBlank(text) else { break }
-            if let last = rows.lastIndex(where: { !$0.completed && $0.role == "assistant" }) {
-                rows[last].text = text
-                rows[last].completed = true
-            } else {
-                rows.append(Row(role: "assistant", text: text, completed: true))
-            }
-
-        case .toolGenerating(_, let name):
-            let boundedName = String(name.prefix(Self.maxToolFieldLength))
-            generatingStatusText = String(
-                ("Generating " + boundedName + " arguments…").prefix(Self.maxToolDetailLength)
-            )
-
-        case .error(_, let message):
-            lastError = message
-            finishRunningTools()
-
-        case .toolStart(_, let toolID, let name, let context):
-            let boundedID = String(toolID.prefix(Self.maxToolFieldLength))
-            let boundedName = String(name.prefix(Self.maxToolFieldLength))
-            let boundedContext = context.map { String($0.prefix(Self.maxToolDetailLength)) }
-            if let index = tools.firstIndex(where: { $0.toolID == boundedID }) {
-                guard tools[index].state != .completed else {
-                    // Completed tool invocations are final; a late start for
-                    // an already-finished id is ignored entirely.
-                    break
-                }
-                tools[index].name = boundedName
-                tools[index].context = boundedContext
-                tools[index].state = .running
-            } else {
-                appendToolRow(ToolRow(
-                    toolID: boundedID,
-                    name: boundedName,
-                    context: boundedContext,
-                    summary: nil,
-                    state: .running
-                ))
-            }
-            generatingStatusText = nil
-
-        case .toolComplete(_, let toolID, let name, let summary):
-            let boundedID = String(toolID.prefix(Self.maxToolFieldLength))
-            let boundedName = String(name.prefix(Self.maxToolFieldLength))
-            let boundedSummary = summary.map { String($0.prefix(Self.maxToolDetailLength)) }
-            generatingStatusText = nil
-            if let index = tools.firstIndex(where: { $0.toolID == boundedID }) {
-                // Preserve the start frame's context through completion.
-                tools[index].name = boundedName
-                tools[index].summary = boundedSummary
-                tools[index].state = .completed
-            } else {
-                appendToolRow(ToolRow(
-                    toolID: boundedID,
-                    name: boundedName,
-                    context: nil,
-                    summary: boundedSummary,
-                    state: .completed
-                ))
-            }
-
         case .approvalRequest:
-            pendingRequest = .approval(event)
-
+            pendingSwiftRequest = .approval(event)
         case .clarifyRequest:
-            pendingRequest = .clarify(event)
-
-        case .approvalExpire, .clarifyExpire:
-            if pendingRequest != nil { pendingRequest = nil }
-
-        case .sessionTitle(let eventSessionID, let newTitle):
-            // New-chat flow only: adopt live title renames for our own
-            // session. Existing sessions keep their previous behavior
-            // (title comes from navigation until the list refreshes).
-            if adoptsLiveTitles, isOwnSession(eventSessionID) {
-                adoptedTitle = newTitle
-            }
-
-        case .statusUpdate(_, _, let statusText):
-            latestStatusText = statusText
-            statusUpdateCount += 1
-
+            pendingSwiftRequest = .clarify(event)
         default:
-            break
+            if core.pendingRequest == nil { pendingSwiftRequest = nil }
         }
     }
 
     // MARK: Derived queries
 
-    /// A turn is executing when any assistant row is still streaming.
-    var hasStreamingAssistant: Bool {
-        rows.contains { !$0.completed && $0.role == "assistant" }
-    }
+    var hasStreamingAssistant: Bool { core.hasStreamingAssistant }
 
-    // MARK: Tool-row helpers
-
-    /// Appends a tool row, keeping only the trailing `maxToolRows` window.
-    private mutating func appendToolRow(_ row: ToolRow) {
-        tools.append(row)
-        if tools.count > Self.maxToolRows {
-            tools.removeFirst(tools.count - Self.maxToolRows)
-        }
-    }
-
-    /// Finalizes every running tool row and clears the generating status.
-    /// Invoked by messageComplete and error: a finished/failed turn cannot
-    /// leave tools spinning (Android parity).
-    private mutating func finishRunningTools() {
-        for index in tools.indices where tools[index].state == .running {
-            tools[index].state = .completed
-        }
-        generatingStatusText = nil
-    }
-
-    /// Whitespace-only strings carry no content (Foundation-only helper).
-    private func isBlank(_ value: String) -> Bool {
-        value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    // MARK: Session identity
-
-    /// Port of ChatView.isOurSession(_:): does this event's session id belong
-    /// to the chat we're showing? For a new chat we know the runtime id (and,
-    /// once adopted, the durable stored id); for an existing chat, the
-    /// durable id this view opened with.
     func isOwnSession(_ eventSessionID: String) -> Bool {
-        ownSessionIDs.contains(eventSessionID)
+        core.isOwnSession(eventSessionId: eventSessionID)
     }
 
     // MARK: Direct transcript mutations (non-event paths)
 
-    /// Restores REST-loaded history, replacing any live rows. Every restored
-    /// message is complete by construction. Order is caller-supplied display
-    /// order (ChatView reverses the server's newest-first payload).
     mutating func loadTranscript(_ messages: [(role: String, content: String)]) {
         loadTranscript(messages.map { RestoredMessage(role: $0.role, content: $0.content) })
     }
 
     mutating func loadTranscript(_ messages: [RestoredMessage]) {
-        rows = messages.compactMap { message in
-            let role = message.role.lowercased()
-            guard ["user", "assistant", "system", "tool"].contains(role) else { return nil }
-            // Persisted interrupt sentinels are cancellation metadata written
-            // by servers that predate the upstream transcript fix; never
-            // render them as assistant prose.
-            if role == "assistant", Self.isInterruptSentinel(message.content) { return nil }
-            let hasText = !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            let hasReasoning = !message.reasoningText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            let hasToolIdentity = role == "tool" && !(message.toolName ?? "").isEmpty
-            guard hasText || hasReasoning || hasToolIdentity else { return nil }
-            return Row(
-                role: role,
-                text: message.content,
-                completed: true,
-                toolName: message.toolName,
-                reasoningText: message.reasoningText
-            )
-        }
+        core = MercuryCore.TranscriptEngine.shared.loadTranscript(
+            state: core, messages: messages.map(\.core)
+        )
     }
 
-    /// Replaces history after foregrounding while preserving a local active-turn
-    /// suffix until REST proves that the matching turn completed.
     @discardableResult
     mutating func reconcileForegroundTranscript(
         _ messages: [RestoredMessage],
         turnWasActive: Bool
     ) -> Bool {
-        let priorRows = rows
-        let latestUserIndex = turnWasActive
-            ? priorRows.lastIndex(where: { $0.role == "user" })
-            : nil
-        let localTurnSuffix: [Row]
-        if let latestUserIndex {
-            localTurnSuffix = Array(priorRows[latestUserIndex...])
-        } else if turnWasActive,
-                  let streamingIndex = priorRows.lastIndex(where: {
-                      $0.role == "assistant" && !$0.completed
-                  }) {
-            localTurnSuffix = Array(priorRows[streamingIndex...])
-        } else {
-            localTurnSuffix = []
-        }
-
-        loadTranscript(messages)
-        guard turnWasActive, !localTurnSuffix.isEmpty else {
-            if turnWasActive { finishRunningTools() }
-            return false
-        }
-
-        if let localUser = localTurnSuffix.first(where: { $0.role == "user" }),
-           let restoredUserIndex = rows.lastIndex(where: {
-               $0.role == "user" && $0.text == localUser.text
-           }) {
-            let replyWasPersisted = rows.indices.contains(restoredUserIndex + 1)
-                && rows[(restoredUserIndex + 1)...].contains(where: { $0.role == "assistant" })
-            if replyWasPersisted {
-                finishRunningTools()
-                return false
-            }
-            rows.append(contentsOf: localTurnSuffix.dropFirst())
-        } else {
-            rows.append(contentsOf: localTurnSuffix)
-        }
-        return true
+        let result = MercuryCore.TranscriptEngine.shared.reconcileForegroundTranscript(
+            state: core, messages: messages.map(\.core), turnWasActive: turnWasActive
+        )
+        core = result.state
+        return result.keptLocalSuffix
     }
 
-    /// Prepends an older history window for "Load earlier". The server's
-    /// offset window is disjoint from the newest page by construction, so no
-    /// deduplication is performed.
     mutating func prependHistory(_ messages: [RestoredMessage]) {
-        let older = messages.compactMap { message -> Row? in
-            let role = message.role.lowercased()
-            guard ["user", "assistant", "system", "tool"].contains(role) else { return nil }
-            // Keep pagination consistent with initial/history restore: an
-            // interrupt sentinel is cancellation metadata, never assistant
-            // prose. Without this guard, loading older messages can reinsert
-            // the interruption bubble after the main transcript filtered it.
-            if role == "assistant", Self.isInterruptSentinel(message.content) { return nil }
-            let hasText = !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            let hasReasoning = !message.reasoningText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            let hasToolIdentity = role == "tool" && !(message.toolName ?? "").isEmpty
-            guard hasText || hasReasoning || hasToolIdentity else { return nil }
-            return Row(
-                role: role,
-                text: message.content,
-                completed: true,
-                toolName: message.toolName,
-                reasoningText: message.reasoningText
-            )
-        }
-        guard !older.isEmpty else { return }
-        rows.insert(contentsOf: older, at: 0)
+        core = MercuryCore.TranscriptEngine.shared.prependHistory(
+            state: core, messages: messages.map(\.core)
+        )
     }
 
-    /// Resume parity: a turn was already executing when we attached; make
-    /// sure the current assistant row is open so deltas have somewhere to
-    /// land. REST history is loaded as completed rows, so an active turn may
-    /// need to reopen the assistant row immediately after the latest user row
-    /// rather than appending a second assistant bubble.
     mutating func ensureInflightAssistantRow(text: String, completed: Bool) {
-        if let streamingIndex = rows.lastIndex(where: { !$0.completed && $0.role == "assistant" }) {
-            let currentText = rows[streamingIndex].text
-            if text.count > currentText.count, text.hasPrefix(currentText) {
-                rows[streamingIndex].text = text
-            }
-            return
-        }
-
-        if !completed,
-           let latestUserIndex = rows.lastIndex(where: { $0.role == "user" }),
-           let assistantIndex = rows.indices.reversed().first(where: {
-               $0 > latestUserIndex && rows[$0].role == "assistant"
-           }) {
-            rows[assistantIndex].completed = false
-            if !text.isEmpty { rows[assistantIndex].text = text }
-            return
-        }
-
-        rows.append(Row(role: "assistant", text: text, completed: completed))
+        core = MercuryCore.TranscriptEngine.shared.ensureInflightAssistantRow(
+            state: core, text: text, completed: completed
+        )
     }
 
-    /// Marks an active assistant turn complete when resume proves that the
-    /// server is no longer running it and no terminal event reached the view.
     mutating func finishStreamingAssistant() {
-        for index in rows.indices where rows[index].role == "assistant" && !rows[index].completed {
-            rows[index].completed = true
-        }
-        finishRunningTools()
+        core = MercuryCore.TranscriptEngine.shared.finishStreamingAssistant(state: core)
     }
 
-    /// Optimistic local echo of a submitted user prompt.
     mutating func appendUserMessage(_ text: String) {
-        rows.append(Row(role: "user", text: text, completed: true))
+        core = MercuryCore.TranscriptEngine.shared.appendUserMessage(state: core, text: text)
     }
 }
 
-/// Renderable timeline units. Historical tool-role rows are intentionally
-/// grouped so their raw JSON remains behind one compact activity disclosure,
-/// matching the mature Android transcript structure.
+// MARK: - Renderable timeline units
+
 enum TranscriptEntry: Identifiable, Equatable {
     case message(TranscriptState.Row)
     case toolRun([TranscriptState.Row])
     case workBurst(reasoning: [TranscriptState.Row], tools: [TranscriptState.Row])
 
-    var id: UUID {
+    /// Case-qualified identity: a row's entry can morph between cases as a
+    /// turn streams (reasoning-only workBurst → message once prose arrives).
+    /// Sharing the bare row UUID across cases makes SwiftUI treat the morph
+    /// as "same item" and keep the stale subtree — the streamed answer never
+    /// replaces the collapsed activity line.
+    var id: String {
         switch self {
-        case .message(let row): return row.id
-        case .toolRun(let rows): return rows[0].id
-        case .workBurst(let reasoning, let tools): return reasoning.first?.id ?? tools[0].id
+        case .message(let row): return "m-\(row.id.uuidString)"
+        case .toolRun(let rows): return "t-\(rows[0].id.uuidString)"
+        case .workBurst(let reasoning, let tools):
+            return "w-\((reasoning.first?.id ?? tools[0].id).uuidString)"
         }
     }
 }
 
 func coalesceTranscriptEntries(_ rows: [TranscriptState.Row]) -> [TranscriptEntry] {
-    var entries: [TranscriptEntry] = []
-    var toolRun: [TranscriptState.Row] = []
-    var burstReasoning: [TranscriptState.Row] = []
-
-    // A "work burst" is a reasoning-only assistant row followed by one or
-    // more tool rows with no visible prose in between — the common agent
-    // loop. It collapses into a single compact activity line.
-    func isReasoningOnly(_ row: TranscriptState.Row) -> Bool {
-        row.role.lowercased() == "assistant"
-            && !row.reasoningText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && row.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    func flushWork() {
-        guard !toolRun.isEmpty || !burstReasoning.isEmpty else { return }
-        if !burstReasoning.isEmpty {
-            entries.append(.workBurst(reasoning: burstReasoning, tools: toolRun))
-        } else {
-            entries.append(.toolRun(toolRun))
+    MercuryCore.TranscriptEngineKt.coalesceTranscriptEntries(rows: rows.map(\.core))
+        .map { entry in
+            switch entry {
+            case let message as MercuryCore.TranscriptEntryMessage:
+                return .message(TranscriptState.Row(message.row))
+            case let toolRun as MercuryCore.TranscriptEntryToolRun:
+                return .toolRun(toolRun.rows.map(TranscriptState.Row.init))
+            case let burst as MercuryCore.TranscriptEntryWorkBurst:
+                return .workBurst(
+                    reasoning: burst.reasoning.map(TranscriptState.Row.init),
+                    tools: burst.tools.map(TranscriptState.Row.init)
+                )
+            default:
+                fatalError("unknown transcript entry variant")
+            }
         }
-        burstReasoning.removeAll(keepingCapacity: true)
-        toolRun.removeAll(keepingCapacity: true)
-    }
+}
 
-    for row in rows {
-        if row.role.lowercased() == "tool" {
-            toolRun.append(row)
-        } else if isReasoningOnly(row) {
-            burstReasoning.append(row)
-        } else {
-            flushWork()
-            entries.append(.message(row))
+// MARK: - Event conversion (Swift -> shared core)
+
+private extension ChatEvent {
+    var core: MercuryCore.ChatEvent? {
+        switch self {
+        case .messageStart(let sessionID, let text):
+            return MercuryCore.ChatEventMessageStart(sessionId: sessionID, text: text)
+        case .messageDelta(let sessionID, let text):
+            return MercuryCore.ChatEventMessageDelta(sessionId: sessionID, text: text)
+        case .messageComplete(let sessionID, let text, let status, let error, let reasoning,
+                              let warning, let failureReason, let recoverable, let billing):
+            return MercuryCore.ChatEventMessageComplete(
+                sessionId: sessionID, text: text, status: status, error: error,
+                reasoning: reasoning, warning: warning, failureReason: failureReason,
+                recoverable: recoverable,
+                billing: billing.map {
+                    MercuryCore.BillingInfo(
+                        provider: $0.provider, billingUrl: $0.billingURL,
+                        isNous: $0.isNous, message: $0.message
+                    )
+                }
+            )
+        case .reasoningDelta(let sessionID, let text, let replace):
+            return MercuryCore.ChatEventReasoningDelta(sessionId: sessionID, text: text, replace: replace)
+        case .messageInterim(let sessionID, let text, let alreadyStreamed):
+            return MercuryCore.ChatEventMessageInterim(
+                sessionId: sessionID, text: text, alreadyStreamed: alreadyStreamed
+            )
+        case .toolGenerating(let sessionID, let name):
+            return MercuryCore.ChatEventToolGenerating(sessionId: sessionID, name: name)
+        case .sessionTitle(let sessionID, let title):
+            return MercuryCore.ChatEventSessionTitle(sessionId: sessionID, title: title)
+        case .error(let sessionID, let message):
+            return MercuryCore.ChatEventError(sessionId: sessionID, message: message)
+        case .toolStart(let sessionID, let toolID, let name, let context):
+            return MercuryCore.ChatEventToolStart(
+                sessionId: sessionID, toolId: toolID, name: name, context: context
+            )
+        case .toolComplete(let sessionID, let toolID, let name, let summary):
+            return MercuryCore.ChatEventToolComplete(
+                sessionId: sessionID, toolId: toolID, name: name, summary: summary
+            )
+        case .statusUpdate(let sessionID, let kind, let text):
+            return MercuryCore.ChatEventStatusUpdate(sessionId: sessionID, kind: kind, text: text)
+        case .clarifyRequest(let sessionID, let requestID, let question, let choices, let multiSelect):
+            return MercuryCore.ChatEventClarifyRequest(
+                sessionId: sessionID, requestId: requestID, question: question,
+                choices: choices, multiSelect: multiSelect
+            )
+        case .clarifyExpire(let sessionID, let requestID):
+            return MercuryCore.ChatEventClarifyExpire(sessionId: sessionID, requestId: requestID)
+        case .approvalRequest(let sessionID, let requestID, let command, let description, let choices):
+            return MercuryCore.ChatEventApprovalRequest(
+                sessionId: sessionID, requestId: requestID, command: command,
+                description: description, choices: choices
+            )
+        case .approvalExpire(let sessionID, let requestID):
+            return MercuryCore.ChatEventApprovalExpire(sessionId: sessionID, requestId: requestID)
+        case .backgroundTask, .sessionInfo, .unsupportedBlockingRequest, .unsupportedBlockingExpire:
+            // Not modeled by the shared engine; no state change.
+            return nil
         }
     }
-    flushWork()
-    return entries
 }

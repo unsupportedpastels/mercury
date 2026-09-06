@@ -1,6 +1,7 @@
 package com.unsupportedpastels.hermesandroid.attachment
 
 import com.unsupportedpastels.hermesandroid.app.ComposerAttachment
+import com.unsupportedpastels.mercury.core.attachment.AttachmentAddResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -134,14 +135,14 @@ class AttachmentPolicyTest {
     @Test
     fun readBoundedReturnsBytesUnderCap() {
         val bytes = "hello".toByteArray()
-        val out = AttachmentPolicy.readBounded(ByteArrayInputStream(bytes), capBytes = 1024)
+        val out = AttachmentIo.readBounded(ByteArrayInputStream(bytes), capBytes = 1024)
         assertEquals("hello", String(out))
     }
 
     @Test
     fun readBoundedAllowsExactlyCap() {
         val bytes = ByteArray(1024) { 1 }
-        val out = AttachmentPolicy.readBounded(ByteArrayInputStream(bytes), capBytes = 1024)
+        val out = AttachmentIo.readBounded(ByteArrayInputStream(bytes), capBytes = 1024)
         assertEquals(1024, out.size)
     }
 
@@ -149,7 +150,7 @@ class AttachmentPolicyTest {
     fun readBoundedRejectsOversizedStream() {
         val bytes = ByteArray(2048) { 1 }
         val error = assertThrows(AttachmentTooLargeException::class.java) {
-            AttachmentPolicy.readBounded(ByteArrayInputStream(bytes), capBytes = 1024)
+            AttachmentIo.readBounded(ByteArrayInputStream(bytes), capBytes = 1024)
         }
         assertTrue(error.message.orEmpty().contains("1024"))
     }

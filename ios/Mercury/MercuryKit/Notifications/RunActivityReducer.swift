@@ -86,6 +86,8 @@ enum RunActivityReducer {
         guard !state.finalized else { return .none }
 
         switch event {
+        case .backgroundTask:
+            return .none // Child lifecycle has its own persistent reducer, not this parent turn.
         case .messageStart(_, let text):
             guard state.startedAt == nil else {
                 let status: MercuryRunActivityStatus = state.rawResponseText.isEmpty ? .thinking : .responding

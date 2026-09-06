@@ -462,6 +462,46 @@ class HermesChatIntegrationTest {
     }
 
     @Test
+    fun interruptSentinelCompletionKeepsStreamedPartialInsteadOfRenderingIt() = runTest(dispatcher) {
+        val session = TerminalEventChatSession { runtime ->
+            HermesChatEvent.MessageComplete(
+                sessionId = runtime,
+                text = "Operation interrupted: waiting for model response (3s elapsed).",
+                status = "interrupted",
+            )
+        }
+        val viewModel = chatViewModel(session)
+        advanceUntilIdle()
+
+        viewModel.sendMessage(durableId, "Question")
+        advanceUntilIdle()
+
+        val chat = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        val assistant = chat.messages.last { it.role == ChatMessageRole.Assistant }
+        assertEquals("partial", assistant.text)
+        assertFalse(assistant.isStreaming)
+    }
+
+    @Test
+    fun interruptSentinelCompletionWithNothingStreamedLeavesNoAssistantBubble() = runTest(dispatcher) {
+        val session = TerminalEventChatSession(streamDelta = false) { runtime ->
+            HermesChatEvent.MessageComplete(
+                sessionId = runtime,
+                text = "Operation interrupted: waiting for model response (1s elapsed).",
+                status = "interrupted",
+            )
+        }
+        val viewModel = chatViewModel(session)
+        advanceUntilIdle()
+
+        viewModel.sendMessage(durableId, "Question")
+        advanceUntilIdle()
+
+        val chat = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        assertEquals(listOf(ChatMessageRole.User), chat.messages.map { it.role })
+    }
+
+    @Test
     fun slashCompletionPublishesItemsForSlashComposerText() = runTest(dispatcher) {
         val session = CompletableSlashChatSession(
             result = SlashCompletionResult(
@@ -761,7 +801,7 @@ class HermesChatIntegrationTest {
         candidate.createStarted.await()
 
         viewModel.openSession(DurableSessionId("replacement"))
-        advanceUntilIdle()
+        runCurrent() // Do not advance through the new connection deadline.
 
         assertFalse(candidate.closeStarted)
         assertFalse(candidate.closeCompleted)
@@ -2129,11 +2169,16 @@ class HermesChatIntegrationTest {
         runCurrent()
         advanceTimeBy(500)
         runCurrent()
-        assertTrue(currentRecovery.resumeStarted.isCompleted)
-        assertTrue(viewModel.snapshots.value.chatSessions.getValue(durableId).isSending)
+        // Replacement is still allowed while receiving/recovering, but a second
+        // admission must wait until the obsolete non-cooperative candidate drains.
+        assertFalse(currentRecovery.resumeStarted.isCompleted)
+        assertEquals(2, connections)
 
         staleRecovery.releaseResume.complete(Unit)
         runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+        assertTrue(currentRecovery.resumeStarted.isCompleted)
         assertTrue(staleRecovery.closed)
         assertTrue(viewModel.snapshots.value.chatSessions.getValue(durableId).isSending)
         replacementInitial.closeEvents()
@@ -2823,6 +2868,7 @@ private class BlockingSubmitChatSession : HermesChatSession {
 }
 
 private class TerminalEventChatSession(
+    private val streamDelta: Boolean = true,
     private val terminalEvent: (RuntimeSessionId) -> HermesChatEvent,
 ) : HermesChatSession {
     private val mutableEvents = MutableSharedFlow<HermesChatEvent>(extraBufferCapacity = 8)
@@ -2845,7 +2891,9 @@ private class TerminalEventChatSession(
         text: String,
     ): PromptSubmission {
         mutableEvents.emit(HermesChatEvent.MessageStart(runtimeSessionId, null))
-        mutableEvents.emit(HermesChatEvent.MessageDelta(runtimeSessionId, "partial"))
+        if (streamDelta) {
+            mutableEvents.emit(HermesChatEvent.MessageDelta(runtimeSessionId, "partial"))
+        }
         mutableEvents.emit(terminalEvent(runtimeSessionId))
         return PromptSubmission("streaming")
     }

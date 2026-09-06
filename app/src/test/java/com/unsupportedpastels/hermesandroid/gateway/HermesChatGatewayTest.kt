@@ -494,6 +494,31 @@ class HermesChatGatewayTest {
     }
 
     @Test
+    fun relaySubmissionIdIsExplicitAndAbsentFromDirectSubmissions() = runTest {
+        val socket = ScriptedSocket()
+        val submissionIds = mutableListOf<String?>()
+        socket.onSend = { frame ->
+            val request = Json.parseToJsonElement(frame).jsonObject
+            if (request["method"]?.jsonPrimitive?.content == "prompt.submit") {
+                submissionIds += request["params"]!!.jsonObject["submission_id"]?.jsonPrimitive?.content
+                val id = request["id"]!!.jsonPrimitive.content
+                socket.offer("""{"jsonrpc":"2.0","id":"$id","result":{"status":"streaming"}}""")
+            }
+        }
+        val connection = HermesChatGateway(
+            origin = ServerOrigin.parse("https://hermes.example"),
+            accessToken = "opaque-access",
+            ticketClient = RecordingTicketClient("ticket-1"),
+            socketFactory = RecordingSocketFactory(socket),
+            parentScope = backgroundScope,
+        ).connect()
+        connection.submitPrompt(RuntimeSessionId("runtime-1"), "relay", false, "logical-submission-1")
+        connection.submitPrompt(RuntimeSessionId("runtime-1"), "direct")
+        assertEquals(listOf("logical-submission-1", null), submissionIds)
+        connection.close()
+    }
+
+    @Test
     fun submitsPromptAndPreservesEventsThatRaceThePromptAck() = runTest {
         val ticketClient = RecordingTicketClient("ticket-1")
         val socket = ScriptedSocket()

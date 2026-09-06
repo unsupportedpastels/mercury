@@ -2,7 +2,9 @@
 
 ## Product boundary
 
-This is a native Android client for the official interfaces of an unchanged shared `hermes serve` process. Do not add, require, or assume custom server routes, plugins, forks, dashboard extensions, or gateway workers.
+This is a native Android client for the official interfaces of an unchanged shared `hermes serve` process. Direct mode must never add, require, or assume custom server routes, forks, dashboard extensions, or gateway workers, and must keep working with no Mercury plugin installed.
+
+One scoped exception exists: **Mercury Relay** is an optional, separately paired transport (iOS first) that carries the same official Hermes JSON-RPC session contract end-to-end encrypted through the Mercury Relay host plugin and an opaque hosted router. Relay code must stay isolated from direct-mode connection, credential, and catalog state; it never changes Hermes itself, tunnels no private Hermes route, and is never a requirement for any direct-mode feature.
 
 Released Hermes compatibility is conservative: observe durable/live metadata without implicit transport takeover. Resume or activate another remote connected client's runtime only after explicit user action. Never close a shared runtime merely because this client disconnects. Capability-gate multi-subscriber streaming until a safe released transport advertises it.
 
@@ -35,6 +37,18 @@ Required gates for changed Android code:
 ```bash
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
+
+For changes touching `shared/mercury-core` (the KMP contract core), also run:
+
+```bash
+./gradlew :shared:mercury-core:check
+```
+
+The shared module's common tests run on Linux via the Android host-test
+target. Its Apple framework builds only on macOS (Apple targets are skipped
+elsewhere; force with `-Pmercury.enableAppleTargets=true`), so shared-module
+or iOS changes still require the Mac/Xcode gate — a green Linux build does not
+prove the generated framework is usable from Swift.
 
 For adaptive UI changes, also run the configured screenshot/UI test gates and test compact, medium, and expanded windows. Do not update screenshot references without visual review.
 

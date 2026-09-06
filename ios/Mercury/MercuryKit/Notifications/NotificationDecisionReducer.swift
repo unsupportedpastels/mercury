@@ -71,7 +71,7 @@ enum NotificationDecisionReducer {
                 return nil
             }
 
-            let preview = description ?? command ?? "Authorization is required to continue"
+            let preview = description ?? command ?? NotificationTextPolicy.approvalFallback
             return inputNotification(
                 sessionID: sessionID,
                 sessionTitle: sessionTitle,
@@ -111,7 +111,7 @@ enum NotificationDecisionReducer {
                 sessionID: sessionID,
                 sessionTitle: sessionTitle,
                 kind: .secureInput,
-                body: prompt ?? "Secure input required"
+                body: prompt ?? NotificationTextPolicy.secureInputFallback
             )
 
         case .approvalExpire:

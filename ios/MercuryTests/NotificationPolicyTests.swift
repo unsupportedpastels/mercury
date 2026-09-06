@@ -365,7 +365,7 @@ final class NotificationPolicyTests: XCTestCase {
         XCTAssertEqual(secret?.kind, .secureInput)
         XCTAssertEqual(secret?.body, "Enter the secret")
         XCTAssertNil(duplicate)
-        XCTAssertEqual(sudo?.body, "Secure input required")
+        XCTAssertEqual(sudo?.body, "Secure input is required to continue")
     }
 
     func testNonNotificationEventsAreSilent() {

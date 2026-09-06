@@ -1,0 +1,299 @@
+{
+  "schema_version": 1,
+  "session_id": "fixture-runtime-001",
+  "events": [
+    {
+      "id": "session-info-fast-true",
+      "type": "session.info",
+      "payload": {
+        "stored_session_id": "fixture-session-001",
+        "model": "hermes-fixture",
+        "provider": "nous-fixture",
+        "reasoning_effort": "medium",
+        "fast_mode": true,
+        "title": "Parity fixture",
+        "running": true,
+        "future_field": {
+          "ignored": true
+        }
+      },
+      "expected": {
+        "fast_mode": true,
+        "stored_session_id": "fixture-session-001",
+        "model": "hermes-fixture",
+        "provider": "nous-fixture",
+        "reasoning_effort": "medium",
+        "title": "Parity fixture",
+        "running": true
+      }
+    },
+    {
+      "id": "session-info-fast-false",
+      "type": "session.info",
+      "payload": {
+        "fast_mode": false
+      },
+      "expected": {
+        "fast_mode": false
+      }
+    },
+    {
+      "id": "session-info-fast-absent",
+      "type": "session.info",
+      "payload": {
+        "model": "hermes-fixture"
+      },
+      "expected": {
+        "fast_mode": null
+      }
+    },
+    {
+      "id": "message-start",
+      "type": "message.start",
+      "payload": {
+        "text": null
+      }
+    },
+    {
+      "id": "message-delta-hello",
+      "type": "message.delta",
+      "payload": {
+        "text": "Hello"
+      }
+    },
+    {
+      "id": "message-delta-world",
+      "type": "message.delta",
+      "payload": {
+        "text": " world"
+      }
+    },
+    {
+      "id": "reasoning-delta",
+      "type": "reasoning.delta",
+      "payload": {
+        "text": "planning",
+        "future": "ignored"
+      }
+    },
+    {
+      "id": "tool-generating",
+      "type": "tool.generating",
+      "payload": {
+        "name": "shell"
+      }
+    },
+    {
+      "id": "tool-start",
+      "type": "tool.start",
+      "payload": {
+        "tool_id": "tool-001",
+        "name": "shell",
+        "context": "run the checks"
+      }
+    },
+    {
+      "id": "tool-complete",
+      "type": "tool.complete",
+      "payload": {
+        "tool_id": "tool-001",
+        "name": "shell",
+        "summary": "all checks passed"
+      }
+    },
+    {
+      "id": "status-update",
+      "type": "status.update",
+      "payload": {
+        "kind": "progress",
+        "text": "finished"
+      }
+    },
+    {
+      "id": "message-complete",
+      "type": "message.complete",
+      "payload": {
+        "text": "Done.",
+        "status": "ok",
+        "reasoning": "planning",
+        "recoverable": false,
+        "billing": {
+          "provider": "nous-fixture",
+          "billing_url": "https://example.invalid/billing",
+          "is_nous": true,
+          "message": "fixture"
+        }
+      }
+    }
+  ],
+  "malformed_events": [
+    {
+      "id": "unknown-type",
+      "type": "future.event",
+      "payload": {}
+    },
+    {
+      "id": "wrong-payload-shape",
+      "type": "message.delta",
+      "payload": {
+        "text": {
+          "not": "a string"
+        }
+      }
+    },
+    {
+      "id": "invalid-json",
+      "type": "message.delta",
+      "payload_json": "{not-json"
+    },
+    {
+      "id": "blank-session",
+      "type": "message.delta",
+      "session_id": "",
+      "payload": {
+        "text": "ignored"
+      }
+    }
+  ],
+  "reducer": {
+    "event_ids": [
+      "message-start",
+      "message-delta-hello",
+      "message-delta-world",
+      "reasoning-delta",
+      "tool-generating",
+      "tool-start",
+      "tool-complete",
+      "status-update",
+      "message-complete"
+    ],
+    "expected": {
+      "rows": [
+        {
+          "role": "assistant",
+          "text": "Done.",
+          "completed": true,
+          "reasoning_text": "planning"
+        }
+      ],
+      "tools": [
+        {
+          "tool_id": "tool-001",
+          "name": "shell",
+          "context": "run the checks",
+          "summary": "all checks passed",
+          "state": "completed"
+        }
+      ],
+      "latest_status_text": "finished",
+      "status_update_count": 1,
+      "generating_status_text": null,
+      "last_error": null
+    }
+  },
+  "insights": {
+    "usage": {
+      "result": {
+        "calls": 2,
+        "input": 12,
+        "output": 7,
+        "total": 19,
+        "context_used": 19,
+        "context_max": 100,
+        "context_percent": 19.5,
+        "credits_lines": [
+          "credits: fixture",
+          4,
+          "remaining"
+        ],
+        "info": "fixture usage metadata",
+        "future_field": {
+          "ignored": true
+        }
+      },
+      "expected": {
+        "input_tokens": 12,
+        "output_tokens": 7,
+        "total_tokens": 19,
+        "context_used_tokens": 19,
+        "context_max_tokens": 100,
+        "context_percent": 19.5,
+        "calls": 2,
+        "credits_lines": [
+          "credits: fixture",
+          "remaining"
+        ],
+        "raw_info": "fixture usage metadata"
+      }
+    },
+    "context": {
+      "result": {
+        "categories": [
+          {
+            "id": "system",
+            "label": "System",
+            "tokens": 4,
+            "color": "blue"
+          },
+          {
+            "id": "history",
+            "label": "History",
+            "tokens": 15,
+            "color": "gray"
+          },
+          {
+            "name": "System",
+            "tokens": 99
+          }
+        ],
+        "context_used": 19,
+        "context_max": 100,
+        "context_percent": 19.0,
+        "future_field": true
+      },
+      "expected": {
+        "categories": [
+          {
+            "name": "System",
+            "tokens": 4,
+            "percent": null
+          },
+          {
+            "name": "History",
+            "tokens": 15,
+            "percent": null
+          }
+        ],
+        "used_tokens": 19,
+        "max_tokens": 100,
+        "percent": 19.0
+      }
+    }
+  },
+  "origins": [
+    {
+      "input": "HTTPS://EXAMPLE.COM:443/",
+      "expected": "https://example.com"
+    },
+    {
+      "input": "example.com",
+      "expected": "https://example.com"
+    },
+    {
+      "input": "https://bücher.example",
+      "expected": "https://xn--bcher-kva.example"
+    },
+    {
+      "input": "http://localhost:80",
+      "expected": "http://localhost"
+    },
+    {
+      "input": "https://example.com/path",
+      "expected": null
+    },
+    {
+      "input": "https://example.com?query=yes",
+      "expected": null
+    }
+  ]
+}

@@ -2271,7 +2271,7 @@ class HermesAppTest {
     }
 
     @Test
-    fun acceptedOptimisticUserMessageClearsTheMatchingComposerDraft() {
+    fun authoritativeAcceptanceClearsTheMatchingComposerDraft() {
         val sessionId = sessions.first().id
         var snapshot by mutableStateOf(
             connectedSnapshot.copy(
@@ -2287,6 +2287,8 @@ class HermesAppTest {
                         snapshot = snapshot.copy(
                             chatSessions = snapshot.chatSessions +
                                 (id to ChatSessionSnapshot(
+                                    acceptedSubmissionCount = 1,
+                                    acceptedSubmissionText = text,
                                     messages = listOf(
                                         ChatMessage(ChatMessageRole.User, text),
                                         ChatMessage(
@@ -2665,11 +2667,10 @@ class HermesAppTest {
         }
 
         composeRule.onNodeWithText("Configure server").performClick()
-        composeRule.onNodeWithContentDescription("Open Servers settings").performClick()
-        composeRule.onNodeWithText("Server origin").assertIsDisplayed()
+        composeRule.onNodeWithText("Server address").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Server origin input")
             .performTextInput("HTTPS://Example.COM/")
-        composeRule.onNodeWithText("Save").performScrollTo().performClick()
+        composeRule.onNodeWithText("Continue").performScrollTo().performClick()
         composeRule.waitForIdle()
 
         assertEquals("https://example.com", savedOrigin?.value)
@@ -2692,14 +2693,40 @@ class HermesAppTest {
         }
 
         composeRule.onNodeWithText("Configure server").performClick()
-        composeRule.onNodeWithContentDescription("Open Servers settings").performClick()
         composeRule.onNodeWithContentDescription("Server origin input")
             .performTextInput("http://10.0.1.2")
 
-        composeRule.onNodeWithText("Save").assertIsEnabled().performScrollTo().performClick()
+        composeRule.onNodeWithText("Continue").assertIsEnabled().performScrollTo().performClick()
         composeRule.waitForIdle()
 
         assertEquals("http://10.0.1.2", savedOrigin?.value)
+    }
+
+    @Test
+    fun serverDialogUseTlsCheckboxPicksSchemeForBareHosts() {
+        var savedOrigin: ServerOrigin? = null
+        composeRule.setContent {
+            HermesAndroidTheme {
+                HermesApp(
+                    snapshot = HermesGatewaySnapshot(),
+                    serverSettingsState = ServerSettingsState.Ready(null),
+                    onSaveServerOrigin = { origin ->
+                        savedOrigin = origin
+                        Result.success(Unit)
+                    },
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Configure server").performClick()
+        composeRule.onNodeWithContentDescription("Server origin input")
+            .performTextInput("192.168.1.5:8080")
+        composeRule.onNodeWithContentDescription("Use HTTPS checkbox").performClick()
+
+        composeRule.onNodeWithText("Continue").assertIsEnabled().performScrollTo().performClick()
+        composeRule.waitForIdle()
+
+        assertEquals("http://192.168.1.5:8080", savedOrigin?.value)
     }
 
     @Test

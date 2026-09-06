@@ -18,6 +18,7 @@
 - Opens artifacts and browses host files the agent produced, with images and documents rendered natively.
 - Shares images, PDFs, and text from any Android app straight into a session — staged in the composer for review, never auto-sent.
 - Supports native Nous OAuth with system-browser PKCE and cookie-backed username/password basic auth, with origin-scoped encrypted credentials, refresh, and reconnect/reconciliation.
+- Pairs Android or iOS to an approved Mercury Relay host by QR code for end-to-end encrypted Noise XK chat when a direct server origin is not reachable.
 - Adapts cleanly across compact phones, Fold cover screens, unfolded layouts, split screen, freeform windows, and DeX.
 - Preserves a Mercury-started live turn when you navigate away; it does not take over or close another client's runtime.
 - Speaks and listens through your server's audited voice stack: app-owned dictation into the composer with a stop control, per-message read-aloud, streaming speech that overlaps generation, and a hands-free voice conversation with spoken stop phrases and barge-in. Voice controls appear only when the connected server exposes the official `/api/audio/…` routes, audio is never persisted on the device, and the microphone permission is requested only when you first use voice.
@@ -51,6 +52,8 @@ Mercury uses the available window and posture — not a device name or orientati
 ## Connect to your Hermes host
 
 Mercury is a client, not an agent host. Install and configure Hermes Agent on a machine you control (or deploy an always-on **Hermes Cloud** instance from the [Nous Portal](https://portal.nousresearch.com/cloud)), then keep a compatible Hermes backend running before connecting from Android. The host remains authoritative for your agent, tools, files, sessions, and data.
+
+The optional **Relay** tab can instead scan the one-time QR code produced by a Mercury Relay-enabled host. Compare and approve the short fingerprint on the host before connecting. The router receives opaque routing metadata and encrypted records only; QR capabilities and device keys never enter logs or the direct-server credential store.
 
 For a self-hosted server, Mercury detects the authentication providers advertised by the backend and shows the matching sign-in option:
 
@@ -157,12 +160,12 @@ Releases are built and signed in CI. Verify the signature with `apksigner verify
 
 ## Security & privacy
 
-Mercury connects only to the server origin you configure. It does not include a hosted Hermes service, telemetry SDK, analytics SDK, ad network, or hard-coded remote endpoint.
+Mercury connects only to the server origin you configure or the optional Relay origin contained in a QR code you explicitly scan. It does not include a hosted Hermes service, telemetry SDK, analytics SDK, ad network, or hard-coded remote endpoint.
 
 - Credentials, cookies, connection state, and cached transcripts are scoped to the normalized server origin and stored with Android Keystore-backed encryption.
 - WebSocket tickets are fresh, single-use, and held in memory only.
-- Production connections should use HTTPS. Cleartext traffic is disabled in the manifest.
-- Your prompts, attachments, and transcript data are processed by the Hermes server you choose — not by a Mercury-operated service. No telemetry, no analytics, no third-party servers.
+- Production connections must use HTTPS. Plain HTTP is accepted only for loopback or private-network servers selected explicitly in the app.
+- Your prompts, attachments, and transcript data are processed by the Hermes server you choose. Optional Relay routing is end-to-end encrypted and cannot read that content. No telemetry or analytics.
 
 See [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md) for details.
 

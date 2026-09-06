@@ -1,4 +1,5 @@
 import Foundation
+import MercuryCore
 
 // MARK: - Defensive protocol limits
 
@@ -14,13 +15,13 @@ let wsTicketMaxResponseBytes = 16 * 1024
 /// Maximum number of buffered events retained by the later connection layer.
 let maxEventBuffer = 128
 
-let maxEventIDChars = 256
-let maxEventNameChars = 256
-let maxEventTextChars = 4096
-let maxMessageTextChars = 1024 * 1024
-let maxEventContextChars = 4096
-let maxEventChoiceChars = 256
-let maxEventChoiceCount = 32
+let maxEventIDChars = Int(MercuryCore.ChatEventDecoder.shared.MAX_EVENT_ID_CHARS)
+let maxEventNameChars = Int(MercuryCore.ChatEventDecoder.shared.MAX_EVENT_NAME_CHARS)
+let maxEventTextChars = Int(MercuryCore.ChatEventDecoder.shared.MAX_EVENT_TEXT_CHARS)
+let maxMessageTextChars = Int(MercuryCore.ChatEventDecoder.shared.MAX_MESSAGE_TEXT_CHARS)
+let maxEventContextChars = Int(MercuryCore.ChatEventDecoder.shared.MAX_EVENT_CONTEXT_CHARS)
+let maxEventChoiceChars = Int(MercuryCore.ChatEventDecoder.shared.MAX_EVENT_CHOICE_CHARS)
+let maxEventChoiceCount = Int(MercuryCore.ChatEventDecoder.shared.MAX_EVENT_CHOICES)
 
 /// Validates a caller-supplied frame limit without allowing it to exceed the
 /// protocol's hard ceiling. This is kept separate from the later connection

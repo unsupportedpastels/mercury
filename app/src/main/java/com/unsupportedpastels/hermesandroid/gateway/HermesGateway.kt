@@ -78,7 +78,20 @@ data class ChatBillingNotice(
     val message: String? = null,
 )
 
+/** Shared state plus its native projection; replaced atomically on transcript events. */
+data class TranscriptPresentation(
+    val state: com.unsupportedpastels.mercury.core.transcript.TranscriptSnapshot,
+    val messages: List<ChatMessage>,
+)
+
+enum class ChatConnectionPhase { Idle, Connecting, Reconnecting, Submitting }
+
 data class ChatSessionSnapshot(
+    val connectionPhase: ChatConnectionPhase = ChatConnectionPhase.Idle,
+    val acceptedSubmissionCount: Long = 0,
+    val acceptedSubmissionText: String? = null,
+    val rejectedSubmissionCount: Long = 0,
+    val rejectedSubmissionText: String? = null,
     val messages: List<ChatMessage> = emptyList(),
     val isLoading: Boolean = false,
     val isSending: Boolean = false,
@@ -87,6 +100,7 @@ data class ChatSessionSnapshot(
     val notice: String? = null,
     val billingNotice: ChatBillingNotice? = null,
     val runState: RunEventState = RunEventState(),
+    val backgroundTasks: BackgroundTasks = BackgroundTasks(),
     val processRows: List<ProcessRow> = emptyList(),
     val model: String? = null,
     val provider: String? = null,
@@ -101,6 +115,7 @@ data class ChatSessionSnapshot(
     val maintenanceLoading: Boolean = false,
     val maintenanceError: String? = null,
     val transcriptSource: CacheSource = CacheSource.Live,
+    val transcriptPresentation: TranscriptPresentation? = null,
 ) {
     init {
         require(processRows.size <= MAX_PROCESS_ROWS) { "Process rows exceed the bounded limit" }
@@ -111,6 +126,8 @@ data class HermesGatewaySnapshot(
     val connectionState: ConnectionState = ConnectionState.Disconnected,
     val authenticationState: AuthenticationState = AuthenticationState.Unknown,
     val serverVersion: String? = null,
+    val relayTargetId: String? = null,
+    val relayTargetLabel: String? = null,
     val nativeOAuthSupported: Boolean = false,
     val authProviders: List<HermesAuthProvider> = emptyList(),
     val connectionError: String? = null,

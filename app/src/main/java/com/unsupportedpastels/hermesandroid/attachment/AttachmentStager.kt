@@ -26,19 +26,10 @@ class AttachmentStager(
         var aggregateBytes = 0L
         val prepared = attachments.map { attachment ->
             val kind = AttachmentPolicy.kindOf(attachment.mimeType, attachment.displayName)
-            val capBytes = AttachmentPolicy.perKindCapBytes(kind)
             val bytes = reader.readBytes(attachment)
-            if (bytes.size.toLong() > capBytes) {
-                throw AttachmentTooLargeException(attachment.displayName, capBytes, bytes.size.toLong())
-            }
+            AttachmentPolicy.checkStagedSize(attachment.displayName, kind, bytes.size.toLong())
             aggregateBytes += bytes.size
-            if (aggregateBytes > AttachmentPolicy.MAX_AGGREGATE_BYTES) {
-                throw AttachmentTooLargeException(
-                    "Total attachments",
-                    AttachmentPolicy.MAX_AGGREGATE_BYTES,
-                    aggregateBytes,
-                )
-            }
+            AttachmentPolicy.checkStagedAggregate(aggregateBytes)
             PreparedAttachment(attachment, kind, bytes)
         }
 

@@ -19,6 +19,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -87,12 +89,13 @@ class EncryptedOfflineCacheRepository(
     private val mutableTranscriptCachingEnabled = MutableStateFlow(
         preferences.getBoolean(TRANSCRIPT_CACHING_ENABLED_KEY, false),
     )
+    private val operationMutex = Mutex()
 
     override val transcriptCachingEnabled: StateFlow<Boolean> =
         mutableTranscriptCachingEnabled.asStateFlow()
 
     override suspend fun read(scope: CacheScope, nowEpochSeconds: Long): OfflineCacheSnapshot =
-        withContext(ioDispatcher) {
+        withOperationLock {
             val rows = readRows(nowEpochSeconds)
             OfflineCacheSnapshot(
                 rows.filter { row ->
@@ -108,7 +111,7 @@ class EncryptedOfflineCacheRepository(
         scope: CacheScope,
         sessions: List<SessionSummary>,
         nowEpochSeconds: Long,
-    ) = withContext(ioDispatcher) {
+    ) = withOperationLock {
         val existing = readRows(nowEpochSeconds).associateBy { it.rowKey }
         val currentIds = sessions.asSequence()
             .filterNot { it.isLocalDraft }
@@ -142,9 +145,9 @@ class EncryptedOfflineCacheRepository(
         summary: SessionSummary,
         messages: List<ChatMessage>,
         nowEpochSeconds: Long,
-    ) = withContext(ioDispatcher) {
-        if (!mutableTranscriptCachingEnabled.value || summary.isLocalDraft) return@withContext
-        val rows = readRows(nowEpochSeconds).associateBy { it.rowKey }
+    ) = withOperationLock {
+        if (!mutableTranscriptCachingEnabled.value || summary.isLocalDraft) return@withOperationLock
+        readRows(nowEpochSeconds)
         val row = storedRow(
             scope = scope,
             summary = summary,
@@ -157,23 +160,15 @@ class EncryptedOfflineCacheRepository(
     }
 
     override suspend fun deleteSession(scope: CacheScope, durableSessionId: DurableSessionId) =
-        withContext(ioDispatcher) {
+        withOperationLock {
             commit(preferences.edit().remove(rowKey(scope, durableSessionId)))
         }
 
-    override suspend fun clearTranscriptTails(scope: CacheScope?) = withContext(ioDispatcher) {
-        val now = currentEpochSeconds()
-        val rows = readRows(now)
-        val editor = preferences.edit()
-        rows.filter { scope == null || matches(it, scope) }.forEach { row ->
-            if (row.messages.isNotEmpty()) {
-                editor.putString(row.rowKey, encode(row.copy(messages = emptyList())))
-            }
-        }
-        commit(editor)
+    override suspend fun clearTranscriptTails(scope: CacheScope?) = withOperationLock {
+        clearTranscriptTailsLocked(scope, currentEpochSeconds())
     }
 
-    override suspend fun clearTranscriptTailsForOrigin(origin: ServerOrigin) = withContext(ioDispatcher) {
+    override suspend fun clearTranscriptTailsForOrigin(origin: ServerOrigin) = withOperationLock {
         val fingerprint = originFingerprint(origin)
         val rows = readRows(currentEpochSeconds())
         val editor = preferences.edit()
@@ -185,18 +180,36 @@ class EncryptedOfflineCacheRepository(
         commit(editor)
     }
 
-    override suspend fun clear(scope: CacheScope?) = withContext(ioDispatcher) {
+    override suspend fun clear(scope: CacheScope?) = withOperationLock {
         val rows = readRows(currentEpochSeconds())
         val editor = preferences.edit()
         rows.filter { scope == null || matches(it, scope) }.forEach { row -> editor.remove(row.rowKey) }
         commit(editor)
     }
 
-    override suspend fun setTranscriptCachingEnabled(enabled: Boolean) = withContext(ioDispatcher) {
+    override suspend fun setTranscriptCachingEnabled(enabled: Boolean) = withOperationLock {
         commit(preferences.edit().putBoolean(TRANSCRIPT_CACHING_ENABLED_KEY, enabled))
         mutableTranscriptCachingEnabled.value = enabled
-        if (!enabled) clearTranscriptTails(null)
+        if (!enabled) clearTranscriptTailsLocked(null, currentEpochSeconds())
     }
+
+    private fun clearTranscriptTailsLocked(scope: CacheScope?, nowEpochSeconds: Long) {
+        val rows = readRows(nowEpochSeconds)
+        val editor = preferences.edit()
+        rows.filter { scope == null || matches(it, scope) }.forEach { row ->
+            if (row.messages.isNotEmpty()) {
+                editor.putString(row.rowKey, encode(row.copy(messages = emptyList())))
+            }
+        }
+        commit(editor)
+    }
+
+    private suspend fun <T> withOperationLock(block: () -> T): T =
+        withContext(ioDispatcher) {
+            operationMutex.withLock {
+                block()
+            }
+        }
 
     private fun readRows(nowEpochSeconds: Long): List<StoredCacheRow> {
         val decoded = mutableListOf<StoredCacheRow>()

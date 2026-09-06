@@ -8,29 +8,64 @@ final class OperationsController: ObservableObject {
     @Published private(set) var actionState = CronActionState()
 
     private var connection: ChatConnection?
+    private var generation: UInt64 = 0
+    private var connecting = false
     private var eventTask: Task<Void, Never>?
     private var client: CronClient?
     private var restClient: CronRESTClient?
 
     func connect(appModel: AppModel) async {
-        guard connection == nil,
-              let origin = appModel.serverOrigin,
-              let originURL = URL(string: origin) else {
+        guard connection == nil, !connecting else {
             loadError = "Sign in to load scheduled jobs."
             return
         }
-        let token = storedAccessToken(origin: origin)
+        generation &+= 1
+        let token = generation
+        connecting = true
+        defer { if generation == token { connecting = false } }
+        let profile = appModel.activeProfile
+        let relayTarget = appModel.activeRelayTarget
+        guard relayTarget != nil || appModel.serverOrigin != nil else {
+            loadError = "Sign in to load scheduled jobs."
+            return
+        }
         isLoading = true
         loadError = nil
         do {
-            let gateway = try ChatGateway(
-                origin: origin,
-                accessToken: token,
-                ticketClient: WsTicketClient(session: .shared),
-                socketFactory: URLSessionChatWebSocketFactory()
-            )
-            let socket = try await gateway.connect()
-            let connection = try ChatConnection(socket: socket)
+            let owned: ChatConnection
+            if let relayTarget {
+                owned = try await RelayConnectionPool.shared.acquire(
+                    target: relayTarget, profile: appModel.activeProfile
+                )
+                // Run-now uses REST and stands down over the relay.
+                restClient = nil
+            } else {
+                guard let origin = appModel.serverOrigin,
+                      let originURL = URL(string: origin) else {
+                    isLoading = false
+                    loadError = "Sign in to load scheduled jobs."
+                    return
+                }
+                let token = storedAccessToken(origin: origin)
+                let gateway = try ChatGateway(
+                    origin: origin,
+                    accessToken: token,
+                    ticketClient: WsTicketClient(session: .shared),
+                    socketFactory: URLSessionChatWebSocketFactory()
+                )
+                owned = try ChatConnection(socket: try await gateway.connect())
+                restClient = CronRESTClient(
+                    origin: originURL,
+                    accessToken: token,
+                    profile: appModel.activeProfile
+                )
+            }
+            guard generation == token, !Task.isCancelled, appModel.activeProfile == profile,
+                  appModel.activeRelayTarget?.id == relayTarget?.id else {
+                await RelayConnectionPool.release(owned)
+                return
+            }
+            let connection = owned
             self.connection = connection
             let events = connection.start()
             eventTask = Task {
@@ -41,13 +76,9 @@ final class OperationsController: ObservableObject {
             client = CronClient(request: { method, params in
                 try await connection.operationsRequest(method, params: params)
             })
-            restClient = CronRESTClient(
-                origin: originURL,
-                accessToken: token,
-                profile: appModel.activeProfile
-            )
             try await refresh(profile: appModel.activeProfile)
         } catch {
+            guard generation == token else { return }
             isLoading = false
             loadError = "Scheduled jobs are unavailable on this server."
         }
@@ -55,12 +86,16 @@ final class OperationsController: ObservableObject {
 
     func refresh(profile: String) async throws {
         guard let client else { throw OperationsProtocolError.invalidInput("Cron connection is unavailable") }
+        let token = generation
         isLoading = true
         loadError = nil
-        defer { isLoading = false }
+        defer { if generation == token { isLoading = false } }
         do {
-            jobs = try await client.list(profile: profile)
+            let loaded = try await client.list(profile: profile)
+            guard generation == token else { throw CancellationError() }
+            jobs = loaded
         } catch {
+            guard generation == token else { throw CancellationError() }
             loadError = "Scheduled jobs are unavailable on this server."
             throw error
         }
@@ -109,13 +144,16 @@ final class OperationsController: ObservableObject {
     }
 
     func stop() async {
+        generation &+= 1
+        connecting = false
+        isLoading = false
         eventTask?.cancel()
         eventTask = nil
         let active = connection
         connection = nil
         client = nil
         restClient = nil
-        await active?.close()
+        if let active { await RelayConnectionPool.release(active) }
     }
 
     private func storedAccessToken(origin: String) -> String? {

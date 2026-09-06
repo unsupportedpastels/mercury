@@ -44,6 +44,10 @@ import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
 import com.unsupportedpastels.hermesandroid.notifications.NotificationNavigationInbox
 import com.unsupportedpastels.hermesandroid.notifications.SessionNotificationVisibilityRegistry
 import com.unsupportedpastels.hermesandroid.notifications.synchronizeVisibleSessionNotifications
+import com.unsupportedpastels.hermesandroid.relay.RelayCodeScanner
+import com.unsupportedpastels.hermesandroid.relay.RelayUiState
+import com.unsupportedpastels.hermesandroid.relay.RelayViewModel
+import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
 import com.unsupportedpastels.hermesandroid.session.SavedSessionFilter
 import com.unsupportedpastels.hermesandroid.share.SharePayload
 import com.unsupportedpastels.hermesandroid.share.nextShareRequestId
@@ -80,18 +84,35 @@ class MainActivity : ComponentActivity() {
     private val cloudViewModel by viewModels<com.unsupportedpastels.hermesandroid.connection.HermesCloudViewModel> {
         com.unsupportedpastels.hermesandroid.connection.HermesCloudViewModel.Factory(this)
     }
+    private val relayViewModel by viewModels<RelayViewModel> {
+        RelayViewModel.ProductionFactory(applicationContext)
+    }
+    private val relayScanner by lazy { RelayCodeScanner(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         consumeIncomingShare(intent)
         enableEdgeToEdge()
         window.isNavigationBarContrastEnforced = false
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
         setContent {
             HermesAndroidTheme {
                 val snapshot by connectionViewModel.snapshots.collectAsStateWithLifecycle()
+                NotificationPermissionEffect(snapshot) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        val preferences = getSharedPreferences("notification_permission", MODE_PRIVATE)
+                        val granted = checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                            android.content.pm.PackageManager.PERMISSION_GRANTED
+                        if (!granted &&
+                            !shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS) &&
+                            !preferences.getBoolean("requested", false)
+                        ) {
+                            // Persist before launching: denial and Activity recreation must not reprompt.
+                            preferences.edit().putBoolean("requested", true).apply()
+                            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                    }
+                }
+                val relayState by relayViewModel.state.collectAsStateWithLifecycle()
                 val transcriptCachingEnabled by connectionViewModel.transcriptCachingEnabled
                     .collectAsStateWithLifecycle()
                 val notificationRequest by NotificationNavigationInbox.requests.collectAsStateWithLifecycle()
@@ -120,6 +141,21 @@ class MainActivity : ComponentActivity() {
                     projectIconViewModel = projectIconViewModel,
                     paneLayoutPreferencesViewModel = paneLayoutPreferencesViewModel,
                     snapshot = snapshot,
+                    relayState = relayState,
+                    onRelayScan = {
+                        relayScanner.scan(
+                            onResult = { relayViewModel.beginPairing(it) },
+                            onUnavailable = { relayViewModel.scannerUnavailable() },
+                        )
+                    },
+                    onRelayPair = { relayViewModel.beginPairing(it) },
+                    onRelayConnect = { connectionViewModel.connectRelay(it) },
+                    onRelayRemove = { target ->
+                        if (snapshot.relayTargetId == target.id) connectionViewModel.leaveRelayMode()
+                        relayViewModel.removeTarget(target)
+                    },
+                    onRelayCancelPairing = relayViewModel::cancelPairing,
+                    onRelayRetry = relayViewModel::resetFailure,
                     transcriptCachingEnabled = transcriptCachingEnabled,
                     onTranscriptCachingChanged = { enabled ->
                         connectionViewModel.setTranscriptCachingEnabled(enabled)
@@ -207,6 +243,22 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@Composable
+internal fun NotificationPermissionEffect(snapshot: HermesGatewaySnapshot, request: () -> Unit) {
+    var requested by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    val ready = snapshot.connectionState == com.unsupportedpastels.hermesandroid.gateway.ConnectionState.Connected &&
+        snapshot.authenticationState in setOf(
+            com.unsupportedpastels.hermesandroid.gateway.AuthenticationState.Authenticated,
+            com.unsupportedpastels.hermesandroid.gateway.AuthenticationState.NotRequired,
+        )
+    LaunchedEffect(ready) {
+        if (ready && !requested) {
+            requested = true
+            request()
+        }
+    }
+}
+
 private const val VOICE_SCREEN_OFF_PREF = "screen_off_continuation"
 
 internal fun voiceScreenOffPreferenceKey(origin: ServerOrigin?): String =
@@ -220,6 +272,13 @@ internal fun HermesAppHost(
     projectIconViewModel: ProjectIconViewModel? = null,
     paneLayoutPreferencesViewModel: PaneLayoutPreferencesViewModel? = null,
     snapshot: HermesGatewaySnapshot,
+    relayState: RelayUiState = RelayUiState(),
+    onRelayScan: () -> Unit = {},
+    onRelayPair: (String) -> Unit = {},
+    onRelayConnect: (RelayPairedTarget) -> Unit = {},
+    onRelayRemove: (RelayPairedTarget) -> Unit = {},
+    onRelayCancelPairing: () -> Unit = {},
+    onRelayRetry: () -> Unit = {},
     transcriptCachingEnabled: Boolean = false,
     onTranscriptCachingChanged: (Boolean) -> Unit = {},
     onClearOfflineCache: () -> Unit = {},
@@ -263,6 +322,26 @@ internal fun HermesAppHost(
     val currentServerOrigin = (serverSettingsState as? ServerSettingsState.Ready)?.activeOrigin
     val currentServerCatalog = (serverSettingsState as? ServerSettingsState.Ready)?.catalog
         ?: com.unsupportedpastels.hermesandroid.connection.ServerCatalog.empty()
+    var relayAutoConnectAttemptedId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(serverSettingsState, relayState.targets, snapshot.relayTargetId) {
+        if (serverSettingsState !is ServerSettingsState.Ready || currentServerOrigin != null) {
+            return@LaunchedEffect
+        }
+        if (snapshot.relayTargetId != null) return@LaunchedEffect
+        val target = relayState.targets
+            .asSequence()
+            .filter { it.status == com.unsupportedpastels.mercury.core.relay.RelayTargetStatus.Approved }
+            .maxWithOrNull(
+                compareBy<RelayPairedTarget>(
+                    { it.lastUsedEpochSeconds ?: Long.MIN_VALUE },
+                    { it.createdAtEpochSeconds },
+                ),
+            )
+            ?: return@LaunchedEffect
+        if (relayAutoConnectAttemptedId == target.id) return@LaunchedEffect
+        relayAutoConnectAttemptedId = target.id
+        onRelayConnect(target)
+    }
     val projectIcons = (projectIconAssignments as? ProjectIconAssignmentsState.Ready)
         ?.assignments
         .orEmpty()
@@ -300,7 +379,7 @@ internal fun HermesAppHost(
     // Re-probe voice contracts whenever the connection or selected profile
     // changes; refreshVoiceCapabilities is fail-closed so an unauthenticated or
     // older server simply leaves the mic hidden.
-    LaunchedEffect(connectionViewModel, snapshot.authenticationState, snapshot.selectedProfile) {
+    LaunchedEffect(connectionViewModel, currentServerOrigin, snapshot.relayTargetId, snapshot.authenticationState, snapshot.selectedProfile) {
         connectionViewModel?.refreshVoiceCapabilities()
     }
 
@@ -364,13 +443,29 @@ internal fun HermesAppHost(
         onVisibleSessionChanged = onVisibleSessionChanged,
         serverSettingsState = serverSettingsState,
         serverCatalog = currentServerCatalog,
+        relayState = relayState,
+        onRelayScan = onRelayScan,
+        onRelayPair = onRelayPair,
+        onRelayConnect = onRelayConnect,
+        onRelayRemove = onRelayRemove,
+        onRelayCancelPairing = onRelayCancelPairing,
+        onRelayRetry = onRelayRetry,
         transcriptCachingEnabled = transcriptCachingEnabled,
         onTranscriptCachingChanged = onTranscriptCachingChanged,
         onClearOfflineCache = onClearOfflineCache,
-        onSaveServerOrigin = { origin -> viewModel.save(origin).await() },
-        onSaveServerEntry = { entry -> viewModel.save(entry).await() },
+        onSaveServerOrigin = { origin ->
+            connectionViewModel?.leaveRelayMode()
+            viewModel.save(origin).await()
+        },
+        onSaveServerEntry = { entry ->
+            connectionViewModel?.leaveRelayMode()
+            viewModel.save(entry).await()
+        },
         onUpdateServerLabel = { entry -> viewModel.updateLabel(entry).await() },
-        onSelectServerOrigin = { origin -> viewModel.select(origin).await() },
+        onSelectServerOrigin = { origin ->
+            connectionViewModel?.leaveRelayMode()
+            viewModel.select(origin).await()
+        },
         onRemoveServerOrigin = { origin -> viewModel.remove(origin).await() },
         cloudState = cloudConnectState,
         onCloudSignIn = onCloudSignIn,
@@ -387,6 +482,7 @@ internal fun HermesAppHost(
             }.getOrElse {
                 return@HermesApp Result.failure(it)
             }
+            connectionViewModel?.leaveRelayMode()
             viewModel.save(origin).await()
         },
         onLoadManagementSettings = { profile -> connectionViewModel?.loadManagementSettings(profile) },
@@ -473,6 +569,9 @@ internal fun HermesAppHost(
         },
         voiceSettings = if (voiceCapabilities.audioRoutesPresent && voiceViewModel != null) {
             VoiceSettings(
+                identity = com.unsupportedpastels.hermesandroid.voice.VoiceSettingsIdentity(
+                    currentServerOrigin, snapshot.relayTargetId, snapshot.selectedProfile,
+                ),
                 capabilities = voiceCapabilities,
                 config = voiceServerConfig,
                 setAutoTts = { enabled -> voiceViewModel.setVoiceAutoTts(enabled) },
