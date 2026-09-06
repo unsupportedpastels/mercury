@@ -223,9 +223,9 @@ final class MediaDirectiveExtractorTests: XCTestCase {
         XCTAssertEqual(artifacts.count, 3)
         // Extension beats label prefix.
         XCTAssertEqual(artifacts[0].type, .image)
-        // Label prefix only promotes image/audio; video falls back to file,
-        // and the prefix is stripped from the display name.
-        XCTAssertEqual(artifacts[1].type, .file)
+        // Shared video extensions/labels promote video; the prefix is
+        // stripped from the display name. Remote video remains external-only.
+        XCTAssertEqual(artifacts[1].type, .video)
         XCTAssertEqual(artifacts[1].displayName, "clip.mkv")
         XCTAssertEqual(artifacts[2].type, .file)
         XCTAssertEqual(artifacts[2].displayName, "plain")

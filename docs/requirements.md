@@ -6,7 +6,7 @@
 |---|---|
 | JDK | 17 |
 | Android Gradle Plugin | 9.3.1 (required for current AndroidX artifacts compiled against API 37) |
-| Gradle wrapper | 9.5.0 with pinned SHA-256 (AGP 9.3.1 supported baseline) |
+| Gradle wrapper | 9.7.1 with pinned SHA-256 (verified with AGP 9.3.1) |
 | Kotlin / Compose compiler plugin | 2.4.10 |
 | AndroidX Core | 1.19.0 |
 | Lifecycle / ViewModel | 2.11.0 |

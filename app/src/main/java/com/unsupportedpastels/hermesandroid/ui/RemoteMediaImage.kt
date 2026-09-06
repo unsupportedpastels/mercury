@@ -112,6 +112,9 @@ internal fun hostResolvesToPublicNetwork(
 internal fun resolveHostToAddresses(host: String): List<InetAddress> =
     runCatching { InetAddress.getAllByName(host).toList() }.getOrElse { emptyList() }
 
+internal fun validateGatewayVideoPath(value: String): Boolean =
+    com.unsupportedpastels.mercury.core.artifacts.ManagedVideoPolicy.isManagedVideoPath(value)
+
 internal fun validateGatewayMediaPath(value: String): Boolean =
     value.startsWith('/') &&
         '\u0000' !in value &&

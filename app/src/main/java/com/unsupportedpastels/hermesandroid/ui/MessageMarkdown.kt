@@ -45,6 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
 
 internal sealed interface MarkdownBlock
 
@@ -84,6 +85,10 @@ internal data class MarkdownImageBlock(
     val url: String,
 ) : MarkdownBlock
 
+internal data class MarkdownVideoBlock(
+    val url: String,
+) : MarkdownBlock
+
 internal enum class MarkdownTableAlignment {
     Start,
     Center,
@@ -105,7 +110,7 @@ internal data class MarkdownTableBlock(
 private val unorderedListPattern = Regex("^(\\s*)[-+*]\\s+(.+)$")
 private val orderedListPattern = Regex("^(\\s*)(\\d+[.)])\\s+(.+)$")
 private val headingPattern = Regex("^(#{1,6})\\s+(.+)$")
-private val mediaDirectivePattern = Regex("^MEDIA:(\\S+)$")
+
 private val imageAttachmentMarkerPattern = Regex(
     pattern = """^\[Image attached at: [^\]\r\n]+]\r?\n(?=data:image/)""",
     option = RegexOption.MULTILINE,
@@ -303,12 +308,18 @@ internal fun parseMessageMarkdown(source: String): List<MarkdownBlock> {
     while (index < lines.size) {
         val line = lines[index]
         val trimmedStart = line.trimStart()
-        val media = mediaDirectivePattern.matchEntire(trimmedStart)
-        if (media != null) {
-            val source = media.groupValues[1]
+        val mediaSource = com.unsupportedpastels.mercury.core.artifacts.ArtifactExtractor.standaloneMediaSource(line)
+        if (mediaSource != null) {
+            val source = mediaSource
             if (validateRemoteMediaUrl(source) || validateGatewayMediaPath(source)) {
                 flushParagraph()
                 blocks += MarkdownImageBlock(source)
+                index += 1
+                continue
+            }
+            if (validateGatewayVideoPath(source)) {
+                flushParagraph()
+                blocks += MarkdownVideoBlock(source)
                 index += 1
                 continue
             }
@@ -547,6 +558,8 @@ internal fun MarkdownMessage(
     text: String,
     modifier: Modifier = Modifier,
     loadManagedImage: (suspend (String) -> ByteArray)? = null,
+    loadManagedVideo: (suspend (String) -> Result<ManagedVideoMedia>)? = null,
+    peekManagedVideo: (suspend (String) -> ManagedVideoMedia?)? = null,
 ) {
     val displayText = remember(text) { compactEmbeddedPayloads(text) }
     var requestedCharacters by rememberSaveable(displayText) {
@@ -574,6 +587,11 @@ internal fun MarkdownMessage(
                         is MarkdownImageBlock -> RemoteMediaImage(
                             source = block.url,
                             loadManagedImage = loadManagedImage,
+                        )
+                        is MarkdownVideoBlock -> ManagedVideoBlock(
+                            source = block.url,
+                            onLoadManagedVideo = loadManagedVideo,
+                            onPeekManagedVideo = peekManagedVideo,
                         )
                         is MarkdownTableBlock -> MarkdownTable(block)
                     }

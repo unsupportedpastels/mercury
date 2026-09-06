@@ -19,10 +19,14 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessageRole
@@ -392,6 +396,111 @@ class HermesConnectionClientTest {
         )
 
         assertTrue(downloaded.contentEquals(bytes))
+    }
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
+
+    @Test
+    fun managedVideoStreamsAuthenticatedBodyIntoDestinationFile() = runTest {
+        val bytes = byteArrayOf(9, 8, 7, 6, 5)
+        val engine = MockEngine { request ->
+            assertEquals("/api/files/download", request.url.encodedPath)
+            assertEquals("/workspace/scene-00/preview.mp4", request.url.parameters["path"])
+            assertEquals("Bearer opaque-access", request.headers[HttpHeaders.Authorization])
+            respond(
+                content = bytes,
+                headers = headersOf(HttpHeaders.ContentType, "video/mp4"),
+            )
+        }
+        val client = HttpHermesConnectionClient(HttpClient(engine))
+        val destination = File(tempFolder.root, "preview.mp4")
+
+        val media = client.streamManagedVideoToFile(
+            ServerOrigin.parse("https://hermes.example"),
+            "opaque-access",
+            "/workspace/scene-00/preview.mp4",
+            destination,
+        )
+
+        assertEquals("video/mp4", media.mimeType)
+        assertEquals(destination.absolutePath, media.file.absolutePath)
+        assertArrayEquals(bytes, destination.readBytes())
+        assertFalse(File(tempFolder.root, "preview.mp4.part").exists())
+    }
+
+    @Test
+    fun managedVideoRejectsNonVideoContentTypeWithoutWritingDestination() = runTest {
+        val engine = MockEngine {
+            respond(
+                content = ByteArray(4),
+                headers = headersOf(HttpHeaders.ContentType, "image/jpeg"),
+            )
+        }
+        val client = HttpHermesConnectionClient(HttpClient(engine))
+        val destination = File(tempFolder.root, "clip.mp4")
+
+        val failure = runCatching {
+            client.streamManagedVideoToFile(
+                ServerOrigin.parse("https://hermes.example"),
+                "opaque-access",
+                "/workspace/scene-00/clip.mp4",
+                destination,
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is HermesConnectionException)
+        assertFalse(destination.exists())
+    }
+
+    @Test
+    fun managedVideoRejectsRelativePathBeforeAnyRequest() = runTest {
+        var requests = 0
+        val engine = MockEngine {
+            requests += 1
+            respond(content = ByteArray(0), headers = headersOf(HttpHeaders.ContentType, "video/mp4"))
+        }
+        val client = HttpHermesConnectionClient(HttpClient(engine))
+
+        val failure = runCatching {
+            client.streamManagedVideoToFile(
+                ServerOrigin.parse("https://hermes.example"),
+                "opaque-access",
+                "relative/clip.mp4",
+                File(tempFolder.root, "clip.mp4"),
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is HermesConnectionException)
+        assertEquals(0, requests)
+    }
+
+    @Test
+    fun managedVideoRejectsBodyLargerThanCapAndLeavesNoPartialFile() = runTest {
+        val engine = MockEngine {
+            respond(
+                content = ByteArray(64),
+                headers = headersOf(HttpHeaders.ContentType, "video/mp4"),
+            )
+        }
+        val client = HttpHermesConnectionClient(HttpClient(engine))
+        val destination = File(tempFolder.root, "clip.mp4")
+
+        val failure = runCatching {
+            client.streamManagedVideoToFile(
+                ServerOrigin.parse("https://hermes.example"),
+                "opaque-access",
+                "/workspace/scene-00/clip.mp4",
+                destination,
+                maxBytes = 16L,
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is HermesConnectionException)
+        assertFalse(destination.exists())
+        tempFolder.root.listFiles().orEmpty().forEach { file ->
+            assertFalse("leftover ${file.name}", file.name.endsWith(".part"))
+        }
     }
 
     @Test

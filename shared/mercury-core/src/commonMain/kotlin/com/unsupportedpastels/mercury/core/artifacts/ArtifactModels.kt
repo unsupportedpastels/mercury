@@ -4,6 +4,7 @@ package com.unsupportedpastels.mercury.core.artifacts
 enum class ArtifactType {
     Image,
     Audio,
+    Video,
     File,
 }
 

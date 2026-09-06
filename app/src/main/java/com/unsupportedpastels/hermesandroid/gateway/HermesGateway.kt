@@ -143,6 +143,13 @@ data class HermesGatewaySnapshot(
     val projectSessions: Map<ProjectId, List<SessionSummary>> = emptyMap(),
     val projectSessionStates: Map<ProjectId, ProjectSessionLoadState> = emptyMap(),
     val activeRuntimes: List<ActiveRuntimeSession> = emptyList(),
+    /**
+     * Durable session IDs currently running a turn in the connected gateway
+     * process, from the read-only `session.active_list` snapshot. Observer
+     * presence for the working indicator only — never runtime ownership and
+     * never a resume/activate affordance. Fails closed to empty on RPC error.
+     */
+    val activeWorkingSessionIds: Set<DurableSessionId> = emptySet(),
     val chatSessions: Map<DurableSessionId, ChatSessionSnapshot> = emptyMap(),
     val delegationStatus: DelegationStatus = DelegationStatus(),
     val delegationStatusAvailable: Boolean = false,

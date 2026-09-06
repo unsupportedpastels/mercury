@@ -15,6 +15,7 @@ import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
 import com.unsupportedpastels.hermesandroid.connection.readBodyTextBounded
+import com.unsupportedpastels.mercury.core.sessions.SessionPresencePolicy
 import com.unsupportedpastels.mercury.core.transcript.ChatEventDecoder
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.webSocketSession
@@ -38,6 +39,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -483,6 +485,15 @@ interface HermesChatSession {
     suspend fun loadDelegationStatus(): DelegationStatus =
         throw HermesChatMethodNotFoundException("delegation.status")
 
+    /**
+     * Read-only observer presence from the official `session.active_list`
+     * snapshot: durable session IDs currently running a turn in the connected
+     * gateway process. Enumerates without transport rebinding; the result
+     * never implies runtime ownership and must not gate resume affordances.
+     */
+    suspend fun loadActiveSessionPresence(): Set<DurableSessionId> =
+        throw HermesChatMethodNotFoundException("session.active_list")
+
     /** Session-scoped background processes owned by this exact runtime. */
     suspend fun loadProcessList(runtimeSessionId: RuntimeSessionId): List<ProcessRow> =
         throw HermesChatMethodNotFoundException("process.list")
@@ -768,6 +779,27 @@ class HermesChatConnection internal constructor(
             maxSpawnDepth = result.longValue("max_spawn_depth")?.coerceIn(0, 32)?.toInt(),
             maxConcurrentChildren = result.longValue("max_concurrent_children")?.coerceIn(0, 128)?.toInt(),
         )
+    }
+
+    override suspend fun loadActiveSessionPresence(): Set<DurableSessionId> {
+        val result = request(
+            "session.active_list",
+            buildJsonObject { put("current_session_id", "") },
+        )
+        // The shared policy consumes plain decoded shapes so both platforms run
+        // the same decision over their own JSON model; adapt JsonObject here.
+        fun JsonElement.asPlain(): Any? = when (this) {
+            is JsonObject -> entries.associate { it.key to it.value.asPlain() }
+            is JsonArray -> map { it.asPlain() }
+            is JsonPrimitive -> content
+        }
+        return SessionPresencePolicy
+            .parseRows(result.asPlain() as? Map<*, *>)
+            .let(SessionPresencePolicy::workingSessionIds)
+            .map { durableSessionId ->
+                DurableSessionId(durableSessionId)
+            }
+            .toSet()
     }
 
     override suspend fun loadProcessList(runtimeSessionId: RuntimeSessionId): List<ProcessRow> {

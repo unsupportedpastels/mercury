@@ -114,7 +114,8 @@ object ArtifactExtractor {
         val forcedType: ArtifactType?,
     )
 
-    private fun standaloneMediaSource(line: String): String? {
+    /** Parses only the standalone directive grammar; callers must validate the returned source before fetching it. */
+    fun standaloneMediaSource(line: String): String? {
         var body = line.trim(' ', '\t')
         if (body.isEmpty()) return null
 
@@ -300,6 +301,8 @@ object ArtifactExtractor {
         return when {
             extension in imageExtensions -> ArtifactType.Image
             extension in audioExtensions -> ArtifactType.Audio
+            extension in ManagedVideoPolicy.extensions -> ArtifactType.Video
+            typePrefixPattern.find(labelHint.orEmpty())?.groupValues?.get(1)?.lowercase() == "video" -> ArtifactType.Video
             typePrefixPattern.find(labelHint.orEmpty())?.groupValues?.get(1)?.lowercase() == "image" -> ArtifactType.Image
             typePrefixPattern.find(labelHint.orEmpty())?.groupValues?.get(1)?.lowercase() == "audio" -> ArtifactType.Audio
             else -> ArtifactType.File

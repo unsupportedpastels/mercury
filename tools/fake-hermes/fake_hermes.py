@@ -17,12 +17,16 @@ Wire shapes were mined from:
 
 Usage:  python3 fake_hermes.py [PORT]     (default 8787, cleartext HTTP)
 
+Set MERCURY_E2E_VIDEO_FILE to a local synthetic MP4 to exercise authenticated
+managed-video download/playback. Only the fixed fixture path is served.
+
 Login:  any username, password "e2epass"  -> HttpOnly session cookie.
 """
 
 import base64
 import hashlib
 import json
+import os
 import secrets
 import struct
 import sys
@@ -38,6 +42,14 @@ RUNTIME_SESSION_ID = "rt-e2e-1"
 SENTINEL_TEXT = "Operation interrupted: waiting for model response (2s elapsed)."
 PROMPT_WAIT_SECONDS = 8.0
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+VIDEO_FIXTURE_FILE = os.environ.get("MERCURY_E2E_VIDEO_FILE")
+VIDEO_MANAGED_PATH = "/tmp/mercury-test-video.mp4"
+
+
+def transcript_messages():
+    if not VIDEO_FIXTURE_FILE:
+        return []
+    return [{"role": "assistant", "content": "Video playback fixture\nMEDIA: " + VIDEO_MANAGED_PATH}]
 
 _lock = threading.Lock()
 SESSION_TOKENS = set()      # cookie/bearer values minted by password-login
@@ -202,11 +214,30 @@ class Handler(BaseHTTPRequestHandler):
                 })
         elif path.startswith("/api/sessions/") and path.endswith("/messages"):
             if self.require_auth():
+                messages = transcript_messages()
                 self.send_json({
                     "session_id": path.split("/")[3],
-                    "messages": [],
-                    "pagination": {"limit": 100, "offset": 0, "returned": 0},
+                    "messages": messages,
+                    "pagination": {"limit": 100, "offset": 0, "returned": len(messages)},
                 })
+        elif path == "/api/files/download":
+            if not self.require_auth():
+                return
+            if not VIDEO_FIXTURE_FILE or query.get("path") != [VIDEO_MANAGED_PATH]:
+                self.send_json({"error": "fixture not found"}, status=404)
+                return
+            try:
+                fixture = open(VIDEO_FIXTURE_FILE, "rb")
+            except OSError:
+                self.send_json({"error": "fixture unavailable"}, status=404)
+                return
+            with fixture:
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Content-Length", str(os.fstat(fixture.fileno()).st_size))
+                self.end_headers()
+                while chunk := fixture.read(64 * 1024):
+                    self.wfile.write(chunk)
         elif path == "/api/model/options":
             if self.require_auth():
                 self.send_json({
@@ -447,7 +478,7 @@ class WsSession:
                 "session_id": RUNTIME_SESSION_ID,
                 "session_key": requested,
                 "resumed": True,
-                "messages": [],
+                "messages": transcript_messages(),
                 "running": False,
                 "info": {
                     "model": "fake-model",
