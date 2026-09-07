@@ -27,6 +27,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.util.concurrent.ConcurrentLinkedQueue
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessageRole
@@ -938,9 +939,21 @@ class HermesConnectionClientTest {
 
     @Test
     fun authenticatedConnectionVerifiesBearerAndLoadsDurableSessions() = runTest {
-        val requestedPaths = mutableListOf<String>()
+        verifyAuthenticatedConnectionRequests(firstPath = "/api/auth/me")
+        verifyAuthenticatedConnectionRequests(firstPath = "/api/profiles/sessions")
+    }
+
+    private suspend fun verifyAuthenticatedConnectionRequests(firstPath: String) {
+        val requestedPaths = ConcurrentLinkedQueue<String>()
+        val firstRecorded = CompletableDeferred<Unit>()
         val engine = MockEngine { request ->
-            requestedPaths += request.url.encodedPath
+            // Both requests are independent. Exercise either arrival order
+            // without relying on dispatcher timing or concurrent ArrayList writes.
+            if (request.url.encodedPath != firstPath) {
+                withTimeout(5_000) { firstRecorded.await() }
+            }
+            requestedPaths.add(request.url.encodedPath)
+            if (request.url.encodedPath == firstPath) firstRecorded.complete(Unit)
             assertEquals("Bearer opaque-access", request.headers[HttpHeaders.Authorization])
             if (request.url.encodedPath == "/api/profiles/sessions") {
                 assertEquals("20", request.url.parameters["limit"])
@@ -965,14 +978,20 @@ class HermesConnectionClientTest {
                 else -> error("Unexpected request: ${request.url}")
             }
         }
-        val client = HttpHermesConnectionClient(HttpClient(engine))
+        val httpClient = HttpClient(engine)
+        val authenticated = try {
+            HttpHermesConnectionClient(httpClient).authenticate(
+                ServerOrigin.parse("https://hermes.example"),
+                accessToken = "opaque-access",
+            )
+        } finally {
+            httpClient.close()
+        }
 
-        val authenticated = client.authenticate(
-            ServerOrigin.parse("https://hermes.example"),
-            accessToken = "opaque-access",
+        assertEquals(
+            mapOf("/api/auth/me" to 1, "/api/profiles/sessions" to 1),
+            requestedPaths.groupingBy { it }.eachCount(),
         )
-
-        assertEquals(listOf("/api/auth/me", "/api/profiles/sessions"), requestedPaths)
         assertEquals("user", authenticated.userId)
         assertEquals(
             listOf(
