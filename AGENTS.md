@@ -4,7 +4,11 @@
 
 Mercury is a native Android and iOS client for the official interfaces of an unchanged shared `hermes serve` process. Direct mode must never add, require, or assume custom server routes, forks, dashboard extensions, or gateway workers, and must keep working with no Mercury plugin installed.
 
-One scoped exception exists: **Mercury Relay** is an optional, separately paired transport (iOS first) that carries the same official Hermes JSON-RPC session contract end-to-end encrypted through the Mercury Relay host plugin and an opaque hosted router. Relay code must stay isolated from direct-mode connection, credential, and catalog state; it never changes Hermes itself, tunnels no private Hermes route, and is never a requirement for any direct-mode feature.
+**We own the Mercury stack.** The Android and iOS apps, shared core, Mercury Relay host plugin, hosted router, and Mercury management surfaces may be changed together to deliver product features. A missing Mercury capability is an implementation gap, not a permanent product limitation. The boundary is the actual Hermes API: do not require changes to Hermes itself, alter its official API contracts, or depend on a Hermes fork or private route.
+
+**Mercury Relay** is an optional, separately paired transport that carries the official Hermes JSON-RPC session contract end-to-end encrypted through the Mercury Relay host plugin and an opaque hosted router. New Mercury-owned relay operations and host-plugin capabilities are permitted, including folder browsing and creation, provided they do not require changing the Hermes API. Implement host-plugin operations as Mercury-owned services or adapters over existing official Hermes interfaces; do not disguise private Hermes routes as a relay API. Keep direct-mode connection, credential, and catalog state isolated, and never make Relay or its plugin a requirement for a direct-mode feature.
+
+Evolve Mercury-owned contracts with explicit versioning/capability advertisement and compatibility tests across the affected stack. Preserve end-to-end encryption and router opacity, pairing authorization, host filesystem permissions and applicable managed-root restrictions. Older clients or hosts must receive a supported fallback or clear upgrade guidance, not a misleading authentication error.
 
 Released Hermes compatibility is conservative: observe durable/live metadata without implicit transport takeover. Resume or activate another remote connected client's runtime only after explicit user action. Never close a shared runtime merely because this client disconnects. Capability-gate multi-subscriber streaming until a safe released transport advertises it.
 
@@ -36,9 +40,12 @@ cross-platform change until proven otherwise:
 - **Tests travel with the behavior.** A shared-core change ships with a
   common test; a platform change ships with the matching test on each
   platform it touches. Both gates below must be green before merge.
-- **Mercury Relay availability differs.** Relay features on either platform
-  are limited to what the paired transport advertises; never add relay
-  contracts or direct-mode dependencies to reach UI parity.
+- **Mercury Relay capabilities evolve across the stack.** Add or extend
+  Mercury-owned relay contracts and host-plugin support when a feature needs
+  them; coordinate the shared contract, native consumers, and affected host/router
+  components. At runtime, enable features only when the paired transport
+  advertises support. Keep older peers compatible and direct mode independent;
+  do not change the actual Hermes API to achieve parity.
 
 ## Android architecture
 

@@ -134,6 +134,33 @@ class NativeLifecycleOwnersTest {
     }
 
     @Test
+    fun recreatedPromptLifecycleDoesNotResolveOldAttemptAgainstNewAttempt() {
+        val registry = PerSessionControllerRegistry()
+        val durableId = DurableSessionId("durable-prompt")
+        val first = checkNotNull(registry.beginPromptSubmission(durableId, "first", emptyList()))
+
+        assertEquals(
+            PromptSubmissionLifecycle.Resolution.RestoreDraft("first"),
+            registry.resolvePromptSubmission(durableId, first, accepted = false),
+        )
+        // Resolution removed the old lifecycle; the next attempt starts from a
+        // fresh native owner and must still reject the old callback by identity.
+        val replacement = checkNotNull(registry.beginPromptSubmission(durableId, "second", emptyList()))
+        assertEquals(
+            PromptSubmissionLifecycle.Resolution.Stale,
+            registry.resolvePromptSubmission(durableId, first, accepted = true),
+        )
+        assertEquals(
+            PromptSubmissionLifecycle.Resolution.Accepted(
+                draft = "second",
+                attachmentIds = emptyList(),
+                terminalAlreadyObserved = false,
+            ),
+            registry.resolvePromptSubmission(durableId, replacement, accepted = true),
+        )
+    }
+
+    @Test
     fun recoveryIsBoundedAndConcurrentAttemptCannotBeStartedTwice() = runTest {
         val registry = PerSessionControllerRegistry()
         val durableId = DurableSessionId("durable")

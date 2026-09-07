@@ -6,8 +6,9 @@ import UIKit
 struct SettingsView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
-    @State private var relay = RelayAppModel()
+    @State private var relay: RelayAppModel?
     @State private var confirmRemoveRelay = false
+    @State private var showRelayPairing = false
 
     var body: some View {
         NavigationStack {
@@ -24,10 +25,26 @@ struct SettingsView: View {
                     NavigationLink {
                         ServerListView(
                             catalog: appModel.serverCatalog,
+                            relayTargets: appModel.relayTargets,
+                            activeIdentity: appModel.activeStartupIdentity,
                             onSelect: { entry in Task { await appModel.switchServer(entry) } },
-                            onAdd: { origin, label in Task { await appModel.addServer(origin: origin, label: label) } },
-                            onEditLabel: { entry, label in Task { await appModel.renameServer(entry, label: label) } },
-                            onRemove: { entry in Task { await appModel.removeServer(entry) } }
+                            onSelectRelay: { target in Task { await appModel.connectRelay(target) } },
+                            onAdd: { origin, label in
+                                Task { await appModel.addServer(origin: origin, label: label) }
+                            },
+                            onPairRelay: { showRelayPairing = true },
+                            onEditLabel: { entry, label in
+                                Task { await appModel.renameServer(entry, label: label) }
+                            },
+                            onEditRelayLabel: { target, label in
+                                Task { await appModel.renameRelay(target, label: label) }
+                            },
+                            onRemove: { entry in
+                                Task { await appModel.removeServer(entry) }
+                            },
+                            onRemoveRelay: { target in
+                                Task { await appModel.removeRelay(target) }
+                            }
                         )
                     } label: {
                         settingsRow("Servers", subtitle: "Add, switch, or remove Hermes servers", icon: "server.rack")
@@ -86,7 +103,8 @@ struct SettingsView: View {
                         Button("Remove pairing", role: .destructive) {
                             Task {
                                 appModel.disconnect()
-                                await relay.removeTarget(target)
+                                await appModel.removeRelay(target)
+                                await appModel.loadRelayTargets()
                                 dismiss()
                             }
                         }
@@ -117,6 +135,18 @@ struct SettingsView: View {
             .amoledScreen()
         }
         .interactiveDismissDisabled(true)
+        .task {
+            let model = appModel.makeRelayAppModel()
+            relay = model
+            await model.loadTargets()
+            await appModel.loadRelayTargets()
+        }
+        .sheet(isPresented: $showRelayPairing, onDismiss: {
+            relay?.cancelPairing()
+            Task { await appModel.loadRelayTargets() }
+        }) {
+            if let relay { RelayPairingView(relay: relay) }
+        }
     }
 
     private func settingsRow(_ title: String, subtitle: String, icon: String) -> some View {

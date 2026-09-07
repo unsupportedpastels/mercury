@@ -1,8 +1,8 @@
 import Foundation
 
 /// Failures specific to the official managed-files REST contract. Authentication
-/// and retryable server statuses use `HermesAuthError` so callers can share the
-/// app's existing sign-in and retry classification.
+/// and retryable server statuses use `HermesAuthError`; managed-folder HTTP 403
+/// stays a `HostFilesClientError` so a denied path is not mistaken for sign-out.
 enum HostFilesClientError: Error, Equatable {
     case invalidOrigin
     case invalidBearerToken
@@ -296,6 +296,13 @@ final class HostFilesClient {
         // Classify status before MIME inspection or body decoding. In particular,
         // malformed/large error bodies cannot hide an auth rejection.
         guard (200...299).contains(http.statusCode) else {
+            // A folder-level 403 is an authorization decision for the selected
+            // path, not proof that the account session is gone. Keep it in the
+            // managed-files domain so callers can explain the denied folder
+            // without asking the user to sign in again.
+            if http.statusCode == 403 {
+                throw HostFilesClientError.httpStatus(403)
+            }
             if let classified = HermesAuthError.classify(http.statusCode) {
                 throw classified
             }

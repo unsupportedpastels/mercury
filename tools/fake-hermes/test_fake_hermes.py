@@ -1,8 +1,11 @@
-import unittest
+import base64
 import json
 from pathlib import Path
+import os
+import socket
 import tempfile
 import threading
+import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -54,6 +57,341 @@ class VideoFixtureTest(unittest.TestCase):
                     server.shutdown()
                     server.server_close()
                     worker.join(timeout=2)
+
+
+class FakeHermesServer:
+    def __init__(self):
+        self.server = fake_hermes.ThreadingHTTPServer(("127.0.0.1", 0), fake_hermes.Handler)
+        self.worker = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    @property
+    def origin(self):
+        return f"http://127.0.0.1:{self.server.server_port}"
+
+    def __enter__(self):
+        self.worker.start()
+        return self
+
+    def __exit__(self, *_):
+        self.server.shutdown()
+        self.server.server_close()
+        self.worker.join(timeout=2)
+
+
+def _json_request(origin, method, path, token=None, body=None):
+    headers = {}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(body).encode("utf-8")
+    request = Request(origin + path, method=method, headers=headers, data=body)
+    with urlopen(request, timeout=2) as response:
+        return response.status, json.load(response)
+
+
+def _read_exact(sock, count):
+    chunks = bytearray()
+    while len(chunks) < count:
+        chunk = sock.recv(count - len(chunks))
+        if not chunk:
+            raise ConnectionError("websocket peer closed")
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def _open_websocket(origin, ticket):
+    url = origin.removeprefix("http://")
+    host, port = url.rsplit(":", 1)
+    sock = socket.create_connection((host, int(port)), timeout=2)
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
+    request = (
+        f"GET /api/ws?ticket={ticket} HTTP/1.1\r\n"
+        f"Host: {host}:{port}\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\n"
+        "Sec-WebSocket-Version: 13\r\n\r\n"
+    ).encode("ascii")
+    sock.sendall(request)
+    response = bytearray()
+    while b"\r\n\r\n" not in response:
+        response.extend(sock.recv(4096))
+    if not response.startswith(b"HTTP/1.1 101"):
+        raise AssertionError(response.decode("ascii", errors="replace"))
+    return sock
+
+
+def _send_websocket_json(sock, value):
+    payload = json.dumps(value, separators=(",", ":")).encode("utf-8")
+    mask = os.urandom(4)
+    length = len(payload)
+    if length < 126:
+        header = bytes((0x81, 0x80 | length))
+    elif length < 65536:
+        header = bytes((0x81, 0xFE)) + length.to_bytes(2, "big")
+    else:
+        header = bytes((0x81, 0xFF)) + length.to_bytes(8, "big")
+    masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    sock.sendall(header + mask + masked)
+
+
+def _receive_websocket_json(sock):
+    first, second = _read_exact(sock, 2)
+    opcode = first & 0x0F
+    length = second & 0x7F
+    if length == 126:
+        length = int.from_bytes(_read_exact(sock, 2), "big")
+    elif length == 127:
+        length = int.from_bytes(_read_exact(sock, 8), "big")
+    payload = _read_exact(sock, length) if length else b""
+    if opcode == 0x8:
+        raise ConnectionError("websocket closed")
+    if opcode != 0x1:
+        return _receive_websocket_json(sock)
+    return json.loads(payload.decode("utf-8"))
+
+
+def _rpc(sock, request_id, method, params=None):
+    _send_websocket_json(sock, {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": method,
+        "params": params or {},
+    })
+    while True:
+        message = _receive_websocket_json(sock)
+        if message.get("id") == request_id:
+            if "error" in message:
+                raise AssertionError(message["error"])
+            return message["result"]
+
+
+def _prompt_completion(sock, request_id, text):
+    _send_websocket_json(sock, {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "prompt.submit",
+        "params": {"session_id": fake_hermes.RUNTIME_SESSION_ID, "text": text},
+    })
+    response = None
+    completion = None
+    while response is None or completion is None:
+        message = _receive_websocket_json(sock)
+        if message.get("id") == request_id:
+            response = message.get("result")
+        params = message.get("params")
+        if message.get("method") == "event" and isinstance(params, dict):
+            if params.get("type") == "message.complete":
+                completion = params.get("payload")
+    return response, completion
+
+
+def _startup_chat_socket(origin):
+    token = fake_hermes.mint_session_token()
+    _, ticket_payload = _json_request(origin, "POST", "/api/auth/ws-ticket", token=token)
+    sock = _open_websocket(origin, ticket_payload["ticket"])
+    _rpc(sock, 1, "session.resume", {
+        "session_id": fake_hermes.DURABLE_SESSION_ID,
+        "profile": "default",
+        "close_on_disconnect": False,
+    })
+    return sock
+
+
+def _event_type(message):
+    params = message.get("params")
+    return params.get("type") if isinstance(params, dict) else None
+
+
+def _run_delayed_prompt_race(sock):
+    _send_websocket_json(sock, {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "prompt.submit",
+        "params": {"session_id": fake_hermes.RUNTIME_SESSION_ID, "text": "first startup turn"},
+    })
+    before_first_ack = []
+    while True:
+        message = _receive_websocket_json(sock)
+        before_first_ack.append(message)
+        if message.get("id") == 5:
+            raise AssertionError("first prompt ACK arrived before its completion event")
+        if _event_type(message) == "message.complete":
+            break
+
+    # The second request is intentionally sent while request id 5 is still
+    # outstanding. The server's read loop must accept it before the delayed
+    # first response is released.
+    _send_websocket_json(sock, {
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "prompt.submit",
+        "params": {"session_id": fake_hermes.RUNTIME_SESSION_ID, "text": "second startup turn"},
+    })
+    after_second_prompt = []
+    first_response = None
+    second_response = None
+    second_completion = None
+    while first_response is None or second_completion is None:
+        message = _receive_websocket_json(sock)
+        after_second_prompt.append(message)
+        if message.get("id") == 5:
+            first_response = message
+        elif message.get("id") == 6:
+            second_response = message
+        elif _event_type(message) == "message.complete":
+            payload = message.get("params", {}).get("payload", {})
+            if payload.get("text") == fake_hermes.STARTUP_RESPONSE_TEXTS[1] + ": second startup turn":
+                second_completion = payload
+    return before_first_ack, after_second_prompt, first_response, second_response, second_completion
+
+
+class StartupScenarioTest(unittest.TestCase):
+    def setUp(self):
+        self.scenario = patch.object(fake_hermes, "FAKE_HERMES_SCENARIO", "ios-startup")
+        self.scenario.start()
+        fake_hermes.reset_synthetic_state()
+
+    def tearDown(self):
+        fake_hermes.reset_synthetic_state()
+        self.scenario.stop()
+
+    def test_profiles_and_synthetic_filesystem_are_bounded(self):
+        with FakeHermesServer() as server:
+            token = fake_hermes.mint_session_token()
+            status, payload = _json_request(server.origin, "GET", "/api/profiles", token=token)
+            self.assertEqual(status, 200)
+            self.assertEqual([row["name"] for row in payload["profiles"]], ["default", "work"])
+
+            status, listing = _json_request(server.origin, "GET", "/api/files", token=token)
+            self.assertEqual(status, 200)
+            self.assertEqual(listing["path"], fake_hermes.SYNTHETIC_FILESYSTEM_ROOT)
+            workspace = next(row for row in listing["entries"] if row["name"] == "workspace")
+            self.assertTrue(workspace["is_directory"])
+
+            folder = fake_hermes.SYNTHETIC_WORKSPACE_PATH + "/ios-startup-folder"
+            status, created = _json_request(
+                server.origin,
+                "POST",
+                "/api/files/mkdir",
+                token=token,
+                body={"path": folder},
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(created, {"ok": True, "path": folder})
+            status, child = _json_request(
+                server.origin,
+                "GET",
+                "/api/files?path=" + folder,
+                token=token,
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(child["path"], folder)
+            self.assertEqual(child["parent"], fake_hermes.SYNTHETIC_WORKSPACE_PATH)
+            self.assertEqual(child["entries"], [])
+
+            for path in ("/etc", fake_hermes.SYNTHETIC_WORKSPACE_PATH + "/../escape"):
+                with self.assertRaises(HTTPError) as failure:
+                    urlopen(Request(
+                        server.origin + "/api/files?path=" + path,
+                        headers={"Authorization": "Bearer " + token},
+                    ), timeout=2)
+                self.assertEqual(failure.exception.code, 404)
+
+    def test_rpc_profiles_projects_and_two_turn_completion(self):
+        with FakeHermesServer() as server:
+            token = fake_hermes.mint_session_token()
+            _, ticket_payload = _json_request(
+                server.origin,
+                "POST",
+                "/api/auth/ws-ticket",
+                token=token,
+            )
+            sock = _open_websocket(server.origin, ticket_payload["ticket"])
+            try:
+                profiles = _rpc(sock, 1, "profiles.list", {"include_sessions": False})
+                self.assertEqual([row["name"] for row in profiles["profiles"]], ["default", "work"])
+
+                tree = _rpc(sock, 2, "projects.tree", {
+                    "profile": "default",
+                    "preview_limit": 3,
+                    "session_limit": 500,
+                })
+                self.assertIn("projects", tree)
+                self.assertEqual(tree["projects"][0]["label"], "Existing Project")
+
+                folder = fake_hermes.SYNTHETIC_WORKSPACE_PATH + "/ios-startup-folder"
+                _json_request(
+                    server.origin,
+                    "POST",
+                    "/api/files/mkdir",
+                    token=token,
+                    body={"path": folder},
+                )
+                created = _rpc(sock, 3, "projects.create", {
+                    "name": "UI Startup Project",
+                    "folders": [folder],
+                    "primary_path": folder,
+                    "use": True,
+                    "profile": "default",
+                })
+                self.assertEqual(created["project"]["label"], "UI Startup Project")
+                self.assertEqual(created["project"]["path"], folder)
+
+                resumed = _rpc(sock, 4, "session.resume", {
+                    "session_id": fake_hermes.DURABLE_SESSION_ID,
+                    "profile": "default",
+                    "close_on_disconnect": False,
+                })
+                self.assertEqual(resumed["session_id"], fake_hermes.RUNTIME_SESSION_ID)
+
+                first_response, first = _prompt_completion(sock, 5, "first startup turn")
+                second_response, second = _prompt_completion(sock, 6, "second startup turn")
+                self.assertEqual(first_response["status"], "streaming")
+                self.assertEqual(second_response["status"], "streaming")
+                self.assertEqual(first["status"], "completed")
+                self.assertEqual(second["status"], "completed")
+                self.assertEqual(first["text"], "First startup response: first startup turn")
+                self.assertEqual(second["text"], "Second startup response: second startup turn")
+                self.assertNotIn("Operation interrupted", second["text"])
+            finally:
+                sock.close()
+
+    def test_opt_in_delayed_first_ack_accepts_second_prompt_before_ack(self):
+        with patch.dict(os.environ, {
+            fake_hermes.DELAY_FIRST_PROMPT_ACK_ENV: "1",
+            fake_hermes.DELAY_FIRST_PROMPT_ERROR_ENV: "0",
+        }, clear=False):
+            with FakeHermesServer() as server:
+                sock = _startup_chat_socket(server.origin)
+                try:
+                    before, after, first, second, second_completion = _run_delayed_prompt_race(sock)
+                    self.assertFalse(any(message.get("id") == 5 for message in before))
+                    self.assertEqual((first or {}).get("result", {}).get("status"), "streaming")
+                    self.assertEqual((second or {}).get("result", {}).get("status"), "streaming")
+                    self.assertEqual((second_completion or {}).get("status"), "completed")
+                    self.assertTrue((second_completion or {}).get("text", "").startswith("Second startup response: "))
+                    self.assertTrue(any(_event_type(message) == "message.complete" for message in before))
+                    self.assertTrue(any(message.get("id") == 5 for message in after))
+                finally:
+                    sock.close()
+
+    def test_opt_in_delayed_first_error_is_after_completion_and_second_prompt(self):
+        with patch.dict(os.environ, {
+            fake_hermes.DELAY_FIRST_PROMPT_ACK_ENV: "1",
+            fake_hermes.DELAY_FIRST_PROMPT_ERROR_ENV: "1",
+        }, clear=False):
+            with FakeHermesServer() as server:
+                sock = _startup_chat_socket(server.origin)
+                try:
+                    before, _, first, second, second_completion = _run_delayed_prompt_race(sock)
+                    self.assertFalse(any(message.get("id") == 5 for message in before))
+                    self.assertEqual((first or {}).get("error", {}).get("code"), -32001)
+                    self.assertEqual((second or {}).get("result", {}).get("status"), "streaming")
+                    self.assertTrue((second_completion or {}).get("text", "").startswith("Second startup response: "))
+                finally:
+                    sock.close()
 
 
 if __name__ == "__main__":

@@ -84,15 +84,26 @@ extension ChatView {
         }
     }
 
+    func clearStagedHostReferences(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        let idSet = Set(ids)
+        state.stagedHostReferences.removeAll { idSet.contains($0.id) }
+    }
+
     private func submitPrompt(_ trimmed: String) {
         guard let connection = state.connection, let runtimeSessionID = state.runtimeSessionID else {
             state.composerError = "Not connected — reopen this session to chat."
             return
         }
 
+        let hostReferences = state.stagedHostReferences
+        guard let attempt = state.promptSubmission.begin(
+            draft: trimmed,
+            hostReferenceIDs: hostReferences.map(\.id)
+        ) else { return }
+
         let attachments = state.stagedAttachments
         let bytes = state.stagedBytes
-        let hostReferences = state.stagedHostReferences
         state.draft = ""
         clearSlashCompletion()
         state.composerError = nil
@@ -100,7 +111,6 @@ extension ChatView {
         state.isComposerActionPending = true
         state.followBottom = true
         Task {
-            var submissionAccepted = false
             do {
                 // Attach-on-send, Android parity: images ride the session's
                 // queued list (image.attach_bytes); files return @file: refs.
@@ -142,8 +152,13 @@ extension ChatView {
                 )
                 guard !prompt.isEmpty else {
                     await MainActor.run {
+                        let resolution = state.promptSubmission.resolve(attempt: attempt, accepted: false)
+                        guard resolution != .stale else { return }
                         state.isSending = false
                         state.isComposerActionPending = false
+                        if case .restoreDraft(let original) = resolution, state.draft.isEmpty {
+                            state.draft = original
+                        }
                     }
                     return
                 }
@@ -153,28 +168,37 @@ extension ChatView {
                     state.stagedBytes = [:]
                 }
                 _ = try await connection.submitPrompt(runtimeSessionID: runtimeSessionID, text: prompt)
-                // From this point on the server owns the turn. Do not restore
-                // the user's draft if a later cleanup/lifecycle operation
-                // fails or the turn is interrupted.
-                submissionAccepted = true
+                // A successful acknowledgement clears only references owned
+                // by this attempt. A stale callback has no newer UI effect.
                 await MainActor.run {
-                    state.stagedHostReferences.removeAll { staged in
-                        hostReferences.contains(where: { $0.id == staged.id })
+                    let resolution = state.promptSubmission.resolve(attempt: attempt, accepted: true)
+                    if case .accepted(let referenceIDs) = resolution {
+                        clearStagedHostReferences(referenceIDs)
                     }
+                    guard resolution != .stale else { return }
                     state.isComposerActionPending = false
                 }
             } catch {
                 await MainActor.run {
-                    state.composerError = "Send failed — check the connection and try again."
-                    state.isSending = false
-                    state.isComposerActionPending = false
-                    // Restore the typed text so nothing is lost; staged
-                    // attachments remain staged for retry.
-                    if state.draft.isEmpty,
-                       M7ComposerPolicy.shouldRestoreDraftAfterSubmissionFailure(
-                           submissionAccepted: submissionAccepted
-                       ) {
-                        state.draft = trimmed
+                    let resolution = state.promptSubmission.resolve(attempt: attempt, accepted: false)
+                    guard resolution != .stale else { return }
+                    switch resolution {
+                    case .restoreDraft(let original):
+                        state.composerError = "Send failed — check the connection and try again."
+                        state.isSending = false
+                        state.isComposerActionPending = false
+                        // Do not overwrite text the user entered for a newer
+                        // action while this attempt was awaiting its ACK.
+                        if state.draft.isEmpty { state.draft = original }
+                    case .authoritativeTerminal:
+                        // The terminal event already settled the turn. A late
+                        // RPC failure is not permission to restore the draft or
+                        // surface a second, stale send error.
+                        state.isComposerActionPending = false
+                    case .accepted:
+                        state.isComposerActionPending = false
+                    case .stale:
+                        break
                     }
                 }
             }

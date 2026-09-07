@@ -11,6 +11,7 @@ import com.unsupportedpastels.hermesandroid.app.ProcessRow
 import com.unsupportedpastels.hermesandroid.app.MAX_PROCESS_ROWS
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.mercury.core.profiles.ProfileCatalogPolicy
 import com.unsupportedpastels.mercury.core.sessions.SessionPresencePolicy
 import com.unsupportedpastels.mercury.core.rpc.RpcResultDecoder
 import com.unsupportedpastels.mercury.core.transcript.ChatEventDecoder
@@ -141,16 +142,12 @@ class HermesChatConnection internal constructor(
             "profiles.list",
             buildJsonObject { put("include_sessions", false) },
         )
-        return (result["profiles"] as? JsonArray)
-            .orEmpty()
-            .mapNotNull { element ->
+        return ProfileCatalogPolicy.sanitizeRpcNames(
+            (result["profiles"] as? JsonArray).orEmpty().mapNotNull { element ->
                 val row = element as? JsonObject ?: return@mapNotNull null
-                (row["name"] as? JsonPrimitive)
-                    ?.contentOrNull
-                    ?.takeIf { it.matches(Regex("^[a-z0-9][a-z0-9_-]{0,63}$")) }
-            }
-            .distinct()
-            .take(64)
+                (row["name"] as? JsonPrimitive)?.contentOrNull
+            },
+        )
     }
 
     override suspend fun loadDelegationStatus(): DelegationStatus {

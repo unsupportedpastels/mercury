@@ -88,9 +88,12 @@ struct MercuryApp: App {
                     if ProcessInfo.processInfo.arguments.contains("-uitest-reset-local-state") {
                         await appModel.resetLocalStateForUITest()
                     }
+                    let startupFixtureApplied = appModel.applyStartupUITestFixtureIfRequested()
                     if let sharedText = Self.launchArgumentValue("-uitest-share-text") {
                         appModel.enqueueSharedTextForUITest(sharedText)
                     }
+                    #else
+                    let startupFixtureApplied = false
                     #endif
                     appModel.loadSharedInbox()
                     // Load persisted notification/Live Activity preferences and
@@ -123,7 +126,7 @@ struct MercuryApp: App {
                     // the sign-in/session screens without typing.
                     if let origin = Self.launchArgumentValue("-uitest-probe") {
                         await appModel.probeSelfHosted(origin: origin)
-                    } else {
+                    } else if !startupFixtureApplied {
                         await appModel.bootstrapSavedServer()
                     }
                 }

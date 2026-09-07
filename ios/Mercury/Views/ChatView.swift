@@ -202,17 +202,6 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.canvas, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
-        .toolbar {
-            if state.contextControlsSupported {
-                ToolbarItem(placement: .topBarTrailing) {
-                    ContextRingButton(
-                        percent: state.composerContextPercent,
-                        artifactCount: 0,
-                        action: openContextSheet
-                    )
-                }
-            }
-        }
         .task {
             // Visibility can change while SwiftUI retains this view and restarts
             // its task. Restore it even when the connection is already owned.

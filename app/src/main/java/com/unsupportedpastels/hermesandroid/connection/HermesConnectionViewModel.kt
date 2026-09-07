@@ -2958,9 +2958,36 @@ class HermesConnectionViewModel(
         }
     }
 
-    private fun clearAttachments(durableSessionId: DurableSessionId) {
-        if (mutableAttachments.value.containsKey(durableSessionId)) {
-            mutableAttachments.value = mutableAttachments.value - durableSessionId
+    private fun clearAttachments(
+        durableSessionId: DurableSessionId,
+        attachmentIds: Set<String>? = null,
+    ) {
+        val current = mutableAttachments.value[durableSessionId].orEmpty()
+        if (current.isEmpty()) return
+        val updated = if (attachmentIds == null) {
+            emptyList()
+        } else {
+            current.filterNot { it.id in attachmentIds }
+        }
+        mutableAttachments.value = if (updated.isEmpty()) {
+            mutableAttachments.value - durableSessionId
+        } else {
+            mutableAttachments.value + (durableSessionId to updated)
+        }
+    }
+
+    private fun acknowledgeTerminalSubmission(
+        durableSessionId: DurableSessionId,
+        effect: PromptSubmissionLifecycle.TerminalEffect.ReleasedPending,
+    ) {
+        clearAttachments(durableSessionId, effect.attachmentIds.toSet())
+        updateChat(durableSessionId) { current ->
+            current.copy(
+                acceptedSubmissionCount = current.acceptedSubmissionCount + 1,
+                acceptedSubmissionText = effect.draft,
+                isSending = false,
+                connectionPhase = ChatConnectionPhase.Idle,
+            )
         }
     }
 
@@ -3236,6 +3263,15 @@ class HermesConnectionViewModel(
             rejectSubmission(durableSessionId, text, "No workspace")
             return viewModelScope.launch { }
         }
+        val pendingAttachments = mutableAttachments.value[durableSessionId].orEmpty()
+        val attempt = sessionControllerRegistry.beginPromptSubmission(
+            durableSessionId = durableSessionId,
+            draft = text,
+            attachmentIds = pendingAttachments.map(ComposerAttachment::id),
+        ) ?: run {
+            rejectSubmission(durableSessionId, text, "A submission is already pending")
+            return viewModelScope.launch { }
+        }
         val operationGeneration = sessionControllerRegistry.nextOperationGeneration(durableSessionId)
         sessionControllerRegistry.cancelOperationJob(durableSessionId)
         clearSendingState(durableSessionId)
@@ -3244,6 +3280,7 @@ class HermesConnectionViewModel(
         }
         val job = viewModelScope.launch {
             val origin = activeOrigin ?: run {
+                sessionControllerRegistry.resolvePromptSubmission(durableSessionId, attempt, accepted = false)
                 updateChat(durableSessionId) { it.copy(connectionPhase = ChatConnectionPhase.Idle, error = "Not connected") }
                 rejectSubmission(durableSessionId, text, "Not connected")
                 return@launch
@@ -3284,7 +3321,6 @@ class HermesConnectionViewModel(
                 // Stage attachments on the host BEFORE the optimistic bubble: bytes
                 // live on this device, so nothing can be sent without uploading
                 // them first, and chips must survive a staging failure.
-                val pendingAttachments = mutableAttachments.value[durableSessionId].orEmpty()
                 var submittedText = text
                 if (pendingAttachments.isNotEmpty()) {
                     try {
@@ -3331,26 +3367,33 @@ class HermesConnectionViewModel(
                 } else {
                     session.submitPrompt(runtimeId, submittedText, interrupted)
                 }
-                currentCoroutineContext().ensureActive()
+                val resolution = sessionControllerRegistry.resolvePromptSubmission(
+                    durableSessionId = durableSessionId,
+                    attempt = attempt,
+                    accepted = true,
+                )
+                if (resolution !is PromptSubmissionLifecycle.Resolution.Accepted) return@launch
+                accepted = true
                 if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return@launch
-                updateChat(durableSessionId) {
-                    it.copy(
-                        acceptedSubmissionCount = it.acceptedSubmissionCount + 1,
-                        acceptedSubmissionText = text,
-                        connectionPhase = ChatConnectionPhase.Idle,
+                clearAttachments(durableSessionId, resolution.attachmentIds.toSet())
+                if (!resolution.terminalAlreadyObserved) {
+                    updateChat(durableSessionId) {
+                        it.copy(
+                            acceptedSubmissionCount = it.acceptedSubmissionCount + 1,
+                            acceptedSubmissionText = resolution.draft,
+                            connectionPhase = ChatConnectionPhase.Idle,
+                        )
+                    }
+                    // Commit accepted prompt state before any auxiliary suspension. A
+                    // replacement/steer may cancel this job while metadata is loading.
+                    markTurnActive(durableSessionId)
+                    markDraftPersisted(
+                        durableSessionId,
+                        origin,
+                        originGeneration,
+                        operationGeneration,
                     )
                 }
-                accepted = true
-                // Commit accepted prompt state before any auxiliary suspension. A
-                // replacement/steer may cancel this job while metadata is loading.
-                markTurnActive(durableSessionId)
-                markDraftPersisted(
-                    durableSessionId,
-                    origin,
-                    originGeneration,
-                    operationGeneration,
-                )
-                if (pendingAttachments.isNotEmpty()) clearAttachments(durableSessionId)
                 // A prompt can launch background processes, so refresh the activity
                 // stack only after the turn is accepted: the pre-submit snapshot
                 // cannot contain processes created by this turn.
@@ -3363,11 +3406,20 @@ class HermesConnectionViewModel(
                     operationGeneration = operationGeneration,
                 )
             } catch (cancelled: CancellationException) {
-                if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
-                    clearSendingState(durableSessionId)
+                when (sessionControllerRegistry.resolvePromptSubmission(durableSessionId, attempt, accepted = false)) {
+                    PromptSubmissionLifecycle.Resolution.AuthoritativeTerminal -> accepted = true
+                    PromptSubmissionLifecycle.Resolution.Stale -> Unit
+                    else -> if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
+                        clearSendingState(durableSessionId)
+                    }
                 }
                 throw cancelled
             } catch (_: NativeRefreshExpiredException) {
+                if (sessionControllerRegistry.resolvePromptSubmission(durableSessionId, attempt, accepted = false) ==
+                    PromptSubmissionLifecycle.Resolution.AuthoritativeTerminal
+                ) {
+                    accepted = true
+                }
                 if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                     disconnectChat()
                     publishSignInRequired()
@@ -3376,12 +3428,28 @@ class HermesConnectionViewModel(
                 // A ws-ticket/connect 401 despite a just-refreshed access token means
                 // the session is terminally rejected — drop to a clean sign-in rather
                 // than spinning recovery against a credential the server won't accept.
+                if (sessionControllerRegistry.resolvePromptSubmission(durableSessionId, attempt, accepted = false) ==
+                    PromptSubmissionLifecycle.Resolution.AuthoritativeTerminal
+                ) {
+                    accepted = true
+                }
                 if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                     disconnectChat()
                     publishSignInRequired()
                 }
             } catch (error: Exception) {
-                if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return@launch
+                val resolution = sessionControllerRegistry.resolvePromptSubmission(
+                    durableSessionId = durableSessionId,
+                    attempt = attempt,
+                    accepted = false,
+                )
+                if (resolution == PromptSubmissionLifecycle.Resolution.AuthoritativeTerminal) {
+                    accepted = true
+                    return@launch
+                }
+                if (resolution == PromptSubmissionLifecycle.Resolution.Stale ||
+                    !isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)
+                ) return@launch
                 if (stagingFailed) {
                     // Nothing was submitted; the draft stays editable with its chips.
                     // A fresh draft runtime may hold partially staged orphaned files,
@@ -4963,9 +5031,15 @@ class HermesConnectionViewModel(
                                 "Hermes response failed"
                             }
                         }
+                        when (val terminalEffect = sessionControllerRegistry.observePromptTerminal(durableSessionId)) {
+                            is PromptSubmissionLifecycle.TerminalEffect.ReleasedPending ->
+                                acknowledgeTerminalSubmission(durableSessionId, terminalEffect)
+                            PromptSubmissionLifecycle.TerminalEffect.Ignored -> Unit
+                        }
                         updateChat(durableSessionId) {
                             it.copy(
                                 isSending = false,
+                                connectionPhase = ChatConnectionPhase.Idle,
                                 error = terminalError,
                                 notice = event.warning?.takeIf(String::isNotBlank),
                                 billingNotice = billingNotice,
@@ -4990,6 +5064,18 @@ class HermesConnectionViewModel(
                         )
                     }
                     is HermesChatEvent.Error -> {
+                        when (val terminalEffect = sessionControllerRegistry.observePromptTerminal(durableSessionId)) {
+                            is PromptSubmissionLifecycle.TerminalEffect.ReleasedPending -> {
+                                acknowledgeTerminalSubmission(durableSessionId, terminalEffect)
+                                markDraftPersisted(
+                                    durableSessionId,
+                                    origin,
+                                    originGeneration,
+                                    operationGeneration,
+                                )
+                            }
+                            PromptSubmissionLifecycle.TerminalEffect.Ignored -> Unit
+                        }
                         updateChat(durableSessionId) {
                             it.applyTranscriptEvent(event).copy(
                                 isSending = false,

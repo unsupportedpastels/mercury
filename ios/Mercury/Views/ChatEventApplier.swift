@@ -51,12 +51,23 @@ extension ChatView {
             state.isSending = true
 
         case .messageComplete:
+            if case .releasedPending(let referenceIDs) = state.promptSubmission.observeTerminal() {
+                clearStagedHostReferences(referenceIDs)
+                // The terminal event is authoritative even if prompt.submit's
+                // RPC acknowledgement is still in flight. Let a follow-up
+                // draft start; the old task remains identity-fenced.
+                state.isComposerActionPending = false
+            }
             state.isSending = false
             state.isStopping = false
             Task { await cacheCurrentTranscript() }
             loadContext()
 
         case .error(_, let message):
+            if case .releasedPending(let referenceIDs) = state.promptSubmission.observeTerminal() {
+                clearStagedHostReferences(referenceIDs)
+                state.isComposerActionPending = false
+            }
             state.composerError = message
             state.isSending = false
             state.isStopping = false
