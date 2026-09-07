@@ -184,6 +184,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 import com.unsupportedpastels.mercury.core.composer.ComposerAction
+import com.unsupportedpastels.mercury.core.composer.ComposerRejection
 import com.unsupportedpastels.mercury.core.composer.ComposerRoutingPolicy
 import com.unsupportedpastels.mercury.core.interaction.ClarifyAnswerPolicy
 import com.unsupportedpastels.mercury.core.interaction.ClarifyAnswerState
@@ -1242,7 +1243,16 @@ internal fun SessionDetailScreen(
                                     onDraftChanged("")
                                     onSteer(action.text)
                                 }
-                                is ComposerAction.Reject -> Unit
+                                is ComposerAction.Reject -> {
+                                    // Same wording as iOS: the reason is shown, never swallowed.
+                                    attachmentError = when (action.reason) {
+                                        ComposerRejection.BlankPrompt -> null
+                                        ComposerRejection.BlankSteer -> "Enter guidance after /steer."
+                                        ComposerRejection.NoActiveTurnToSteer -> "There is no active turn to steer."
+                                        ComposerRejection.AttachmentsUnavailableWhileSteering ->
+                                            "Attachments are unavailable while steering an active turn."
+                                    }
+                                }
                                 is ComposerAction.Submit -> {
                                     val message = action.text
                                     // Match the host's reference-prefixed prompt, but

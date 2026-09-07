@@ -182,4 +182,13 @@ class ComposerRecoveryTest {
         // Guidance goes to the steer RPC (shared routing) and the draft clears at once.
         rule.runOnIdle { assertEquals(0, sends); assertEquals(1, steers); assertEquals("", draft.value) }
     }
+
+    @Test fun steerWithoutAnActiveTurnShowsTheSharedRejectionReason() {
+        chat.value = ChatSessionSnapshot()
+        draft.value = "/steer go"
+        render(controller = false)
+        rule.onNodeWithContentDescription("Send message").assertIsEnabled().performClick()
+        rule.onNodeWithText("There is no active turn to steer.").assertIsDisplayed()
+        rule.runOnIdle { assertEquals(0, sends); assertEquals(0, steers) }
+    }
 }

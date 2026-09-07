@@ -98,7 +98,12 @@ struct SessionListView: View {
                 ))
             }
         }
-        for result in serverSearchResults where seen.insert(result.sessionID).inserted {
+        // The predicates apply to server hits too: the server search does not
+        // know this device's pins, and cannot tell us which rows are archived.
+        guard !filter.archivedOnly else { return results }
+        for result in serverSearchResults
+        where (!filter.pinnedOnly || locallyPinnedIDs.contains(result.sessionID))
+            && seen.insert(result.sessionID).inserted {
             results.append(result)
         }
         return results
