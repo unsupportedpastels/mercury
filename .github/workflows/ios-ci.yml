@@ -1,0 +1,121 @@
+name: iOS CI
+
+# The iOS gate from AGENTS.md: regenerate the Xcode project with XcodeGen and
+# build + test the Mercury scheme on a simulator. The Xcode pre-build phase in
+# ios/project.yml shells out to ./gradlew to link the MercuryCore KMP framework,
+# so the runner needs JDK 17 on PATH before xcodebuild starts. Path-filtered to
+# the inputs that can change the iOS build; the Android job covers the rest.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - "shared/**"
+      - "gradle/**"
+      - "*.gradle.kts"
+      - "gradle.properties"
+      - ".github/workflows/ios-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - "shared/**"
+      - "gradle/**"
+      - "*.gradle.kts"
+      - "gradle.properties"
+      - ".github/workflows/ios-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: XcodeGen, build, and test on simulator
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # setup-java exports JAVA_HOME and prepends java to PATH; xcodebuild's
+      # run-script phases inherit both, which is what the pre-build script
+      # checks before invoking Gradle.
+      - name: Set up JDK 17
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      # Prefer the simulator AGENTS.md names; fall back to the newest available
+      # iPhone so a runner image that has not caught up (or has moved on) does
+      # not fail the gate on a device name.
+      - name: Pick a simulator
+        id: sim
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun simctl list devices available
+          preferred="iPhone 17 Pro"
+          if xcrun simctl list devices available | grep -q "^ *${preferred} ("; then
+            name="$preferred"
+          else
+            name="$(xcrun simctl list devices available -j \
+              | python3 -c '
+          import json, re, sys
+          devices = json.load(sys.stdin)["devices"]
+          names = []
+          for runtime, entries in devices.items():
+              if "iOS" not in runtime:
+                  continue
+              for d in entries:
+                  if d.get("isAvailable") and d["name"].startswith("iPhone"):
+                      names.append((runtime, d["name"]))
+          def key(item):
+              runtime, name = item
+              version = tuple(int(n) for n in re.findall(r"\d+", runtime.rsplit("iOS", 1)[-1]))
+              generation = tuple(int(n) for n in re.findall(r"\d+", name))
+              pro = ("Pro" in name, "Max" in name)
+              return (version, generation, pro)
+          names.sort(key=key)
+          print(names[-1][1] if names else "")
+          ')"
+            if [ -z "$name" ]; then
+              echo "::error::no available iPhone simulator on this runner" >&2
+              exit 1
+            fi
+            echo "::warning::'${preferred}' simulator not available; using '${name}'"
+          fi
+          echo "Selected simulator: $name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test (Mercury scheme)
+        working-directory: ios
+        run: |
+          xcodebuild -project Mercury.xcodeproj -scheme Mercury \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
+            -resultBundlePath "$RUNNER_TEMP/Mercury.xcresult" \
+            build test
+
+      - name: Upload result bundle on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ios-xcresult
+          path: ${{ runner.temp }}/Mercury.xcresult
+          if-no-files-found: ignore
+          retention-days: 7

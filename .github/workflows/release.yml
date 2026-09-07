@@ -34,22 +34,17 @@ jobs:
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
+      - name: Set up JDK 17 and Gradle
+        uses: ./.github/actions/setup-android
 
       # Verification gates. Screenshot validation is intentionally omitted here:
       # android-ci.yml already runs it on this same push, and coupling a flaky
-      # screenshot check to publishing would block releases.
+      # screenshot check to publishing would block releases. The shared KMP
+      # core's common tests do run: the release APK links it.
       - name: Run verification gates
-        run: ./gradlew testDebugUnitTest lintDebug assembleDebug
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug :shared:mercury-core:check
 
       - name: Decode upload keystore
         env:
@@ -92,7 +87,7 @@ jobs:
           files: app/build/outputs/apk/release/app-release.apk
 
       - name: Upload AAB as workflow artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: app-release-aab
           path: app/build/outputs/bundle/release/app-release.aab
@@ -111,7 +106,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_play && env.HAS_PLAY_SA == 'true' }}
         env:
           HAS_PLAY_SA: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON != '' }}
-        uses: r0adkll/upload-google-play@v1
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: com.unsupportedpastels.hermesandroid
