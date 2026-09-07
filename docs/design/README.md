@@ -2,7 +2,7 @@
 
 ![Hybrid C — Nous × Hermes](hybrid-c-nous-hermes.png)
 
-This image is the locked visual north star for the native Android client.
+This image is the locked visual north star for both native clients: Jetpack Compose / Material 3 on Android and SwiftUI on iOS. The two apps share destinations, hierarchy, content ordering, and the palette below (Android `theme/Theme.kt` is the source of truth; `ios/Mercury/Theme.swift` mirrors it as light/dark token pairs) and keep their chrome native.
 
 ## Information architecture
 
@@ -25,4 +25,4 @@ This image is the locked visual north star for the native Android client.
 - Do not invent percentages, future-step totals, context/token telemetry, plans, diffs, durations, or terminal state.
 - Reasoning is shown only when Hermes emits it.
 - Interruption is labeled **Stop**, never Pause.
-- Preserve Material 3 accessibility, touch targets, adaptive layout, edge-to-edge behavior, and large-text support.
+- Preserve Material 3 accessibility, touch targets, adaptive layout, edge-to-edge behavior, and large-text support on Android; preserve Dynamic Type, safe areas, and system appearance on iOS. Do not make one platform imitate the other's controls.

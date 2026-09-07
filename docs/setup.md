@@ -1,6 +1,8 @@
 # Development Setup
 
-## Host prerequisites
+Android and the shared core build on Linux or macOS. The iOS app builds only on macOS with Xcode; see [macOS and Xcode](#macos-and-xcode) at the end.
+
+## Host prerequisites (Linux, Android)
 
 - Linux x86_64
 - JDK 17
@@ -93,3 +95,35 @@ adb shell am start -W --user 0 \
 ```
 
 Use `adb shell cmd device_state state 1|2|3` for closed, half-open, and open posture signals. If the image does not switch to the hardware profile's cover region, exercise the exact cover width in place with `adb shell wm size 884x2208`, then restore it with `adb shell wm size reset`.
+
+## macOS and Xcode
+
+The iOS app (`ios/`) requires a Mac. The same machine can also run every Android and shared-core gate above; the Android SDK path goes in `local.properties` as on Linux.
+
+Install:
+
+```bash
+xcode-select --install            # or install Xcode from the App Store and open it once
+brew install xcodegen             # generates ios/Mercury.xcodeproj from ios/project.yml
+brew install openjdk@17           # the Xcode pre-build phase runs ./gradlew to link MercuryCore
+```
+
+Homebrew's `openjdk@17` is keg-only; follow its caveat so `java` is on `PATH` (or export `JAVA_HOME`) in the shell that launches Xcode or `xcodebuild`:
+
+```bash
+export JAVA_HOME="$(brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home"
+export PATH="$JAVA_HOME/bin:$PATH"
+```
+
+The `Mercury` target's pre-build script checks `command -v java` / `JAVA_HOME` and fails with a clear message if neither is available. On macOS the shared module configures its Apple targets automatically (`-Pmercury.enableAppleTargets=false` skips them for an Android-only build).
+
+Generate, build, and test:
+
+```bash
+cd ios
+xcodegen generate
+xcodebuild -project Mercury.xcodeproj -scheme Mercury \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build test
+```
+
+`xcrun simctl list devices available` lists the simulators your Xcode ships; substitute another iPhone if `iPhone 17 Pro` is missing. Open `Mercury.xcodeproj` in Xcode and select your signing team to run on a physical device. The generated project is gitignored; rerun `xcodegen generate` after editing `project.yml`.

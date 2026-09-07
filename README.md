@@ -1,10 +1,12 @@
 # Mercury — a Hermes companion
 
-![Introducing Mercury — a Hermes companion](docs/assets/readme/ham-hero.png)
+![Introducing Mercury — a Hermes companion](docs/assets/readme/mercury-hero.png)
 
 **Mercury** is an independent, open-source, 100% free companion app for [Hermes Agent](https://github.com/NousResearch/hermes-agent) — **Hermes Cloud** or your own **self-hosted** server. Live streaming, hands-free voice, artifacts, approvals, and full session control from anywhere.
 
-🌐 **Website:** [hermes-agent-mobile.com](https://hermes-agent-mobile.com/) · 📥 [Download the latest APK](https://github.com/unsupportedpastels/mercury/releases/latest) · 🔒 [Privacy](https://hermes-agent-mobile.com/privacy.html)
+🌐 **Website:** [hermes-agent-mobile.com](https://hermes-agent-mobile.com/) · 📥 [Download the latest Android APK](https://github.com/unsupportedpastels/mercury/releases/latest) · 🍎 [Build for iOS from source](#ios) · 🔒 [Privacy](https://hermes-agent-mobile.com/privacy.html)
+
+Mercury ships the same product on **Android** and **iOS** over one shared Kotlin Multiplatform core. Both apps use native UI (Jetpack Compose / SwiftUI) and native secure storage; protocol decoding, transcript reduction, attachment policy, and Relay framing live in `shared/mercury-core` and are tested once.
 
 > **Unofficial client.** Mercury is not affiliated with or endorsed by Nous Research. It is built entirely on the official Hermes interfaces — no server changes, forks, or plugins required. Free and open source under the MIT license.
 
@@ -13,13 +15,14 @@
 - Connects to an unchanged, officially compatible Hermes Agent backend supplied by `hermes dashboard` or headless `hermes serve`.
 - Browses projects and sessions, creates local drafts, and starts a remote runtime only when you send the first prompt.
 - Streams replies token-by-token over a direct WebSocket, with tool activity, code blocks, and reasoning rendered inline as they happen.
-- Posts push notifications the instant a turn completes or the agent needs a decision — with the reply inline and an _Open session_ tap that drops you right back in. Kick off a long run, lock the phone, and get on with your day.
+- Notifies you the instant a turn completes or the agent needs a decision — with the reply inline and an _Open session_ tap that drops you right back in. On Android that is a notification backed by a foreground service while a Mercury-started turn runs; on iOS it is a local notification plus an optional Lock Screen / Dynamic Island Live Activity, generated on-device with no push service. Kick off a long run, lock the phone, and get on with your day.
 - Responds to tool approvals, clarify questions, and secret prompts from the phone; parked requests return correctly after a reconnect.
 - Opens artifacts and browses host files the agent produced, with images and documents rendered natively.
-- Shares images, PDFs, and text from any Android app straight into a session — staged in the composer for review, never auto-sent.
+- Shares images, PDFs, and text from any other app straight into a session — the Android share target or the iOS **Add to Mercury** share extension — staged in the composer for review, never auto-sent.
 - Supports native Nous OAuth with system-browser PKCE and cookie-backed username/password basic auth, with origin-scoped encrypted credentials, refresh, and reconnect/reconciliation.
 - Pairs Android or iOS to an approved Mercury Relay host by QR code for end-to-end encrypted Noise XK chat when a direct server origin is not reachable.
-- Adapts cleanly across compact phones, Fold cover screens, unfolded layouts, split screen, freeform windows, and DeX.
+- Adapts cleanly across compact phones, Fold cover screens, unfolded layouts, split screen, freeform windows, and DeX on Android.
+- Follows the system light or dark appearance on both platforms, from one shared palette: Material 3 color roles on Android and the matching adaptive tokens in SwiftUI, with a pure-black dark canvas for OLED screens.
 - Preserves a Mercury-started live turn when you navigate away; it does not take over or close another client's runtime.
 - Speaks and listens through your server's audited voice stack: app-owned dictation into the composer with a stop control, per-message read-aloud, streaming speech that overlaps generation, and a hands-free voice conversation with spoken stop phrases and barge-in. Voice controls appear only when the connected server exposes the official `/api/audio/…` routes, audio is never persisted on the device, and the microphone permission is requested only when you first use voice.
 
@@ -28,9 +31,9 @@
 Real captures from a live session on device — no mockups, no staged data.
 
 <p align="center">
-  <img src="docs/assets/readme/ham-chat-session.png" alt="A live Mercury agent session: session title, a terminal tool card, a collapsible Thinking block, streamed markdown, an inline-rendered image artifact, and the mic/voice composer below." width="300" />
+  <img src="docs/assets/readme/mercury-chat-session.png" alt="A live Mercury agent session: session title, a terminal tool card, a collapsible Thinking block, streamed markdown, an inline-rendered image artifact, and the mic/voice composer below." width="300" />
   &nbsp;&nbsp;
-  <img src="docs/assets/readme/ham-notification.png" alt="The Android notification shade showing Mercury's 'Hermes finished' notification with the assistant's reply text and an Open session action." width="300" />
+  <img src="docs/assets/readme/mercury-notification.png" alt="The Android notification shade showing Mercury's 'Hermes finished' notification with the assistant's reply text and an Open session action." width="300" />
 </p>
 
 <p align="center">
@@ -42,7 +45,7 @@ Real captures from a live session on device — no mockups, no staged data.
 Mercury uses the available window and posture — not a device name or orientation — to move from a focused compact layout to a wider multi-pane workspace. Unfold the phone or open it on a tablet and the layout earns the space: project navigation on the left, sessions in the middle, and the live agent workspace on the right. It preserves the selected session and active work across resize and fold/unfold transitions.
 
 <p align="center">
-  <img src="docs/assets/readme/ham-foldable-wide.png" alt="Mercury running on an unfolded Samsung Fold in a three-pane layout with project navigation, a session list, and a live agent workspace." width="820" />
+  <img src="docs/assets/readme/mercury-foldable-wide.png" alt="Mercury running on an unfolded Samsung Fold in a three-pane layout with project navigation, a session list, and a live agent workspace." width="820" />
 </p>
 
 <p align="center">
@@ -51,7 +54,7 @@ Mercury uses the available window and posture — not a device name or orientati
 
 ## Connect to your Hermes host
 
-Mercury is a client, not an agent host. Install and configure Hermes Agent on a machine you control (or deploy an always-on **Hermes Cloud** instance from the [Nous Portal](https://portal.nousresearch.com/cloud)), then keep a compatible Hermes backend running before connecting from Android. The host remains authoritative for your agent, tools, files, sessions, and data.
+Mercury is a client, not an agent host. Install and configure Hermes Agent on a machine you control (or deploy an always-on **Hermes Cloud** instance from the [Nous Portal](https://portal.nousresearch.com/cloud)), then keep a compatible Hermes backend running before connecting from your phone. The host remains authoritative for your agent, tools, files, sessions, and data.
 
 The optional **Relay** tab can instead scan the one-time QR code produced by a Mercury Relay-enabled host. Compare and approve the short fingerprint on the host before connecting. The router receives opaque routing metadata and encrypted records only; QR capabilities and device keys never enter logs or the direct-server credential store.
 
@@ -150,7 +153,9 @@ The Hermes backend is long-running: if it stops, Mercury cannot connect. Run the
 
 These are connection examples, not a server provisioner: Mercury does not create or modify your Hermes host, OAuth setup, Cloudflare tunnel, or Tailscale configuration.
 
-## Install the APK
+## Install
+
+### Android
 
 1. Download the [latest signed APK](https://github.com/unsupportedpastels/mercury/releases/latest) (Android 10+ / API 29).
 2. Tap the file and allow installs from your browser when Android asks.
@@ -158,11 +163,16 @@ These are connection examples, not a server provisioner: Mercury does not create
 
 Releases are built and signed in CI. Verify the signature with `apksigner verify --verbose` before installing if you like. A Play Store listing is in progress; until then the signed APK on GitHub Releases is the official build. The sideload APK and a future Play install are signed differently and won't upgrade over each other.
 
+### iOS
+
+There is no App Store or TestFlight build yet. Mercury for iOS (iOS 17+) is built from source on a Mac with Xcode and installed on your own device or simulator; see [Build from source](#build-from-source) and [`ios/README.md`](ios/README.md). The first-launch flow is the same: server origin (or Hermes Cloud sign-in, or a Relay QR code), then the sign-in the server advertises.
+
 ## Security & privacy
 
 Mercury connects only to the server origin you configure or the optional Relay origin contained in a QR code you explicitly scan. It does not include a hosted Hermes service, telemetry SDK, analytics SDK, ad network, or hard-coded remote endpoint.
 
-- Credentials, cookies, connection state, and cached transcripts are scoped to the normalized server origin and stored with Android Keystore-backed encryption.
+- Credentials, cookies, connection state, and cached transcripts are scoped to the normalized server origin and stored with Android Keystore-backed encryption on Android and in the iOS Keychain (device-only, per-origin items) on iOS.
+- Relay pairings and device keys live in their own encrypted store on each platform, fully apart from direct-server credentials.
 - WebSocket tickets are fresh, single-use, and held in memory only.
 - Production connections must use HTTPS. Plain HTTP is accepted only for loopback or private-network servers selected explicitly in the app.
 - Your prompts, attachments, and transcript data are processed by the Hermes server you choose. Optional Relay routing is end-to-end encrypted and cannot read that content. No telemetry or analytics.
@@ -171,11 +181,13 @@ See [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md) for details.
 
 ## Status
 
-Mercury is pre-release software. It is being prepared for an initial Google Play release and is not yet a published Play Store app. See [release readiness](docs/release-readiness.md) for the remaining shipping checklist.
+Mercury is pre-release software. Android ships as a signed APK on GitHub Releases and is being prepared for Google Play; iOS is built from source and has no App Store or TestFlight distribution yet. See the [release checklist](docs/release-readiness.md) for how each platform is versioned and cut.
 
 ## Build from source
 
-### Prerequisites
+The repo is one Gradle build: `app/` (Android), `shared/mercury-core` (the Kotlin Multiplatform core, compiled into the Android app and linked into the iOS app as the static `MercuryCore` framework), and `ios/` (the Xcode project, generated with XcodeGen). The Android `applicationId` stays `com.unsupportedpastels.hermesandroid` for Play continuity with the original listing, while the iOS bundle identifier is `com.unsupportedpastels.mercury`.
+
+### Android
 
 - JDK 17
 - Android SDK platform corresponding to the project's configured `compileSdk`
@@ -185,15 +197,31 @@ Create an untracked `local.properties` with your SDK path, then run:
 
 ```bash
 ./gradlew testDebugUnitTest lintDebug assembleDebug validateDebugScreenshotTest
+./gradlew :shared:mercury-core:check
 ```
 
 The debug APK is written to `app/build/outputs/apk/debug/`.
+
+### iOS
+
+- A Mac with Xcode (iOS 17 SDK or newer)
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen) — `brew install xcodegen`
+- JDK 17 on `PATH` (or `JAVA_HOME` set) — `brew install openjdk@17`; the Xcode pre-build phase runs `./gradlew` to link the `MercuryCore` framework
+
+```bash
+cd ios
+xcodegen generate
+xcodebuild -project Mercury.xcodeproj -scheme Mercury \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build test
+```
+
+The generated `Mercury.xcodeproj` is never committed. Open it in Xcode to run on a device with your own signing team.
 
 For local setup and runtime checks, see [docs/setup.md](docs/setup.md) and [docs/testing.md](docs/testing.md).
 
 ## Contributing
 
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) before opening an issue or pull request. Mercury must stay a client of released, official Hermes interfaces — no private backend route, plugin, dashboard extension, gateway worker, or server fork is a requirement for the app. Kotlin, Jetpack Compose, Material 3, built against the official `hermes serve` interfaces.
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) before opening an issue or pull request. Mercury must stay a client of released, official Hermes interfaces — no private backend route, plugin, dashboard extension, gateway worker, or server fork is a requirement for the app; Mercury Relay is the one scoped, optional exception described in AGENTS.md. Stack: Kotlin Multiplatform core with `kotlinx.serialization` and `cryptography-kotlin`; Kotlin, Jetpack Compose, Material 3, and Navigation 3 on Android; Swift and SwiftUI on iOS — all built against the official `hermes serve` interfaces.
 
 ## License
 

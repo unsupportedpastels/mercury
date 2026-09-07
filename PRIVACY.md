@@ -13,11 +13,13 @@ To operate, Mercury may handle:
 - project, session, prompt, response, tool-status, and transcript data returned by that server; and
 - files or images you explicitly attach for upload to that server.
 
-Mercury stores connection and session metadata locally on your device, scoped to the normalized server origin, selected profile, and durable session ID. This metadata cache is bounded, expires after 30 days, and may be shown with a cached/offline marker until Hermes Serve reconciles it. Authentication material is stored using Android-backed encrypted storage. Fresh WebSocket tickets remain in memory only.
+Mercury stores connection and session metadata locally on your device, scoped to the normalized server origin, selected profile, and durable session ID. This metadata cache is bounded, expires after 30 days, and may be shown with a cached/offline marker until Hermes Serve reconciles it. Authentication material is stored using Android Keystore-backed encrypted storage on Android and in the iOS Keychain on iOS, as device-only items keyed by server origin that are never synced to iCloud. Fresh WebSocket tickets remain in memory only.
 
-Transcript tails are not stored unless you opt in under Settings. Opted-in transcript tails are encrypted with an Android Keystore-backed key and bounded to 200 messages per session, 128 KiB per message body, 100 sessions, and 4 MiB total. Tails associated with an origin are cleared on logout or when that origin is removed; all tails are cleared by the explicit cache control and application data removal. Mercury never caches access or refresh tokens, tickets, transient runtime IDs, secret input, attachments, or connection strings. Android Auto Backup is disabled.
+Transcript tails are not stored unless you opt in under Settings. Opted-in transcript tails are encrypted with an Android Keystore-backed key (Android) or a random AES-256 key held in the device Keychain (iOS) and bounded to 200 messages per session, 128 KiB per message body, 100 sessions, and 4 MiB total. Tails associated with an origin are cleared on logout or when that origin is removed; all tails are cleared by the explicit cache control and application data removal. Mercury never caches access or refresh tokens, tickets, transient runtime IDs, secret input, attachments, or connection strings. Android Auto Backup is disabled.
 
 Host-file contents are downloaded only after an explicit preview, play, save, or share action. Save uses Android's user-selected document destination. Share creates a bounded temporary file in app-private cache and exposes only that file through a one-time Android content-URI grant; Android may later evict the cache file.
+
+On iOS, content you send to Mercury from another app through the **Add to Mercury** share extension is staged in the app's private App Group container (`group.com.unsupportedpastels.mercury`) until you review it in the composer; the extension itself holds no server credentials and sends nothing. Relay pairings on iOS (the relay origin, the host's public key, and this device's pairing key) are kept in their own Keychain service, separate from server credentials, and are deleted when you remove the pairing.
 
 ## Voice
 
@@ -46,7 +48,15 @@ Your chosen server’s operator and configuration determine how server-side data
 - **Microphone (`RECORD_AUDIO`)** — voice dictation, voice conversations, and barge-in; requested only when you first start a voice feature, used only while one is active.
 - **Foreground service / microphone and wake lock** — only for the opt-in screen-off voice continuation described above.
 
-Mercury does not request location, contacts, camera, or storage-wide file permissions. Relay QR scanning delegates the camera surface to Google Play services' on-device code scanner; Mercury receives only the decoded QR text and never receives camera frames. Attachments use Android’s user-mediated document picker. Device Voice input uses an installed Android speech service, which may request microphone access in its own interface; server-backed dictation and voice conversation use Mercury’s explicitly requested `RECORD_AUDIO` permission described above.
+On Android, Mercury does not request location, contacts, camera, or storage-wide file permissions. Relay QR scanning delegates the camera surface to Google Play services' on-device code scanner; Mercury receives only the decoded QR text and never receives camera frames. Attachments use Android’s user-mediated document picker. Device Voice input uses an installed Android speech service, which may request microphone access in its own interface; server-backed dictation and voice conversation use Mercury’s explicitly requested `RECORD_AUDIO` permission described above.
+
+## iOS permissions
+
+- **Camera** — requested only when you choose to scan a Mercury Relay pairing QR code; the frames are decoded on the device and are never stored or uploaded.
+- **Microphone and speech recognition** — voice dictation into the composer, requested only when you first start dictating.
+- **Notifications** — optional; see below.
+- **Local network** — plain-HTTP connections are allowed only to local-network servers you enter explicitly; cleartext to public hosts stays blocked.
+- **Background app refresh** — best-effort session reconciliation so local notifications and Live Activities can update; no push service is involved.
 
 ## iOS notifications and Live Activities
 
