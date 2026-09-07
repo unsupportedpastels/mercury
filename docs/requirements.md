@@ -48,7 +48,7 @@
 | Xcode | A current Xcode with the iOS 17 SDK or newer, on macOS; CI uses `macos-latest` |
 | XcodeGen | Current Homebrew release (`brew install xcodegen`); `Mercury.xcodeproj` is generated, never committed |
 | JDK on the Mac | 17 (`brew install openjdk@17`) — the Xcode pre-build phase runs Gradle to link `MercuryCore` |
-| Bundle identifiers | `com.unsupportedpastels.mercury` (app), `.share`, `.runactivity`, `.sharekit`, `.runactivitykit`; App Group `group.com.unsupportedpastels.mercury` |
+| Bundle identifiers | `com.unsupportedpastels.mercury` (app), `.share`, `.sharekit`; App Group `group.com.unsupportedpastels.mercury` |
 | Version | `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` in `project.yml`, kept equal to the Android `versionName` |
 
 The version catalog (`gradle/libs.versions.toml`) is authoritative for resolved library versions. `local.properties` is machine-local and untracked.
@@ -85,6 +85,6 @@ Primary physical target: standard/non-Ultra Samsung Galaxy Z Fold 8.
 - Relay pairings and device static keys live in their own encrypted store on each platform, separate from direct-mode credentials and the server catalog.
 - Never persist authorization codes, PKCE verifiers, WebSocket tickets, or credential-bearing URLs.
 - Disable backup for secret-bearing state unless a reviewed encrypted backup design is introduced.
-- Export only the launcher activity on Android; iOS extensions (share, Live Activity widget) exchange data with the app only through the App Group container and hold no credentials.
+- Export only the launcher activity on Android; the iOS share extension exchanges data with the app only through the App Group container and hold no credentials.
 - Production network security must reject cleartext by default.
 - Debug-only development trust exceptions, if needed, must remain in debug resources and never contain a private server address.

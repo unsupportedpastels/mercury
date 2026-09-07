@@ -66,15 +66,15 @@ Release build:
   generate`, open `ios/Mercury.xcodeproj` in Xcode with your signing team, and
   archive the `Mercury` scheme (Product → Archive, or
   `xcodebuild -scheme Mercury -destination 'generic/platform=iOS' archive`).
-  The archive embeds the `MercuryShare` and `MercuryRunActivityWidget`
-  extensions, which inherit the same version from `settings.base`.
+  The archive embeds the `MercuryShare` extension, which inherits the same
+  version from `settings.base`.
 - Static invariants that must hold in the archive (see `docs/testing.md`):
-  `NSSupportsLiveActivities` present; no `aps-environment` entitlement, no
-  `remote-notification` background mode, no push registration anywhere.
+  no `aps-environment` entitlement, no `remote-notification` background mode,
+  no `NSSupportsLiveActivities`, no push registration anywhere.
 - Device check before distributing: fresh install shows no notification prompt
-  at launch; a long turn produces a Live Activity with only the session title
-  and generic status; the share extension stages an image into the composer
-  without sending.
+  at launch; a long turn completed while backgrounded within the grace window
+  posts one local notification; the share extension stages an image into the
+  composer without sending.
 
 ## After the release
 
