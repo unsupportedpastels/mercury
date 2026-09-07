@@ -1,4 +1,5 @@
 import Foundation
+import MercuryCore
 
 /// Deterministic composer routing for M7. The view performs RPCs, while this
 /// policy guarantees that local commands never leak into `prompt.submit` and
@@ -19,31 +20,31 @@ struct M7ComposerPolicy {
         case reject(Rejection)
     }
 
+    /// Routing is the shared decision (`MercuryCore.ComposerRoutingPolicy`);
+    /// this maps its sealed result onto the Swift action.
     static func route(draft: String, turnActive: Bool, hasAttachments: Bool) -> Action {
-        if isModelPickerCommand(draft) {
+        let action = MercuryCore.ComposerRoutingPolicy.shared.route(
+            draft: draft, turnActive: turnActive, hasAttachments: hasAttachments
+        )
+        switch action {
+        case let submit as MercuryCore.ComposerActionSubmit:
+            return .submit(text: submit.text)
+        case let steer as MercuryCore.ComposerActionSteer:
+            return .steer(text: steer.text)
+        case is MercuryCore.ComposerActionOpenModelPicker:
             return .openModelPicker
+        case let reasoning as MercuryCore.ComposerActionSetReasoning:
+            return .setReasoning(effort: reasoning.effort)
+        case let reject as MercuryCore.ComposerActionReject:
+            switch reject.reason.name {
+            case "BlankSteer": return .reject(.blankSteer)
+            case "NoActiveTurnToSteer": return .reject(.noActiveTurnToSteer)
+            case "AttachmentsUnavailableWhileSteering": return .reject(.attachmentsUnavailableWhileSteering)
+            default: return .reject(.blankPrompt)
+            }
+        default:
+            return .reject(.blankPrompt)
         }
-        if let effort = reasoningEffortCommand(draft) {
-            return .setReasoning(effort: effort)
-        }
-
-        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if isSteerCommand(draft) {
-            let payload = steerPayload(from: draft)
-            guard !payload.isEmpty else { return .reject(.blankSteer) }
-            guard turnActive else { return .reject(.noActiveTurnToSteer) }
-            guard !hasAttachments else { return .reject(.attachmentsUnavailableWhileSteering) }
-            return .steer(text: payload)
-        }
-
-        if turnActive {
-            guard !hasAttachments else { return .reject(.attachmentsUnavailableWhileSteering) }
-            guard !trimmed.isEmpty else { return .reject(.blankSteer) }
-            return .steer(text: trimmed)
-        }
-
-        guard !trimmed.isEmpty || hasAttachments else { return .reject(.blankPrompt) }
-        return .submit(text: trimmed)
     }
 
     static func shouldRequestSlashCompletion(text: String, connectionIsLive: Bool) -> Bool {
@@ -58,8 +59,9 @@ struct M7ComposerPolicy {
     /// is active and the composer is empty. Typing guidance restores the
     /// active-turn send/steer affordance without adding a second stop control.
     static func shouldShowStopButton(isSending: Bool, turnActive: Bool, draft: String) -> Bool {
-        (isSending || turnActive)
-            && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        MercuryCore.ComposerRoutingPolicy.shared.shouldShowStopButton(
+            isSending: isSending, turnActive: turnActive, draft: draft
+        )
     }
 
     /// Once the server has accepted `prompt.submit`, the local draft must stay
@@ -67,13 +69,8 @@ struct M7ComposerPolicy {
     /// Before acceptance, restoring the draft is still the safe data-preserving
     /// behavior for validation or transport failures.
     static func shouldRestoreDraftAfterSubmissionFailure(submissionAccepted: Bool) -> Bool {
-        !submissionAccepted
-    }
-
-    private static func steerPayload(from text: String) -> String {
-        let command = String(text.drop(while: { $0.isWhitespace }))
-        guard command == "/steer" || command.hasPrefix("/steer ") else { return "" }
-        return String(command.dropFirst("/steer".count))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        MercuryCore.ComposerRoutingPolicy.shared.shouldRestoreDraftAfterSubmissionFailure(
+            submissionAccepted: submissionAccepted
+        )
     }
 }

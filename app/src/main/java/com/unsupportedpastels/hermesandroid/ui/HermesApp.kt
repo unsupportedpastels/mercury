@@ -237,6 +237,7 @@ fun HermesApp(
     voiceScreenOffContinuation: Boolean = false,
     onSendVoiceMessage: (DurableSessionId, String, Boolean) -> Unit = { _, _, _ -> },
     onSendMessage: (DurableSessionId, String) -> Unit = { _, _ -> },
+    onSteerMessage: (DurableSessionId, String) -> Unit = { _, _ -> },
     onReasoningSelected: (DurableSessionId, String) -> Unit = { _, _ -> },
     onFastSelected: (DurableSessionId, Boolean) -> Unit = { _, _ -> },
     onClarificationResponse: (DurableSessionId, String, String) -> Unit = { _, _, _ -> },
@@ -882,6 +883,7 @@ fun HermesApp(
                             )
                             onSendMessage(session.id, prompt)
                         },
+                        onSteer = { text -> onSteerMessage(session.id, text) },
                         onReasoningSelected = { effort -> onReasoningSelected(session.id, effort) },
                         onFastSelected = { fast -> onFastSelected(session.id, fast) },
                         onOpenModelPicker = {

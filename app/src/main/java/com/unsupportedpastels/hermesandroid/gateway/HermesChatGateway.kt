@@ -16,6 +16,9 @@ import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
 import com.unsupportedpastels.hermesandroid.connection.readBodyTextBounded
 import com.unsupportedpastels.mercury.core.sessions.SessionPresencePolicy
+import com.unsupportedpastels.mercury.core.rpc.InteractionStatus
+import com.unsupportedpastels.mercury.core.rpc.RpcResultDecoder
+import com.unsupportedpastels.mercury.core.rpc.RpcResultException
 import com.unsupportedpastels.mercury.core.transcript.ChatEventDecoder
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.webSocketSession
@@ -1137,13 +1140,8 @@ class HermesChatConnection internal constructor(
         return parseInteractionResponse(request("session.interrupt", params))
     }
 
-    private fun parseInteractionResponse(result: JsonObject): HermesChatResponse {
-        val wireStatus = result.stringValue("status")
-            ?: result.booleanValue("resolved")?.let { resolved -> if (resolved) "ok" else "expired" }
-            ?: result.longValue("resolved")?.let { resolved -> if (resolved > 0) "ok" else "expired" }
-            ?: throw HermesChatProtocolException("Hermes interaction response was incomplete")
-        return HermesChatResponse(HermesChatResponseStatus.fromWire(wireStatus))
-    }
+    private fun parseInteractionResponse(result: JsonObject): HermesChatResponse =
+        HermesChatResponse(decodeShared { RpcResultDecoder.interactionResponse(result.toString()) }.toAndroidStatus())
 
     override suspend fun createSession(
         durableSessionId: DurableSessionId,
@@ -1206,20 +1204,11 @@ class HermesChatConnection internal constructor(
     override suspend fun completeSlash(text: String): SlashCompletionResult {
         val params = buildJsonObject { put("text", text) }
         val result = request("complete.slash", params)
-        val rawItems = result["items"] as? JsonArray
-        val items = rawItems.orEmpty().mapNotNull { element ->
-            val row = element as? JsonObject ?: return@mapNotNull null
-            val itemText = row.stringValue("text")
-                ?.takeIf(String::isNotBlank)
-                ?: return@mapNotNull null
-            val display = row.stringValue("display")
-                ?.takeIf(String::isNotBlank)
-                ?: "/$itemText"
-            val meta = row.stringValue("meta")?.takeIf(String::isNotBlank)
-            SlashCompletionItem(text = itemText, display = display, meta = meta)
-        }
-        val replaceFrom = result.longValue("replace_from")?.toInt() ?: 0
-        return SlashCompletionResult(items = items, replaceFrom = replaceFrom)
+        val decoded = decodeShared { RpcResultDecoder.slashCompletion(result.toString(), inputLength = text.length) }
+        return SlashCompletionResult(
+            items = decoded.items.map { SlashCompletionItem(text = it.text, display = it.display, meta = it.meta) },
+            replaceFrom = decoded.replaceFrom,
+        )
     }
 
     override suspend fun loadModelOptions(runtimeSessionId: RuntimeSessionId): ModelOptions {
@@ -1242,46 +1231,19 @@ class HermesChatConnection internal constructor(
     )
 
     private fun parseModelOptions(result: JsonObject): ModelOptions {
-        val providers = (result["providers"] as? JsonArray)
-            .orEmpty()
-            .take(MAX_MODEL_PROVIDERS)
-            .mapNotNull { element ->
-                val row = element as? JsonObject ?: return@mapNotNull null
-                if (row.booleanValue("authenticated") == false) return@mapNotNull null
-                val slug = row.boundedModelField("slug", MAX_MODEL_PROVIDER_CHARS)
-                    ?.takeIf { it.none(Char::isWhitespace) && !it.startsWith('-') }
-                    ?: return@mapNotNull null
-                val name = row.boundedModelField("name", MAX_MODEL_PROVIDER_CHARS) ?: slug
-                val capabilities = parseModelCapabilities(row["capabilities"])
-                val seen = linkedSetOf<String>()
-                val models = (row["models"] as? JsonArray)
-                    .orEmpty()
-                    .take(MAX_MODELS_PER_PROVIDER)
-                    .mapNotNull { modelElement ->
-                        (modelElement as? JsonPrimitive)
-                            ?.contentOrNull
-                            ?.trim()
-                            ?.takeIf {
-                                it.isNotEmpty() &&
-                                    it.length <= MAX_MODEL_ID_CHARS &&
-                                    !it.hasControlCharacters() &&
-                                    it.none(Char::isWhitespace) &&
-                                    !it.startsWith('-')
-                            }
-                    }
-                    .filter(seen::add)
-                if (models.isEmpty()) return@mapNotNull null
-                ModelProviderOption(slug = slug, name = name, models = models, capabilities = capabilities)
-            }
-        val currentProvider = result.boundedModelField("provider", MAX_MODEL_PROVIDER_CHARS)
-        val currentModel = result.boundedModelField("model", MAX_MODEL_ID_CHARS)
+        val decoded = RpcResultDecoder.modelOptions(result.toString())
         return ModelOptions(
-            current = if (currentProvider != null && currentModel != null) {
-                ModelSelection(currentProvider, currentModel)
-            } else {
-                null
+            current = decoded.current?.let { ModelSelection(it.provider, it.model) },
+            providers = decoded.providers.map { provider ->
+                ModelProviderOption(
+                    slug = provider.slug,
+                    name = provider.name,
+                    models = provider.models,
+                    capabilities = provider.capabilities.mapValues { (_, value) ->
+                        ModelCapabilities(fast = value.fast, reasoning = value.reasoning)
+                    },
+                )
             },
-            providers = providers,
         )
     }
 
@@ -1497,12 +1459,7 @@ class HermesChatConnection internal constructor(
         } else {
             null
         }
-        val decoded = shared.toAndroidEvent(todos) ?: return
-        val result = payload?.get("result") as? JsonObject
-        val event = if (decoded is HermesChatEvent.ToolComplete && decoded.name == "delegate_task" &&
-            result?.get("status") == JsonPrimitive("dispatched") && result["mode"] == JsonPrimitive("background")) {
-            decoded.copy(summary = "Started background tasks")
-        } else decoded
+        val event = shared.toAndroidEvent(todos) ?: return
 
         when (event) {
             is HermesChatEvent.ApprovalRequest -> synchronized(interactionLock) {
@@ -1532,37 +1489,23 @@ class HermesChatConnection internal constructor(
         result: JsonObject,
         requestedDurableSessionId: DurableSessionId,
     ): ResumedChatSession {
-        val runtimeSessionId = result.stringValue("session_id")?.let {
-            runCatching { RuntimeSessionId(it) }.getOrNull()
-        } ?: throw HermesChatProtocolException("Resume response was incomplete")
-        val durableSessionId = result.stringValue("session_key")
-            ?.takeIf(String::isNotBlank)
-            ?.let(::DurableSessionId)
-        if (durableSessionId != null && durableSessionId != requestedDurableSessionId) {
-            throw HermesChatProtocolException("Resume response referenced a different durable session")
-        }
-        val messages = result["messages"] as? JsonArray ?: JsonArray(emptyList())
-        val inflight = (result["inflight"] as? JsonObject)?.let { value ->
-            InflightPrompt(
-                user = value.stringValue("user"),
-                assistant = value.stringValue("assistant"),
-                streaming = value.booleanValue("streaming") ?: false,
-            )
-        }
-        val info = result["info"] as? JsonObject
+        val decoded = decodeShared { RpcResultDecoder.resume(result.toString(), requestedDurableSessionId.value) }
+        val runtimeSessionId = runCatching { RuntimeSessionId(decoded.runtimeSessionId) }.getOrNull()
+            ?: throw HermesChatProtocolException("Resume response was incomplete")
         return ResumedChatSession(
             runtimeSessionId = runtimeSessionId,
-            durableSessionId = durableSessionId,
-            resumed = result.booleanValue("resumed") ?: false,
-            messages = messages.filterIsInstance<JsonObject>(),
-            running = result.booleanValue("running") ?: false,
-            inflight = inflight,
-            model = info?.boundedOptional("model", MAX_MODEL_ID_CHARS),
-            provider = info?.boundedOptional("provider", MAX_MODEL_PROVIDER_CHARS),
-            reasoningEffort = info?.boundedOptional(
-                "reasoning_effort",
-                HERMES_CHAT_MAX_EVENT_NAME_CHARS,
-            ),
+            durableSessionId = decoded.durableSessionId?.let(::DurableSessionId),
+            resumed = decoded.resumed,
+            messages = decoded.messagesJson.toJsonObjects(),
+            running = decoded.running,
+            inflight = if (decoded.hasInflight) {
+                InflightPrompt(decoded.inflightUser, decoded.inflightAssistant, decoded.inflightStreaming)
+            } else {
+                null
+            },
+            model = decoded.model,
+            provider = decoded.provider,
+            reasoningEffort = decoded.reasoningEffort,
         )
     }
 
@@ -1805,11 +1748,6 @@ private fun boundedModelInput(value: String, maxChars: Int, label: String): Stri
     return bounded
 }
 
-private fun JsonObject.boundedModelField(name: String, maxChars: Int): String? =
-    stringValue(name)
-        ?.trim()
-        ?.takeIf { it.isNotEmpty() && it.length <= maxChars && !it.hasControlCharacters() }
-
 private fun String.hasControlCharacters(): Boolean = any(Char::isISOControl)
 
 private fun JsonObject.boundedRequired(name: String, maxChars: Int): String? =
@@ -1845,6 +1783,27 @@ private fun JsonObject.booleanValue(name: String): Boolean? =
 
 private fun JsonObject.longValue(name: String): Long? =
     (this[name] as? JsonPrimitive)?.longOrNull
+
+/** Runs a shared decoder and surfaces its rejection as the Android protocol exception. */
+internal inline fun <T> decodeShared(block: () -> T): T = try {
+    block()
+} catch (rejected: RpcResultException) {
+    throw HermesChatProtocolException(rejected.message ?: "Hermes response was incomplete")
+}
+
+internal fun InteractionStatus.toAndroidStatus(): HermesChatResponseStatus = when (this) {
+    InteractionStatus.Ok -> HermesChatResponseStatus.Ok
+    InteractionStatus.Expired -> HermesChatResponseStatus.Expired
+    InteractionStatus.Interrupted -> HermesChatResponseStatus.Interrupted
+    InteractionStatus.Resolved -> HermesChatResponseStatus.Resolved
+    InteractionStatus.Unknown -> HermesChatResponseStatus.Unknown
+}
+
+private val sharedRowJson = Json { ignoreUnknownKeys = true }
+
+/** Message rows come back from the shared decoder as JSON text; the transcript restore reads objects. */
+internal fun List<String>.toJsonObjects(): List<JsonObject> =
+    mapNotNull { runCatching { sharedRowJson.parseToJsonElement(it) as? JsonObject }.getOrNull() }
 
 class KtorWsTicketClient(
     private val client: HttpClient,

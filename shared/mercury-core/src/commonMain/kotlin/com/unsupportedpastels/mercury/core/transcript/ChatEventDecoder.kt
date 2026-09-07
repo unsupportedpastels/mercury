@@ -22,6 +22,8 @@ object ChatEventDecoder {
     const val MAX_EVENT_CONTEXT_CHARS = 4_096
     const val MAX_EVENT_CHOICE_CHARS = 256
     const val MAX_EVENT_CHOICES = 32
+    /** Summary shown for a `delegate_task` completion that only dispatched background work. */
+    const val BACKGROUND_DELEGATION_SUMMARY = "Started background tasks"
 
     private const val MAX_MODEL_PROVIDER_CHARS = 128
     private const val MAX_MODEL_ID_CHARS = 512
@@ -110,7 +112,11 @@ object ChatEventDecoder {
                     boundedSessionId,
                     toolId,
                     name,
-                    payload.boundedOptional("summary", MAX_EVENT_TEXT_CHARS),
+                    if (name == "delegate_task" && payload.isDispatchedBackgroundDelegation()) {
+                        BACKGROUND_DELEGATION_SUMMARY
+                    } else {
+                        payload.boundedOptional("summary", MAX_EVENT_TEXT_CHARS)
+                    },
                 )
             }
             "status.update" -> {
@@ -164,6 +170,12 @@ object ChatEventDecoder {
                 ChatEvent.UnsupportedBlockingExpire(sessionId, kind, it)
             }
         }
+    }
+
+    /** A delegate_task result that dispatched background tasks rather than finishing inline. */
+    private fun JsonObject.isDispatchedBackgroundDelegation(): Boolean {
+        val result = this["result"] as? JsonObject ?: return false
+        return result.stringValue("status") == "dispatched" && result.stringValue("mode") == "background"
     }
 
     private fun JsonObject.boundedChoices(): List<String> =

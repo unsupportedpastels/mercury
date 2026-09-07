@@ -1,16 +1,16 @@
-package com.unsupportedpastels.hermesandroid.voice
+package com.unsupportedpastels.mercury.core.voice
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlin.test.Test
 
 /** Mirrors apps/desktop/src/lib/speech-text.test.ts one-for-one. */
-class SpeechTextTest {
+class SpeechTextPolicyTest {
     @Test
     fun summarizesFencedCodeBlocks() {
         assertEquals(
             "Here is code: code block omitted Done.",
-            sanitizeTextForSpeech("Here is code:\n```ts\nconst x = 1\n```\nDone."),
+            SpeechTextPolicy.sanitize("Here is code:\n```ts\nconst x = 1\n```\nDone."),
         )
     }
 
@@ -18,7 +18,7 @@ class SpeechTextTest {
     fun keepsProseAndInlineCodeReadable() {
         assertEquals(
             "Use git status after the change.",
-            sanitizeTextForSpeech("Use `git status` after the change."),
+            SpeechTextPolicy.sanitize("Use `git status` after the change."),
         )
     }
 
@@ -36,21 +36,21 @@ class SpeechTextTest {
         """.trimIndent()
         assertEquals(
             "Here is the quick takeaway: the totals remain unchanged. Full detail stays visible on screen.",
-            sanitizeTextForSpeech(text),
+            SpeechTextPolicy.sanitize(text),
         )
     }
 
     @Test
     fun doesNotStripProseContainingAPipe() {
         val text = "Use the summary first | keep the table on screen when it matters."
-        assertEquals(text, sanitizeTextForSpeech(text))
+        assertEquals(text, SpeechTextPolicy.sanitize(text))
     }
 
     @Test
     fun doesNotDuplicatePunctuationAcrossParagraphBreaks() {
         assertEquals(
             "First sentence. Second sentence.",
-            sanitizeTextForSpeech("First sentence.\n\nSecond sentence."),
+            SpeechTextPolicy.sanitize("First sentence.\n\nSecond sentence."),
         )
     }
 
@@ -58,15 +58,15 @@ class SpeechTextTest {
     fun doesNotDuplicatePunctuationAfterEmphasisQuoteOrParen() {
         assertEquals(
             "First sentence. Second sentence.",
-            sanitizeTextForSpeech("**First sentence.**\n\nSecond sentence."),
+            SpeechTextPolicy.sanitize("**First sentence.**\n\nSecond sentence."),
         )
         assertEquals(
             "“First sentence.” Second sentence.",
-            sanitizeTextForSpeech("“First sentence.”\n\nSecond sentence."),
+            SpeechTextPolicy.sanitize("“First sentence.”\n\nSecond sentence."),
         )
         assertEquals(
             "(First sentence.) Second sentence.",
-            sanitizeTextForSpeech("(First sentence.)\n\nSecond sentence."),
+            SpeechTextPolicy.sanitize("(First sentence.)\n\nSecond sentence."),
         )
     }
 
@@ -82,7 +82,7 @@ class SpeechTextTest {
 
             Done.
         """.trimIndent()
-        assertEquals("Main takeaway: total is unchanged. Done.", sanitizeTextForSpeech(text))
+        assertEquals("Main takeaway: total is unchanged. Done.", SpeechTextPolicy.sanitize(text))
     }
 
     @Test
@@ -97,7 +97,7 @@ class SpeechTextTest {
 
             After the table.
         """.trimIndent()
-        assertEquals("Before the table. After the table.", sanitizeTextForSpeech(text))
+        assertEquals("Before the table. After the table.", SpeechTextPolicy.sanitize(text))
     }
 
     @Test
@@ -111,7 +111,7 @@ class SpeechTextTest {
 
             After the table.
         """.trimIndent()
-        assertEquals("Before the table. After the table.", sanitizeTextForSpeech(text))
+        assertEquals("Before the table. After the table.", SpeechTextPolicy.sanitize(text))
     }
 
     @Test
@@ -125,7 +125,7 @@ class SpeechTextTest {
 
             After the table.
         """.trimIndent()
-        assertEquals("Before the table. After the table.", sanitizeTextForSpeech(text))
+        assertEquals("Before the table. After the table.", SpeechTextPolicy.sanitize(text))
     }
 
     @Test
@@ -136,7 +136,7 @@ class SpeechTextTest {
             > | Example A | 10 |
             Outside | prose
         """.trimIndent()
-        assertEquals("Outside | prose", sanitizeTextForSpeech(text))
+        assertEquals("Outside | prose", SpeechTextPolicy.sanitize(text))
     }
 
     @Test
@@ -146,7 +146,7 @@ class SpeechTextTest {
             --- | --- | ---
             Keep this prose.
         """.trimIndent()
-        assertTrue(sanitizeTextForSpeech(text).contains("Heading | Detail"))
+        assertTrue(SpeechTextPolicy.sanitize(text).contains("Heading | Detail"))
     }
 
     @Test
@@ -161,7 +161,7 @@ class SpeechTextTest {
 
             After the table.
         """.trimIndent()
-        assertEquals("Before the table. After the table.", sanitizeTextForSpeech(text))
+        assertEquals("Before the table. After the table.", SpeechTextPolicy.sanitize(text))
     }
 
     @Test
@@ -175,20 +175,20 @@ class SpeechTextTest {
 
             After the table.
         """.trimIndent()
-        assertEquals("Before the table. After the table.", sanitizeTextForSpeech(text))
+        assertEquals("Before the table. After the table.", SpeechTextPolicy.sanitize(text))
     }
 
     @Test
     fun preservesIndentedCodeThatResemblesATable() {
         val text = "    Item | Value\n    --- | ---\n    Example A | 10"
-        assertTrue(sanitizeTextForSpeech(text).contains("Item | Value"))
+        assertTrue(SpeechTextPolicy.sanitize(text).contains("Item | Value"))
     }
 
     @Test
     fun stripsFencedCodeAndUrlAndEmoji() {
         assertEquals(
             "See link for details.",
-            sanitizeTextForSpeech("See https://example.com/x for details. 🎉"),
+            SpeechTextPolicy.sanitize("See https://example.com/x for details. 🎉"),
         )
     }
 }

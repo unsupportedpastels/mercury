@@ -1,4 +1,5 @@
 import SwiftUI
+import MercuryCore
 
 /// Live session list backed by `GET /api/profiles/sessions`. Loads on
 /// appear, supports pull-to-refresh, and keeps the previous rows (with an
@@ -68,12 +69,24 @@ struct SessionListView: View {
         searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// `is:pinned` / `is:archived` come out of the same box as on Android
+    /// (shared grammar); the remainder is the text query.
+    private var searchFilter: MercuryCore.SessionListFilterSpec {
+        MercuryCore.SessionListFilterPolicy.shared.parse(value: searchQuery)
+    }
+
     private var mergedSearchResults: [SessionSearchResult] {
         guard !normalizedSearchQuery.isEmpty else { return [] }
-        let needle = normalizedSearchQuery.localizedLowercase
+        let filter = searchFilter
+        let needle = filter.query.localizedLowercase
         var results: [SessionSearchResult] = []
         var seen = Set<String>()
-        for session in appModel.sessions where [
+        // Archived rows are not part of the iOS inbox, so that predicate
+        // matches nothing locally; pinned filters on this device's pins.
+        let localRows = filter.archivedOnly ? [] : appModel.sessions.filter { session in
+            !filter.pinnedOnly || locallyPinnedIDs.contains(session.id)
+        }
+        for session in localRows where needle.isEmpty || [
             session.id, session.title, session.preview, session.workspacePath ?? ""
         ].contains(where: { $0.localizedLowercase.contains(needle) }) {
             if seen.insert(session.id).inserted {
@@ -575,7 +588,7 @@ struct SessionListView: View {
 
     private func scheduleSearch(_ rawValue: String) {
         searchTask?.cancel()
-        let query = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = MercuryCore.SessionListFilterPolicy.shared.parse(value: rawValue).query
         // Android parity: the server transcript search runs only from two
         // trimmed characters; shorter queries still filter the local list.
         guard query.count >= Self.minimumServerSearchLength else {
@@ -594,12 +607,12 @@ struct SessionListView: View {
                     client: client,
                     profile: appModel.activeProfile
                 ).search(query: query)
-                guard !Task.isCancelled, query == normalizedSearchQuery else { return }
+                guard !Task.isCancelled, query == searchFilter.query else { return }
                 serverSearchResults = results
             } catch is CancellationError {
                 return
             } catch {
-                guard !Task.isCancelled, query == normalizedSearchQuery else { return }
+                guard !Task.isCancelled, query == searchFilter.query else { return }
                 serverSearchResults = []
             }
             searchLoading = false

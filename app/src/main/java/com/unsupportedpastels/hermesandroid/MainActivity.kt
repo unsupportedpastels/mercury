@@ -195,6 +195,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onOpenSession = connectionViewModel::openSession,
                     onSendMessage = connectionViewModel::sendMessage,
+                    onSteerMessage = connectionViewModel::steerSession,
                     onReasoningSelected = connectionViewModel::setReasoningEffort,
                     onFastSelected = connectionViewModel::setFast,
                     onClarificationResponse = { sessionId, requestId, answer ->
@@ -295,6 +296,7 @@ internal fun HermesAppHost(
     onCreateProjectSession: (ProjectId) -> DurableSessionId? = { null },
     onOpenSession: (DurableSessionId) -> Unit = {},
     onSendMessage: (DurableSessionId, String) -> Unit = { _, _ -> },
+    onSteerMessage: (DurableSessionId, String) -> Unit = { _, _ -> },
     onReasoningSelected: (DurableSessionId, String) -> Unit = { _, _ -> },
     onFastSelected: (DurableSessionId, Boolean) -> Unit = { _, _ -> },
     onClarificationResponse: (DurableSessionId, String, String) -> Unit = { _, _, _ -> },
@@ -594,6 +596,7 @@ internal fun HermesAppHost(
         autoSpeakEnabled = voiceCapabilities.canReadAloud && voiceServerConfig.autoTts,
         voiceScreenOffContinuation = voiceScreenOffContinuation,
         onSendMessage = onSendMessage,
+        onSteerMessage = onSteerMessage,
         onReasoningSelected = onReasoningSelected,
         onFastSelected = onFastSelected,
         onClarificationResponse = onClarificationResponse,

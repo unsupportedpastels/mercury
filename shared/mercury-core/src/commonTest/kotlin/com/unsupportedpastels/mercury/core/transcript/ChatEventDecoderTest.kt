@@ -25,6 +25,28 @@ class ChatEventDecoderTest {
     }
 
     @Test
+    fun dispatchedBackgroundDelegationRewritesTheSummaryOnce() {
+        val dispatched = ChatEventDecoder.decode(
+            "tool.complete",
+            "runtime-1",
+            """{"tool_id":"t1","name":"delegate_task","summary":"raw","result":{"status":"dispatched","mode":"background"}}""",
+        )
+        assertEquals(ChatEventDecoder.BACKGROUND_DELEGATION_SUMMARY, assertIs<ChatEvent.ToolComplete>(dispatched).summary)
+        val inline = ChatEventDecoder.decode(
+            "tool.complete",
+            "runtime-1",
+            """{"tool_id":"t1","name":"delegate_task","summary":"raw","result":{"status":"done"}}""",
+        )
+        assertEquals("raw", assertIs<ChatEvent.ToolComplete>(inline).summary)
+        val other = ChatEventDecoder.decode(
+            "tool.complete",
+            "runtime-1",
+            """{"tool_id":"t1","name":"shell","summary":"raw","result":{"status":"dispatched","mode":"background"}}""",
+        )
+        assertEquals("raw", assertIs<ChatEvent.ToolComplete>(other).summary)
+    }
+
+    @Test
     fun terminalErrorWithoutUsableMessageStillDecodesWithFallback() {
         val fallback = ChatEvent.Error("runtime-1", ChatEventDecoder.ERROR_MESSAGE_FALLBACK)
         assertEquals(fallback, ChatEventDecoder.decode("error", "runtime-1", "{}"))

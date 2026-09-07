@@ -68,7 +68,7 @@ class ActiveTurnSteerUiTest {
                     ),
                     initialRoute = SessionDetailRoute(sessionId),
                     serverSettingsState = ServerSettingsState.Ready(null),
-                    onSendMessage = { id, text ->
+                    onSteerMessage = { id, text ->
                         steered = id to text
                         acceptedText.value = text
                     },
@@ -86,7 +86,7 @@ class ActiveTurnSteerUiTest {
         composeRule.onNodeWithText("Guidance queued for the active turn").assertIsDisplayed()
         composeRule.onNodeWithText("A later steer was rejected").assertIsDisplayed()
         composeRule.runOnIdle {
-            assertEquals(sessionId to "/steer Focus on the failing test", steered)
+            assertEquals(sessionId to "Focus on the failing test", steered)
         }
     }
 
