@@ -1,35 +1,13 @@
 package com.unsupportedpastels.hermesandroid.ui
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
-
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
-
-import androidx.compose.material3.FilledTonalButton
-
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.LocalMinimumInteractiveComponentSize
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDragHandle
@@ -49,19 +27,14 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.navigation3.runtime.NavKey
@@ -85,10 +58,8 @@ import com.unsupportedpastels.hermesandroid.connection.ServerCatalog
 import com.unsupportedpastels.hermesandroid.connection.ServerCatalogEntry
 import com.unsupportedpastels.hermesandroid.connection.ModelPickerState
 import com.unsupportedpastels.hermesandroid.connection.ServerSettingsState
-
 import com.unsupportedpastels.hermesandroid.connection.SlashCompletionState
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
-import com.unsupportedpastels.hermesandroid.gateway.ChatMessageRole
 import com.unsupportedpastels.hermesandroid.gateway.ChatSessionSnapshot
 import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
 import com.unsupportedpastels.hermesandroid.gateway.CronJobAction
@@ -123,30 +94,7 @@ import com.unsupportedpastels.hermesandroid.voice.VoiceInputPolicy
 import kotlinx.coroutines.delay
 import java.net.URI
 
-private val DraftsSaver = Saver<SnapshotStateMap<String, String>, ArrayList<String>>(
-    save = { drafts ->
-        ArrayList(drafts.entries.flatMap { (sessionId, draft) -> listOf(sessionId, draft) })
-    },
-    restore = { saved ->
-        mutableStateMapOf<String, String>().apply {
-            saved.chunked(2).forEach { pair ->
-                if (pair.size == 2) put(pair[0], pair[1])
-            }
-        }
-    },
-)
-
 private const val PROJECT_DOCK_MIN_WIDTH_DP = 800
-
-private data class PendingComposerSubmission(
-    val referenceKey: String,
-    val draftKey: String,
-    val draft: String,
-    val acceptedCount: Long,
-    val rejectedCount: Long,
-    val prompt: String,
-    val references: Set<String>,
-)
 
 @OptIn(ExperimentalMaterial3AdaptiveApi::class)
 @Composable
@@ -1058,92 +1006,12 @@ fun HermesApp(
 
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ShareDestinationSheet(
-    payload: SharePayload,
-    sessions: List<SessionSummary>,
-    projects: List<ProjectSummary>,
-    onDismiss: () -> Unit,
-    onNewChat: () -> Unit,
-    onProjectSelected: (ProjectId) -> Unit,
-    onSessionSelected: (DurableSessionId) -> Unit,
-) {
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 640.dp)
-                .navigationBarsPadding()
-                .padding(horizontal = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text("Send to chat", style = MaterialTheme.typography.headlineSmall)
-            Text(
-                buildString {
-                    if (payload.text.isNotBlank()) append("Shared text")
-                    if (payload.text.isNotBlank() && payload.attachments.isNotEmpty()) append(" · ")
-                    if (payload.attachments.isNotEmpty()) append("${payload.attachments.size} attachment(s)")
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            FilledTonalButton(onClick = onNewChat, modifier = Modifier.fillMaxWidth()) {
-                Text("New chat")
-            }
-            if (projects.isNotEmpty()) {
-                Text("Projects", style = MaterialTheme.typography.titleSmall)
-                projects.take(8).forEach { project ->
-                    ListItem(
-                        headlineContent = { Text(project.label) },
-                        supportingContent = { Text("Start a new task here") },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onProjectSelected(project.id) }
-                            .semantics {
-                                contentDescription = "Share with project ${project.label}"
-                            },
-                    )
-                }
-            }
-            if (sessions.isNotEmpty()) {
-                Text("Recent chats", style = MaterialTheme.typography.titleSmall)
-                LazyColumn(modifier = Modifier.weight(1f, fill = false)) {
-                    items(sessions.take(20), key = { it.id.value }) { session ->
-                        ListItem(
-                            headlineContent = { Text(session.title) },
-                            supportingContent = session.preview?.takeIf(String::isNotBlank)?.let { preview ->
-                                { Text(preview, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onSessionSelected(session.id) }
-                                .semantics {
-                                    contentDescription = "Share with ${session.title}"
-                                },
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.size(4.dp))
-        }
-    }
-}
-
-
 internal fun serverHostnameLabel(serverOrigin: ServerOrigin?): String {
     val hostname = serverOrigin?.value?.let { origin ->
         runCatching { URI(origin).host }.getOrNull()
     }
     return hostname?.takeIf { it.isNotBlank() } ?: "Hermes"
 }
-
-
-
-
 
 private val previewSessions = listOf(
     SessionSummary(DurableSessionId("stored-1"), "Android client planning"),
