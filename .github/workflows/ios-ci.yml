@@ -35,7 +35,10 @@ concurrency:
 jobs:
   verify:
     name: XcodeGen, build, and test on simulator
-    runs-on: macos-latest
+    # Pinned to an Apple Silicon runner: mercury-core builds only the
+    # iosSimulatorArm64 framework and the Xcode pre-build phase links it for
+    # every simulator build, so an x86_64 macOS runner cannot link MercuryCore.
+    runs-on: macos-15
     timeout-minutes: 60
 
     steps:

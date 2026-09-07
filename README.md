@@ -171,7 +171,7 @@ There is no App Store or TestFlight build yet. Mercury for iOS (iOS 17+) is buil
 
 Mercury connects only to the server origin you configure or the optional Relay origin contained in a QR code you explicitly scan. It does not include a hosted Hermes service, telemetry SDK, analytics SDK, ad network, or hard-coded remote endpoint.
 
-- Credentials, cookies, connection state, and cached transcripts are scoped to the normalized server origin and stored with Android Keystore-backed encryption on Android and in the iOS Keychain (device-only, per-origin items) on iOS.
+- Credentials, connection state, and cached transcripts are scoped to the normalized server origin and stored with Android Keystore-backed encryption on Android and in the iOS Keychain (device-only, per-origin items) on iOS. Cookies are encrypted per origin on Android; on iOS, basic-auth session cookies stay in the system cookie store, scoped by cookie domain.
 - Relay pairings and device keys live in their own encrypted store on each platform, fully apart from direct-server credentials.
 - WebSocket tickets are fresh, single-use, and held in memory only.
 - Production connections must use HTTPS. Plain HTTP is accepted only for loopback or private-network servers selected explicitly in the app.
