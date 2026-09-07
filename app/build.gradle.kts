@@ -154,6 +154,9 @@ dependencies {
   androidTestImplementation(libs.androidx.test.core)
   androidTestImplementation(libs.androidx.test.ext.junit)
   androidTestImplementation(libs.androidx.test.runner)
+  // Existing native-view tests need Espresso on the compile classpath too;
+  // Compose supplies this version only as a transitive runtime dependency.
+  androidTestImplementation(libs.androidx.test.espresso.core)
 
   // Navigation
   implementation(libs.androidx.navigation3.ui)

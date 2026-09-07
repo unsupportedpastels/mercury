@@ -140,6 +140,7 @@ data class HostDirectoryListing(
     val parentPath: String? = null,
     val lockedRoot: String? = null,
     val canChangePath: Boolean = true,
+    val root: String? = null,
 )
 
 /** Tolerantly parsed `complete.slash` JSON-RPC result. */

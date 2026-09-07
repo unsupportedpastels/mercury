@@ -1,6 +1,7 @@
 package com.unsupportedpastels.hermesandroid.files
 
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.mercury.core.files.RelayFoldersContract
 import java.io.File
 
 const val MAX_HOST_FILE_ENTRIES = 500
@@ -75,22 +76,11 @@ data class HostFilesSnapshot(
 )
 
 /** Validate a path supplied by Hermes Serve; never derive a child path locally. */
-fun validCanonicalHostFilePath(path: String?): String? {
-    val value = path?.trim()?.takeIf(String::isNotBlank) ?: return null
-    if (value.length > MAX_HOST_FILE_PATH_LENGTH || value.any(Char::isISOControl)) return null
-    val absolute = value.startsWith('/') || value.matches(Regex("^[A-Za-z]:[/\\\\].*"))
-    if (!absolute) return null
-    val components = value.split('/', '\\')
-    if (components.any { it == "." || it == ".." }) return null
-    return value
-}
+fun validCanonicalHostFilePath(path: String?): String? =
+    RelayFoldersContract.validPath(path)
 
-fun validHostFileName(name: String?): String? {
-    val value = name?.takeIf(String::isNotEmpty) ?: return null
-    if (value.length > MAX_HOST_FILE_NAME_LENGTH || value in setOf(".", "..")) return null
-    if (value.any(Char::isISOControl) || '/' in value || '\\' in value) return null
-    return value
-}
+fun validHostFileName(name: String?): String? =
+    RelayFoldersContract.validName(name)
 
 fun validHostFileMimeType(value: String?): String? {
     val mime = value?.trim()?.lowercase()?.takeIf(String::isNotBlank) ?: return null

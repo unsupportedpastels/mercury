@@ -1,5 +1,6 @@
 package com.unsupportedpastels.hermesandroid.app
 
+import com.unsupportedpastels.mercury.core.files.RelayFoldersContract
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -107,9 +108,8 @@ sealed interface ProjectSessionLoadState {
 
 fun validHostFolderName(name: String?): String? {
     val value = name?.trim()?.takeIf(String::isNotBlank) ?: return null
-    if (value.length > MAX_HOST_FOLDER_NAME_LENGTH || value in setOf(".", "..")) return null
-    if (value.any { it == '/' || it == '\\' || it.isISOControl() }) return null
-    return value
+    return RelayFoldersContract.validName(value)
+        ?.takeIf { it.length <= MAX_HOST_FOLDER_NAME_LENGTH }
 }
 
 private const val MAX_HOST_FOLDER_NAME_LENGTH = 128
@@ -125,12 +125,8 @@ const val NO_PROJECT_BUCKET_ID = "__no_project__"
 
 fun isNoProjectBucket(projectId: ProjectId?): Boolean = projectId?.value == NO_PROJECT_BUCKET_ID
 
-fun validProjectWorkspacePath(path: String?): String? {
-    val value = path?.trim()?.takeIf(String::isNotBlank) ?: return null
-    if (value.length > ProjectSummary.MAX_PATH_LENGTH || value.any(Char::isISOControl)) return null
-    val absolute = value.startsWith('/') || value.matches(Regex("^[A-Za-z]:[/\\\\].*"))
-    return value.takeIf { absolute }
-}
+fun validProjectWorkspacePath(path: String?): String? =
+    RelayFoldersContract.validPath(path)
 
 /**
  * Reconciles metadata-only project rows with the authenticated REST session

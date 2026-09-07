@@ -1,8 +1,8 @@
 import Foundation
 
-/// The host-files browser is a direct Hermes REST feature. Relay is a separate
-/// transport and is usable here only if it advertises an equivalent contract;
-/// this client has no relay filesystem route to call.
+/// General file reads/previews use direct Hermes REST. The project-folder
+/// picker separately uses RelayFoldersClient when a Relay host advertises its
+/// folder-only contract; that capability does not grant arbitrary file reads.
 enum HostFilesCapability: Equatable, Sendable {
     case direct
     case relayUnsupported

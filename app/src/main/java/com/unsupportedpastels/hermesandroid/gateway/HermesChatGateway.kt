@@ -11,6 +11,7 @@ import com.unsupportedpastels.hermesandroid.app.ProcessRow
 import com.unsupportedpastels.hermesandroid.app.MAX_PROCESS_ROWS
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.mercury.core.files.RelayFoldersContract
 import com.unsupportedpastels.mercury.core.profiles.ProfileCatalogPolicy
 import com.unsupportedpastels.mercury.core.sessions.SessionPresencePolicy
 import com.unsupportedpastels.mercury.core.rpc.RpcResultDecoder
@@ -126,6 +127,7 @@ class HermesChatConnection internal constructor(
     private val maxFrameBytes: Int,
     parentScope: CoroutineScope,
     private val nextRequestId: AtomicLong = AtomicLong(1),
+    private val projectPathPreflight: Boolean = true,
 ) : HermesChatSession {
     override val relayLeaseSnapshot: com.unsupportedpastels.hermesandroid.relay.RelayLeaseSnapshot?
         get() = (socket as? com.unsupportedpastels.hermesandroid.relay.RelayLeaseRecoverySocket)?.snapshot
@@ -295,16 +297,24 @@ class HermesChatConnection internal constructor(
             ?: throw HermesChatProtocolException("Project name is invalid")
         val requestedPath = validProjectWorkspacePath(path)
             ?: throw HermesChatProtocolException("Host folder path must be absolute")
-        val resolveParams = buildJsonObject {
-            put("cwd", requestedPath)
-            profile?.let { put("profile", it) }
-        }
-        val resolvedPath = request("projects.for_cwd", resolveParams)
-            .stringValue("cwd")
-            ?.let(::validProjectWorkspacePath)
-            ?: throw HermesChatProtocolException("Hermes did not return a valid host folder")
-        if (!sameHostPath(requestedPath, resolvedPath)) {
-            throw HermesChatProtocolException("Host folder does not exist")
+        val resolvedPath = if (projectPathPreflight) {
+            val resolveParams = buildJsonObject {
+                put("cwd", requestedPath)
+                profile?.let { put("profile", it) }
+            }
+            val resolved = request("projects.for_cwd", resolveParams)
+                .stringValue("cwd")
+                ?.let(::validProjectWorkspacePath)
+                ?: throw HermesChatProtocolException("Hermes did not return a valid host folder")
+            if (!sameHostPath(requestedPath, resolved)) {
+                throw HermesChatProtocolException("Host folder does not exist")
+            }
+            resolved
+        } else {
+            // Relay's folder service already returned the selected canonical
+            // path. Registration mirrors iOS and uses projects.create only;
+            // the Relay contract does not carry projects.for_cwd.
+            requestedPath
         }
         val params = buildJsonObject {
             put("name", projectName)
@@ -802,6 +812,12 @@ class HermesChatConnection internal constructor(
             val code = error.longValue("code")
             if (code == -32601L) {
                 deferred.completeExceptionally(HermesChatMethodNotFoundException(method))
+                return
+            }
+            if (method == RelayFoldersContract.listMethod || method == RelayFoldersContract.createMethod) {
+                val safeMessage = RelayFoldersContract.safeErrorMessage(error.stringValue("message"))
+                    ?: "The Relay folder request failed."
+                deferred.completeExceptionally(HermesChatProtocolException(safeMessage))
                 return
             }
             val suffix = code?.let { " ($it)" }.orEmpty()

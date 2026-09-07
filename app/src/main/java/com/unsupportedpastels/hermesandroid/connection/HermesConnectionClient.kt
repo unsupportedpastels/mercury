@@ -1567,7 +1567,7 @@ class HttpHermesConnectionClient(
     ): List<ChatMessage> {
         val encodedId = durableSessionId.value.encodeURLPathPart()
         val response = client.get("${serverOrigin.value}/api/sessions/$encodedId/messages") {
-            accessToken?.let { bearerAuth(it) }
+            hermesAuth(accessToken)
             parameter("limit", pageLimit)
             parameter("order", "latest")
             parameter("profile", profile)
@@ -1636,7 +1636,7 @@ class HttpHermesConnectionClient(
                 ?: throw HermesConnectionException("Host file path is invalid")
         }
         val response = client.get("${serverOrigin.value}/api/files") {
-            accessToken?.let { bearerAuth(it) }
+            hermesAuth(accessToken)
             requestedPath?.let { parameter("path", it) }
         }
         if (!response.status.isSuccess()) {
@@ -1662,7 +1662,7 @@ class HttpHermesConnectionClient(
         val canonicalPath = validCanonicalHostFilePath(path)
             ?: throw HermesConnectionException("Host file path is invalid")
         val response = client.get("${serverOrigin.value}/api/files/read") {
-            accessToken?.let { bearerAuth(it) }
+            hermesAuth(accessToken)
             parameter("path", canonicalPath)
         }
         if (!response.status.isSuccess()) {
@@ -1709,7 +1709,7 @@ class HttpHermesConnectionClient(
         val canonicalPath = validCanonicalHostFilePath(path)
             ?: throw HermesConnectionException("Host file path is invalid")
         val response = client.get("${serverOrigin.value}$endpoint") {
-            accessToken?.let { bearerAuth(it) }
+            hermesAuth(accessToken)
             parameter("path", canonicalPath)
         }
         if (!response.status.isSuccess()) {
@@ -1754,7 +1754,7 @@ class HttpHermesConnectionClient(
                 ?: throw HermesConnectionException("Host folder path is invalid")
         }
         val response = client.get("${serverOrigin.value}/api/files") {
-            accessToken?.let { bearerAuth(it) }
+            hermesAuth(accessToken)
             requestedPath?.let { parameter("path", it) }
         }
         if (!response.status.isSuccess()) {
@@ -1783,6 +1783,7 @@ class HttpHermesConnectionClient(
             parentPath = decoded.parent?.let(::validProjectWorkspacePath),
             lockedRoot = decoded.lockedRoot?.let(::validProjectWorkspacePath),
             canChangePath = decoded.canChangePath,
+            root = decoded.root?.let(::validProjectWorkspacePath),
         )
     } catch (cancelled: CancellationException) {
         throw cancelled
@@ -1804,7 +1805,7 @@ class HttpHermesConnectionClient(
             ?: throw HermesConnectionException("Host folder name is invalid")
         val requestedPath = joinManagedHostPath(validParent, validName)
         val response = client.post("${serverOrigin.value}/api/files/mkdir") {
-            accessToken?.let { bearerAuth(it) }
+            hermesAuth(accessToken)
             contentType(ContentType.Application.Json)
             setBody(json.encodeToString(HermesManagedDirectoryCreateRequest(requestedPath)))
         }
@@ -1838,7 +1839,7 @@ class HttpHermesConnectionClient(
     ): ByteArray = try {
         require(path.startsWith('/')) { "Managed image path must be absolute" }
         val response = client.get("${serverOrigin.value}/api/files/download") {
-            accessToken?.let { bearerAuth(it) }
+            hermesAuth(accessToken)
             parameter("path", path)
         }
         if (!response.status.isSuccess()) {
@@ -1919,7 +1920,7 @@ class HttpHermesConnectionClient(
         // that disk loop off the caller's (often Main) dispatcher.
         withContext(Dispatchers.IO) {
             client.prepareGet("${serverOrigin.value}/api/files/download") {
-                accessToken?.let { bearerAuth(it) }
+                hermesAuth(accessToken)
                 parameter("path", canonicalPath)
             }.execute { response ->
                 if (!response.status.isSuccess()) {
@@ -2002,7 +2003,7 @@ class HttpHermesConnectionClient(
         val boundedLimit = limit.coerceIn(1, MAX_SESSION_PAGE_SIZE)
         val boundedOffset = offset.coerceAtLeast(0)
         val sessionsResponse = client.get("${serverOrigin.value}/api/profiles/sessions") {
-            accessToken?.let { bearerAuth(it) }
+            hermesAuth(accessToken)
             parameter("limit", boundedLimit)
             parameter("offset", boundedOffset)
             parameter("order", "recent")

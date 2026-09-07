@@ -1312,6 +1312,27 @@ class HermesConnectionClientTest {
     }
 
     @Test
+    fun cookieOnlyFolderRequestsDoNotSendAnEmptyBearerHeader() = runTest {
+        val requestedPaths = mutableListOf<String>()
+        val engine = MockEngine { request ->
+            requestedPaths += request.url.encodedPath
+            assertEquals(null, request.headers[HttpHeaders.Authorization])
+            val body = if (request.url.encodedPath == "/api/files/mkdir") {
+                """{"ok":true,"path":"/srv/new"}"""
+            } else {
+                """{"path":"/srv/new","parent":"/srv","entries":[]}"""
+            }
+            respond(body, headers = headersOf(HttpHeaders.ContentType, "application/json"))
+        }
+        val client = HttpHermesConnectionClient(HttpClient(engine))
+        val origin = ServerOrigin.parse("https://hermes.example")
+        client.loadHostDirectories(origin, "", "/srv")
+        client.loadHostFiles(origin, "", "/srv")
+        client.createHostDirectory(origin, "", "/srv", "new")
+        assertEquals(listOf("/api/files", "/api/files", "/api/files/mkdir", "/api/files"), requestedPaths)
+    }
+
+    @Test
     fun cronTriggerUsesBoundedAuthenticatedOfficialEndpointAndNoBody() = runTest {
         val engine = MockEngine { request ->
             assertEquals(HttpMethod.Post, request.method)

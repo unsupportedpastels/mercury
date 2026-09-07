@@ -17,6 +17,8 @@ import com.unsupportedpastels.hermesandroid.connection.ServerSettingsState
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
 import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatEvent
+import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryEntry
+import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryListing
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatSession
 import com.unsupportedpastels.hermesandroid.gateway.ModelCapabilities
 import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
@@ -48,6 +50,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.After
@@ -802,7 +805,100 @@ class RelayConnectionViewModelTest {
         org.junit.Assert.assertTrue(download.await().exceptionOrNull() is kotlinx.coroutines.CancellationException)
     }
 
-    private class FakeRelaySession : HermesChatSession {
+    @Test
+    fun folderBrowseAndCreateBorrowTheAdmittedControllerWithoutRetry() = runTest(dispatcher) {
+        var factories = 0
+        var createCalls = 0
+        val folderSession = object : FakeRelaySession() {
+            override suspend fun relayRequest(method: String, params: JsonObject): JsonObject {
+                return when (method) {
+                    "relay.status" -> kotlinx.serialization.json.Json.parseToJsonElement(
+                        """{"capabilities":{"folders":{"version":1,"list_method":"relay.folders.list","create_method":"relay.folders.create"}}}""",
+                    ) as JsonObject
+                    "relay.folders.list" -> {
+                        assertEquals("default", params["profile"]!!.jsonPrimitive.content)
+                        assertEquals("/workspace", params["path"]!!.jsonPrimitive.content)
+                        buildJsonObject {
+                            put("path", "/workspace")
+                            put("parent", "/")
+                            put("root", "/")
+                            put("locked_root", "/")
+                            put("can_change_path", true)
+                            put("entries", buildJsonArray {
+                                add(buildJsonObject {
+                                    put("name", "existing")
+                                    put("path", "/workspace/existing")
+                                    put("is_directory", true)
+                                })
+                            })
+                        }
+                    }
+                    "relay.folders.create" -> {
+                        createCalls += 1
+                        assertEquals("/workspace", params["parent_path"]!!.jsonPrimitive.content)
+                        assertEquals("new-child", params["name"]!!.jsonPrimitive.content)
+                        buildJsonObject {
+                            put("path", "/workspace/new-child")
+                            put("entries", buildJsonArray {})
+                        }
+                    }
+                    else -> super.relayRequest(method, params)
+                }
+            }
+        }
+        val viewModel = relayViewModel {
+            factories += 1
+            folderSession
+        }
+        advanceUntilIdle()
+        viewModel.connectRelay(target()).join()
+        viewModel.openSession(DurableSessionId("relay-session-1")).join()
+        val factoriesAfterChat = factories
+
+        val listing = viewModel.loadHostDirectories("/workspace")
+        val created = viewModel.createHostDirectory("/workspace", "new-child")
+
+        assertEquals(listOf(HostDirectoryEntry("existing", "/workspace/existing")), listing.directories)
+        assertEquals(HostDirectoryListing("/workspace/new-child", emptyList(), canChangePath = false), created)
+        assertEquals(1, createCalls)
+        assertEquals(
+            "folder RPCs borrowed the admitted chat controller",
+            factoriesAfterChat,
+            factories,
+        )
+    }
+
+    @Test
+    fun relayFolderCreateUsesProjectRegistrationThroughTheSameController() = runTest(dispatcher) {
+        var factories = 0
+        var projectCreates = 0
+        val session = object : FakeRelaySession() {
+            override suspend fun createProject(
+                name: String,
+                path: String,
+                profile: String?,
+            ): ProjectSummary {
+                projectCreates += 1
+                assertEquals("New project", name)
+                assertEquals("/workspace/new-child", path)
+                assertEquals("default", profile)
+                return ProjectSummary(ProjectId("new-project"), name, path, 0, emptyList())
+            }
+        }
+        val viewModel = relayViewModel {
+            factories += 1
+            session
+        }
+        advanceUntilIdle()
+        viewModel.connectRelay(target()).join()
+        val created = viewModel.createProject("New project", "/workspace/new-child")
+
+        assertEquals(ProjectId("new-project"), created.id)
+        assertEquals(1, projectCreates)
+        assertEquals(2, factories) // initial admission plus one borrowed reader fallback
+    }
+
+    private open class FakeRelaySession : HermesChatSession {
         var transcriptBarrier: kotlinx.coroutines.CompletableDeferred<Unit>? = null
         var recoverySnapshot: RelayLeaseSnapshot? = null
         override val relayLeaseSnapshot get() = recoverySnapshot
@@ -850,7 +946,7 @@ class RelayConnectionViewModelTest {
             )
         }
 
-        override suspend fun relayRequest(method: String, params: JsonObject): JsonObject {
+        open override suspend fun relayRequest(method: String, params: JsonObject): JsonObject {
             if (method == "relay.session.transcript") transcriptBarrier?.await()
             return when (method) {
                 "relay.sessions.list" -> buildJsonObject {

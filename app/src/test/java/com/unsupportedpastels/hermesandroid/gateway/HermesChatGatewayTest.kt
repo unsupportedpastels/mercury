@@ -466,6 +466,36 @@ class HermesChatGatewayTest {
     }
 
     @Test
+    fun relayFolderErrorsMapReasonsToFixedSafeMessages() = runTest {
+        val socket = ScriptedSocket()
+        socket.onSend = { frame ->
+            val request = Json.parseToJsonElement(frame).jsonObject
+            socket.offer(
+                """{"jsonrpc":"2.0","id":${request["id"]!!.jsonPrimitive.content},"error":{"code":-32000,"message":"folder_exists"}}""",
+            )
+        }
+        val connection = HermesChatGateway(
+            origin = ServerOrigin.parse("https://hermes.example"),
+            accessToken = "opaque-access",
+            ticketClient = RecordingTicketClient("ticket-1"),
+            socketFactory = RecordingSocketFactory(socket),
+            parentScope = backgroundScope,
+        ).connect()
+
+        val error = runCatching {
+            connection.relayRequest(
+                "relay.folders.create",
+                kotlinx.serialization.json.JsonObject(emptyMap()),
+            )
+        }.exceptionOrNull()
+
+        assertTrue(error is HermesChatProtocolException)
+        assertEquals("A folder with that name already exists.", error?.message)
+        assertTrue(error?.message?.contains("folder_exists") != true)
+        connection.close()
+    }
+
+    @Test
     fun reportsJsonRpcErrorsWithoutParsingNullResult() = runTest {
         val socket = ScriptedSocket()
         socket.onSend = { frame ->

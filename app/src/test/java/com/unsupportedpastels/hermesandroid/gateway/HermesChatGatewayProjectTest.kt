@@ -332,6 +332,30 @@ class HermesChatGatewayProjectTest {
     }
 
     @Test
+    fun relayProjectRegistrationDoesNotCallUnsupportedCwdPreflight() = runTest {
+        val socket = MetadataSocket()
+        socket.onSend = { frame ->
+            val request = Json.parseToJsonElement(frame).jsonObject
+            assertEquals("projects.create", request["method"]!!.jsonPrimitive.content)
+            assertEquals("/srv/existing", request["params"]!!.jsonObject["primary_path"]!!.jsonPrimitive.content)
+            val id = request["id"]!!.jsonPrimitive.content
+            socket.offer(
+                """{"jsonrpc":"2.0","id":$id,"result":{"project":{"id":"p_relay","name":"Relay project","primary_path":"/srv/existing","folders":[{"path":"/srv/existing"}]}}}""",
+            )
+        }
+        val connection = HermesChatConnection(
+            socket = socket,
+            maxFrameBytes = 1024 * 1024,
+            parentScope = backgroundScope,
+            projectPathPreflight = false,
+        )
+        val project = connection.createProject("Relay project", "/srv/existing", "default")
+        assertEquals(ProjectId("p_relay"), project.id)
+        assertEquals(listOf("projects.create"), socket.sentMethods)
+        connection.close()
+    }
+
+    @Test
     fun projectSessionsRequestsFullSessionWindowAndFlattensEveryLaneRow() = runTest {
         val socket = MetadataSocket()
         var requestedSessionLimit: Int? = null

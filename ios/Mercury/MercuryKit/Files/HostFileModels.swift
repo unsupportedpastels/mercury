@@ -1,4 +1,5 @@
 import Foundation
+import MercuryCore
 
 let maxHostFileEntries = 500
 let maxHostFilePathLength = 1_024
@@ -76,34 +77,11 @@ enum HostFileModelError: Error, Equatable {
 /// Validates a canonical path supplied by Hermes Serve. Callers must pass
 /// server-returned paths back unchanged rather than joining child paths locally.
 func validCanonicalHostFilePath(_ path: String?) -> String? {
-    guard let path else { return nil }
-    let value = path.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !value.isEmpty, value.count <= maxHostFilePathLength else { return nil }
-    guard !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { return nil }
-
-    let isUnixAbsolute = value.first == "/"
-    let characters = Array(value)
-    let isWindowsAbsolute = characters.count >= 3
-        && characters[0].isASCII
-        && characters[0].isLetter
-        && characters[1] == ":"
-        && (characters[2] == "/" || characters[2] == "\\")
-    guard isUnixAbsolute || isWindowsAbsolute else { return nil }
-
-    let components = value.split(
-        omittingEmptySubsequences: false,
-        whereSeparator: { $0 == "/" || $0 == "\\" }
-    )
-    guard !components.contains(where: { $0 == "." || $0 == ".." }) else { return nil }
-    return value
+    RelayFoldersContract.shared.validPath(path: path)
 }
 
 func validHostFileName(_ name: String?) -> String? {
-    guard let name, !name.isEmpty, name.count <= maxHostFileNameLength else { return nil }
-    guard name != ".", name != ".." else { return nil }
-    guard !name.contains("/"), !name.contains("\\") else { return nil }
-    guard !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { return nil }
-    return name
+    RelayFoldersContract.shared.validName(name: name)
 }
 
 func validHostFileMIMEType(_ value: String?) -> String? {

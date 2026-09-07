@@ -818,6 +818,13 @@ final class ChatConnection: @unchecked Sendable {
                 continuation.resume(throwing: ChatMethodNotFoundError(method: method ?? ""))
                 return
             }
+            if method == "relay.folders.list" || method == "relay.folders.create",
+               let safeMessage = MercuryCore.RelayFoldersContract.shared.safeErrorMessage(
+                   reason: errorObject["message"] as? String
+               ) {
+                continuation.resume(throwing: RelayFoldersError.hostRejected(safeMessage))
+                return
+            }
             let suffix = code.map { " (\($0))" } ?? ""
             continuation.resume(throwing: ChatError.protocolError("Hermes RPC request failed\(suffix)"))
             return

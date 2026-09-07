@@ -80,6 +80,7 @@ import com.unsupportedpastels.hermesandroid.gateway.ActiveRuntimeSession
 import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
 import com.unsupportedpastels.hermesandroid.files.HostFileEntry
 import com.unsupportedpastels.hermesandroid.files.HostFileListing
+import com.unsupportedpastels.hermesandroid.relay.RelayFoldersUnsupportedException
 import com.unsupportedpastels.hermesandroid.theme.HermesAndroidTheme
 import com.unsupportedpastels.hermesandroid.navigation.ProjectRoute
 import com.unsupportedpastels.hermesandroid.navigation.SessionDetailRoute
@@ -960,6 +961,54 @@ class HermesAppTest {
     }
 
     @Test
+    fun relayFolderBrowserFallbackAllowsManualExistingPathRegistration() {
+        var submitted: Pair<String, String>? = null
+        val createdProject = ProjectSummary(
+            ProjectId("manual-project"),
+            "Manual project",
+            "/workspace/existing",
+            0,
+            emptyList(),
+        )
+        composeRule.setContent {
+            HermesAndroidTheme {
+                HermesApp(
+                    snapshot = connectedSnapshot.copy(
+                        authenticationState = AuthenticationState.Authenticated,
+                        projectState = ProjectLoadState.Loaded(emptyList()),
+                        relayTargetId = "relay-target",
+                    ),
+                    onLoadHostDirectories = {
+                        Result.failure(RelayFoldersUnsupportedException())
+                    },
+                    onCreateProject = { name, path ->
+                        submitted = name to path
+                        Result.success(createdProject)
+                    },
+                )
+            }
+        }
+
+        composeRule.onNodeWithContentDescription("Create project").performClick()
+        composeRule.waitUntil {
+            composeRule.onAllNodesWithText(
+                "host/client combination",
+                substring = true,
+            ).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("Project name input").performTextInput("Manual project")
+        composeRule.onNodeWithTag("Host folder input").performTextInput("/workspace/existing")
+        val createAction = composeRule.onNodeWithTag("Confirm create project")
+            .assertIsEnabled()
+            .fetchSemanticsNode()
+            .config[SemanticsActions.OnClick]
+        composeRule.runOnIdle { createAction.action?.invoke() }
+        composeRule.waitUntil(5_000) { submitted != null }
+
+        assertEquals("Manual project" to "/workspace/existing", submitted)
+    }
+
+    @Test
     fun createProjectCanCreateAndEnterNewHostFolder() {
         var initialLoaded = false
         var folderRequest: Pair<String, String>? = null
@@ -1035,8 +1084,39 @@ class HermesAppTest {
         }
 
         composeRule.onNodeWithTag("Host directory list").assertIsDisplayed()
-        composeRule.onNodeWithTag("Toggle create host folder").assertIsDisplayed()
         composeRule.onNodeWithTag("Confirm create project").assertIsDisplayed()
+        composeRule.onNodeWithTag("Toggle create host folder").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("Confirm create project").assertIsDisplayed()
+    }
+
+    @Test
+    fun lockedFolderPickerDisablesArbitraryPathButKeepsServerParentNavigation() {
+        val listing = HostDirectoryListing(
+            path = "/workspace/child",
+            directories = emptyList(),
+            parentPath = "/workspace",
+            lockedRoot = "/workspace",
+            canChangePath = false,
+        )
+        var requested: String? = null
+        composeRule.setContent {
+            HermesAndroidTheme {
+                HermesApp(
+                    snapshot = connectedSnapshot,
+                    initialProjectCreatorOpen = true,
+                    initialProjectCreatorListing = listing,
+                    onLoadHostDirectories = { path ->
+                        requested = path
+                        Result.success(listing.copy(path = "/workspace", parentPath = null))
+                    },
+                )
+            }
+        }
+        composeRule.onNodeWithTag("Host folder input").assertIsNotEnabled()
+        composeRule.onNodeWithText("Open").assertIsNotEnabled()
+        composeRule.onNodeWithText("Up").assertIsEnabled().performClick()
+        composeRule.waitUntil { requested != null }
+        assertEquals("/workspace", requested)
     }
 
     @Test

@@ -1,12 +1,13 @@
 package com.unsupportedpastels.hermesandroid.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -49,6 +50,7 @@ import com.unsupportedpastels.hermesandroid.app.ProjectSummary
 import com.unsupportedpastels.hermesandroid.app.validHostFolderName
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
 import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryListing
+import com.unsupportedpastels.hermesandroid.relay.RelayFoldersUnsupportedException
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -63,12 +65,14 @@ internal fun ProjectCreationSheet(
 ) {
     val coroutineScope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val bodyScrollState = rememberScrollState()
     var projectName by rememberSaveable { mutableStateOf("") }
     var pathInput by rememberSaveable { mutableStateOf(initialListing?.path.orEmpty()) }
     var listing by remember { mutableStateOf(initialListing) }
     var loading by remember { mutableStateOf(initialListing == null) }
     var submitting by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var manualPathRegistrationAvailable by rememberSaveable { mutableStateOf(false) }
     var showNewFolder by rememberSaveable { mutableStateOf(false) }
     var newFolderName by rememberSaveable { mutableStateOf("") }
 
@@ -81,6 +85,9 @@ internal fun ProjectCreationSheet(
                 pathInput = loaded.path
             },
             onFailure = { error ->
+                if (error is RelayFoldersUnsupportedException) {
+                    manualPathRegistrationAvailable = true
+                }
                 errorMessage = projectCreationError(error, "Could not open that host folder")
             },
         )
@@ -106,7 +113,14 @@ internal fun ProjectCreationSheet(
                     .testTag("Create project sheet"),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("Create project", style = MaterialTheme.typography.headlineSmall)
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(bodyScrollState),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text("Create project", style = MaterialTheme.typography.headlineSmall)
                 Text(
                     "Choose an existing folder on the Hermes host, or create a folder there.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -135,20 +149,30 @@ internal fun ProjectCreationSheet(
                         },
                         label = { Text("Host folder") },
                         singleLine = true,
-                        enabled = !loading && !submitting,
+                        enabled = !loading && !submitting && listing?.canChangePath != false,
                         modifier = Modifier
                             .weight(1f)
                             .testTag("Host folder input"),
                     )
-                    Button(
-                        onClick = {
-                            coroutineScope.launch { loadPath(pathInput.trim()) }
-                        },
-                        enabled = !loading && !submitting &&
-                            validProjectWorkspacePath(pathInput) != null,
-                    ) {
-                        Text("Open")
+                    if (!manualPathRegistrationAvailable) {
+                        Button(
+                            onClick = {
+                                coroutineScope.launch { loadPath(pathInput.trim()) }
+                            },
+                            enabled = !loading && !submitting &&
+                                listing?.canChangePath != false &&
+                                validProjectWorkspacePath(pathInput) != null,
+                        ) {
+                            Text("Open")
+                        }
                     }
+                }
+                if (manualPathRegistrationAvailable) {
+                    Text(
+                        "Folder browsing is unavailable on this Relay host. Enter an existing absolute path to register it; this does not create or check the folder.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -190,7 +214,6 @@ internal fun ProjectCreationSheet(
                     loading -> Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .weight(1f)
                             .padding(vertical = 24.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
                         verticalAlignment = Alignment.CenterVertically,
@@ -202,9 +225,7 @@ internal fun ProjectCreationSheet(
                         val directories = listing!!.directories
                         if (directories.isEmpty()) {
                             Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f),
+                                modifier = Modifier.fillMaxWidth(),
                                 contentAlignment = Alignment.CenterStart,
                             ) {
                                 Text(
@@ -217,7 +238,7 @@ internal fun ProjectCreationSheet(
                             LazyColumn(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .weight(1f)
+                                    .heightIn(max = 240.dp)
                                     .testTag("Host directory list"),
                             ) {
                                 items(directories, key = { it.path }) { directory ->
@@ -241,11 +262,11 @@ internal fun ProjectCreationSheet(
                             }
                         }
                     }
-                    else -> Spacer(modifier = Modifier.weight(1f))
+                    else -> Unit
                 }
                 TextButton(
                     onClick = { showNewFolder = !showNewFolder },
-                    enabled = listing != null && !loading && !submitting,
+                    enabled = listing != null && !manualPathRegistrationAvailable && !loading && !submitting,
                     modifier = Modifier.testTag("Toggle create host folder"),
                 ) {
                     Text(if (showNewFolder) "Cancel new folder" else "Create folder here")
@@ -305,6 +326,7 @@ internal fun ProjectCreationSheet(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End,
@@ -318,7 +340,7 @@ internal fun ProjectCreationSheet(
                     }
                     Button(
                         onClick = {
-                            val selectedPath = listing?.path ?: return@Button
+                            val selectedPath = validProjectWorkspacePath(pathInput) ?: return@Button
                             val name = projectName.trim()
                             submitting = true
                             errorMessage = null
@@ -335,8 +357,10 @@ internal fun ProjectCreationSheet(
                                 submitting = false
                             }
                         },
-                        enabled = !loading && !submitting && listing != null &&
-                            projectName.trim().isNotEmpty() && pathInput == listing?.path,
+                        enabled = !loading && !submitting &&
+                            projectName.trim().isNotEmpty() &&
+                            validProjectWorkspacePath(pathInput) != null &&
+                            (manualPathRegistrationAvailable || pathInput == listing?.path),
                         modifier = Modifier.testTag("Confirm create project"),
                     ) {
                         Text(if (submitting) "Creating…" else "Create project")
