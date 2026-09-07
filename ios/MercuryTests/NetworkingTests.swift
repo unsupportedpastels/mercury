@@ -31,15 +31,9 @@ final class MockURLProtocol: URLProtocol {
         }
         do {
             let (response, data) = try handler(request)
-            // Simulate a real redirect: hand the session the new request so
-            // its redirect policy (delegate) decides whether to follow.
-            if (300...399).contains(response.statusCode),
-               let location = response.value(forHTTPHeaderField: "Location"),
-               let target = URL(string: location, relativeTo: request.url) {
-                var redirected = request
-                redirected.url = target.absoluteURL
-                client?.urlProtocol(self, wasRedirectedTo: redirected, redirectResponse: response)
-            }
+            // This stub serves responses only. Redirect transport behavior is
+            // exercised by LoopbackHTTPTestServer rather than synthesizing a
+            // redirect and also completing the original URLProtocol load.
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
             // URLProtocol does not persist Set-Cookie into HTTPCookieStorage on
@@ -113,19 +107,22 @@ final class NetworkingTests: XCTestCase {
     /// parity): a bearer token scoped to the configured origin must not be
     /// forwarded to another host. The 3xx surfaces to the caller as-is.
     func testHermesSessionRefusesCrossOriginRedirect() async throws {
-        MockURLProtocol.handler = { request in
-            if request.url?.host == "hermes.test" {
-                return self.response(
-                    302, headers: ["Location": "https://evil.test/steal"], for: request
-                )
-            }
-            return self.response(200, for: request)
-        }
-        let client = makeClient()
+        let target = try LoopbackHTTPTestServer()
+        defer { target.stop() }
+        let targetOrigin = try await target.start()
+        let source = try LoopbackHTTPTestServer(redirectTo: targetOrigin.appendingPathComponent("steal"))
+        defer { source.stop() }
+        let sourceOrigin = try await source.start()
+        XCTAssertNotEqual(sourceOrigin.port, targetOrigin.port)
+
+        let session = HermesURLSession.make(.ephemeral)
+        defer { session.invalidateAndCancel() }
+        let client = HermesHTTPClient(origin: sourceOrigin.absoluteString, session: session)
         client.bearerToken = "secret-token"
         let (_, http) = try await client.get(path: "/api/status")
         XCTAssertEqual(http.statusCode, 302)
-        XCTAssertEqual(MockURLProtocol.receivedRequests.map { $0.url?.host }, ["hermes.test"])
+        XCTAssertEqual(source.requestCount, 1)
+        XCTAssertEqual(target.requestCount, 0, "A refused redirect must never contact the other origin")
     }
 
     /// The authenticated factory is how production builds every bearer-carrying
@@ -140,23 +137,25 @@ final class NetworkingTests: XCTestCase {
         XCTAssertFalse(plain.refusesRedirects)
     }
 
-    /// Control for the test above: the mock really does redirect when the
+    /// Control for the test above: the server really does redirect when the
     /// session has no refusing delegate, so the assertion is meaningful.
     func testControlPlainSessionFollowsTheSameRedirect() async throws {
-        MockURLProtocol.handler = { request in
-            if request.url?.host == "hermes.test" {
-                return self.response(
-                    302, headers: ["Location": "https://evil.test/steal"], for: request
-                )
-            }
-            return self.response(200, for: request)
-        }
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [MockURLProtocol.self]
-        let client = HermesHTTPClient(origin: "https://hermes.test", session: URLSession(configuration: config))
+        let target = try LoopbackHTTPTestServer()
+        defer { target.stop() }
+        let targetOrigin = try await target.start()
+        let source = try LoopbackHTTPTestServer(redirectTo: targetOrigin.appendingPathComponent("steal"))
+        defer { source.stop() }
+        let sourceOrigin = try await source.start()
+        XCTAssertNotEqual(sourceOrigin.port, targetOrigin.port)
+
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let client = HermesHTTPClient(origin: sourceOrigin.absoluteString, session: session)
         let (_, http) = try await client.get(path: "/api/status")
         XCTAssertEqual(http.statusCode, 200)
-        XCTAssertEqual(MockURLProtocol.receivedRequests.map { $0.url?.host }, ["hermes.test", "evil.test"])
+        XCTAssertEqual(http.url?.port, targetOrigin.port)
+        XCTAssertEqual(source.requestCount, 1)
+        XCTAssertEqual(target.requestCount, 1)
     }
 
     func testBearerTokenIsSentWhenSet() async throws {
