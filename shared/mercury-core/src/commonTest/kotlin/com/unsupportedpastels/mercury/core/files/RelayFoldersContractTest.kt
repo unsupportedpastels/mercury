@@ -51,6 +51,12 @@ class RelayFoldersContractTest {
     }
 
     @Test
+    fun unsupportedGuidanceDoesNotAssumeWhichPeerNeedsUpdating() {
+        assertTrue(RelayFoldersContract.unsupportedMessage.contains("host/client combination"))
+        assertTrue(RelayFoldersContract.unsupportedMessage.contains("Update Mercury or the Mercury Relay host plugin"))
+    }
+
+    @Test
     fun requestBuildersEmitOnlyTheSharedWireFields() {
         assertEquals(
             """{"profile":"default"}""",

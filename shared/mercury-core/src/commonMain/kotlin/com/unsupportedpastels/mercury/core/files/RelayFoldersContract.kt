@@ -51,7 +51,7 @@ object RelayFoldersContract {
     const val maxListingJsonBytes = 1_024 * 1_024
 
     const val unsupportedMessage =
-        "Update the Mercury Relay host plugin to browse and create folders, or enter an existing server folder path manually."
+        "Folder browsing and creation are unavailable for this Mercury Relay host/client combination. Update Mercury or the Mercury Relay host plugin, or enter an existing server folder path manually."
 
     private val json = Json { ignoreUnknownKeys = true }
 

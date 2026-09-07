@@ -26,7 +26,7 @@ class RelayFoldersClientTest {
         }.exceptionOrNull()
 
         assertTrue(error is RelayFoldersUnsupportedException)
-        assertTrue(error?.message?.contains("Update the Mercury Relay host plugin") == true)
+        assertTrue(error?.message?.contains("Update Mercury or the Mercury Relay host plugin") == true)
         assertEquals(listOf("relay.status"), calls)
     }
 

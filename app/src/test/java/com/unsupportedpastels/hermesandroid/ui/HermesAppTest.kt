@@ -992,7 +992,7 @@ class HermesAppTest {
         composeRule.onNodeWithContentDescription("Create project").performClick()
         composeRule.waitUntil {
             composeRule.onAllNodesWithText(
-                "Update the Mercury Relay host plugin",
+                "host/client combination",
                 substring = true,
             ).fetchSemanticsNodes().isNotEmpty()
         }

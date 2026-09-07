@@ -12,6 +12,7 @@ struct HostFilesView: View {
     var mode: HostFilesSelectionMode = .browse
     var onSelectReference: ((HostFileEntry) -> Void)? = nil
     var onSelectFolder: ((String) -> Void)? = nil
+    var onFolderCapabilityUnavailable: (() -> Void)? = nil
 
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
@@ -269,6 +270,9 @@ struct HostFilesView: View {
             return
         } catch {
             guard request.scope == scope else { return }
+            if mode == .projectFolder, relayFolderCapabilityUnavailable(error) {
+                onFolderCapabilityUnavailable?()
+            }
             _ = browser.fail(safeFilesError(error), for: request)
         }
     }
@@ -400,6 +404,16 @@ struct HostFilesView: View {
         let request = next.beginLoad(scope: scope, path: next.listing?.path)
         _ = next.fail(message, for: request)
         return next
+    }
+
+    private func relayFolderCapabilityUnavailable(_ error: Error) -> Bool {
+        if let folders = error as? RelayFoldersError, folders == .unsupported {
+            return true
+        }
+        if let access = error as? HostFilesAccessError, access == .relayUnsupported {
+            return true
+        }
+        return false
     }
 
     private func safeFilesError(_ error: Error) -> String {

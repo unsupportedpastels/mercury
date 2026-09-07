@@ -295,10 +295,42 @@ struct ProjectSessionsView: View {
 
 private struct CreateProjectView: View {
     let controller: ProjectMetadataController
+    @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var folderPath = ""
     @State private var showFolderBrowser = false
+    @State private var manualPathRegistrationAvailable = false
+    @State private var folderSelectedFromBrowser = false
+
+    private var relayTarget: RelayPairedTarget? {
+        appModel.activeRelayTarget ?? appModel.selectedRelayTarget
+    }
+
+    private var folderScope: String {
+        if let relayTarget {
+            return "relay:\(relayTarget.id.uuidString)"
+        }
+        return "direct:\(appModel.serverOrigin ?? "")"
+    }
+
+    private var manualPathAllowed: Bool {
+        relayTarget == nil || manualPathRegistrationAvailable
+    }
+
+    private var selectedPathAllowed: Bool {
+        relayTarget == nil || manualPathRegistrationAvailable || folderSelectedFromBrowser
+    }
+
+    private var folderPathBinding: Binding<String> {
+        Binding(
+            get: { folderPath },
+            set: {
+                folderPath = $0
+                folderSelectedFromBrowser = false
+            }
+        )
+    }
 
     private var canonicalFolder: String? {
         validCanonicalHostFilePath(folderPath)
@@ -312,6 +344,7 @@ private struct CreateProjectView: View {
     private var canCreate: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && canonicalFolder != nil
+            && selectedPathAllowed
             && !controller.isCreating
     }
 
@@ -331,14 +364,19 @@ private struct CreateProjectView: View {
                 }
                 .accessibilityLabel(folderPath.isEmpty ? "Browse server folders" : "Change server folder")
 
-                // Keep manual registration available when the active transport
-                // has no folder-browser capability (for example an older Relay host). The server
-                // registers metadata only; manual entry does not create or check a folder.
-                TextField("Absolute server folder path", text: $folderPath)
+                // Manual registration is a fallback only after a Relay folder
+                // capability probe proves that the paired host/client cannot browse.
+                TextField("Absolute server folder path", text: folderPathBinding)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.asciiCapable)
                     .accessibilityLabel("Server folder path")
+                    .disabled(!manualPathAllowed)
+                if relayTarget != nil && manualPathRegistrationAvailable {
+                    Text("Folder browsing is unavailable for this Relay host/client combination. Enter an existing absolute path to register it; this does not create or check the folder.")
+                        .font(.caption)
+                        .foregroundStyle(Color.secondary)
+                }
                 if let canonicalFolder {
                     Text(canonicalFolder)
                         .font(.caption.monospaced())
@@ -370,10 +408,22 @@ private struct CreateProjectView: View {
         }
         .sheet(isPresented: $showFolderBrowser) {
             NavigationStack {
-                HostFilesView(mode: .projectFolder, onSelectFolder: { path in
-                    folderPath = path
-                })
+                HostFilesView(
+                    mode: .projectFolder,
+                    onSelectFolder: { path in
+                        folderPath = path
+                        folderSelectedFromBrowser = true
+                    },
+                    onFolderCapabilityUnavailable: {
+                        manualPathRegistrationAvailable = true
+                    }
+                )
             }
+        }
+        .onChange(of: folderScope) { _, _ in
+            folderPath = ""
+            folderSelectedFromBrowser = false
+            manualPathRegistrationAvailable = false
         }
         .amoledScreen()
     }

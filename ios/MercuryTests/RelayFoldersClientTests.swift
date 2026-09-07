@@ -84,6 +84,12 @@ final class RelayFoldersClientTests: XCTestCase {
         }
     }
 
+    func testUnsupportedGuidanceNamesBothPossibleUpgradePeers() {
+        let message = RelayFoldersError.unsupported.localizedDescription
+        XCTAssertTrue(message.contains("host/client combination"))
+        XCTAssertTrue(message.contains("Update Mercury or the Mercury Relay host plugin"))
+    }
+
     func testInvalidNameDoesNotDispatch() async throws {
         let client = RelayFoldersClient(profile: "default") { _, _ in
             XCTFail("Invalid input must not dispatch")

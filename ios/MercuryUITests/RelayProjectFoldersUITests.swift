@@ -88,6 +88,9 @@ final class RelayProjectFoldersUITests: XCTestCase {
         create.tap()
         let field = app.textFields["Name"]
         XCTAssertTrue(field.waitForExistence(timeout: 10))
+        let manualPath = app.textFields["Server folder path"]
+        XCTAssertTrue(manualPath.waitForExistence(timeout: 10))
+        XCTAssertFalse(manualPath.isEnabled)
         field.tap()
         field.typeText(name)
     }
