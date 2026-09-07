@@ -54,6 +54,13 @@ struct SessionListView: View {
     @State private var serverSearchResults: [SessionSearchResult] = []
     @State private var searchLoading = false
     @State private var searchTask: Task<Void, Never>?
+    // Android Home parity: search opens from a header button and the field
+    // sits under the bar only while open.
+    @State private var searchPresented = false
+    @FocusState private var searchFieldFocused: Bool
+
+    private static let maxSearchQueryLength = 128
+    private static let minimumServerSearchLength = 2
 
     private let projectPins = ProjectPinStore()
 
@@ -304,13 +311,13 @@ struct SessionListView: View {
             }
             .navigationTitle("Mercury")
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(
-                text: $searchQuery,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: "Search sessions"
-            )
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if searchPresented {
+                    sessionSearchBar
+                }
+            }
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItemGroup(placement: .topBarLeading) {
                     Menu {
                         Picker("Profile", selection: profileSelection) {
                             ForEach(appModel.profiles, id: \.self) { profile in
@@ -322,6 +329,14 @@ struct SessionListView: View {
                             .foregroundStyle(Color.secondary)
                     }
                     .accessibilityLabel("Profile: \(appModel.activeProfile)")
+
+                    Button {
+                        toggleSearch()
+                    } label: {
+                        Image(systemName: searchPresented ? "xmark.circle" : "magnifyingglass")
+                    }
+                    .foregroundStyle(Color.secondary)
+                    .accessibilityLabel(searchPresented ? "Close search" : "Search sessions")
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
@@ -446,6 +461,10 @@ struct SessionListView: View {
                 if !appModel.pendingShareEntries.isEmpty { showShareInbox = true }
             }
             .onChange(of: searchQuery) { _, value in
+                if value.count > Self.maxSearchQueryLength {
+                    searchQuery = String(value.prefix(Self.maxSearchQueryLength))
+                    return
+                }
                 scheduleSearch(value)
             }
             .onChange(of: appModel.activeProfile) {
@@ -502,10 +521,64 @@ struct SessionListView: View {
         .amoledScreen()
     }
 
+    /// Search field shown under the top bar while `searchPresented`. Mirrors
+    /// Android's Home search panel: closing clears the query.
+    private var sessionSearchBar: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(Color.secondary)
+                TextField("Search sessions", text: $searchQuery)
+                    .textFieldStyle(.plain)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.search)
+                    .focused($searchFieldFocused)
+                    .accessibilityLabel("Search sessions")
+                if !searchQuery.isEmpty {
+                    Button {
+                        searchQuery = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(Color.secondary)
+                    }
+                    .accessibilityLabel("Clear search")
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(Color.surfaceMid, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            Button("Cancel") { closeSearch() }
+                .foregroundStyle(Color.accentPrimary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color.canvas)
+        .onAppear { searchFieldFocused = true }
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    private func toggleSearch() {
+        if searchPresented {
+            closeSearch()
+        } else {
+            withAnimation(.snappy) { searchPresented = true }
+        }
+    }
+
+    private func closeSearch() {
+        searchFieldFocused = false
+        searchQuery = ""
+        clearSearchResults()
+        withAnimation(.snappy) { searchPresented = false }
+    }
+
     private func scheduleSearch(_ rawValue: String) {
         searchTask?.cancel()
         let query = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
+        // Android parity: the server transcript search runs only from two
+        // trimmed characters; shorter queries still filter the local list.
+        guard query.count >= Self.minimumServerSearchLength else {
             serverSearchResults = []
             searchLoading = false
             return
@@ -758,6 +831,7 @@ private struct AllSessionsView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     SessionListView()
         .environment(AppModel())
@@ -769,3 +843,4 @@ private struct AllSessionsView: View {
         .environment(AppModel())
         .preferredColorScheme(.light)
 }
+#endif
