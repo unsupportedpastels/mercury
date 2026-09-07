@@ -22,18 +22,6 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.unsupportedpastels.mercury.sharekit
 
-  # Shared pure Live Activity model (status/sanitizer/policy + ActivityKit
-  # attributes) used by the app, the unit tests, and the widget extension.
-  MercuryRunActivityKit:
-    type: framework
-    platform: iOS
-    sources:
-      - MercuryRunActivityKit
-    settings:
-      base:
-        GENERATE_INFOPLIST_FILE: YES
-        PRODUCT_BUNDLE_IDENTIFIER: com.unsupportedpastels.mercury.runactivitykit
-
   Mercury:
     type: application
     platform: iOS
@@ -42,18 +30,15 @@ targets:
       - Resources
     dependencies:
       - target: MercuryShareKit
-      - target: MercuryRunActivityKit
       - target: MercuryShare
-        embed: true
-      - target: MercuryRunActivityWidget
         embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.unsupportedpastels.mercury
         CODE_SIGN_ENTITLEMENTS: Mercury/Mercury.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        # KMP Phase 0 spike (docs/plans/kmp-shared-core.md): where Gradle drops
-        # the static MercuryCore framework for Xcode consumption.
+        # Where Gradle drops the static MercuryCore KMP framework for Xcode
+        # consumption (see AGENTS.md, cross-platform rule).
         FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/mercury-core/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
     # Builds the KMP framework before compiling Swift. MercuryCore is a hard
     # dependency (AttachmentPolicy is a facade over it), so a JDK is required
@@ -104,10 +89,9 @@ targets:
           - fetch
         BGTaskSchedulerPermittedIdentifiers:
           - com.unsupportedpastels.mercury.reconcile
-        # Local-only Live Activities (pushType: nil). No aps-environment, no
-        # remote-notification background mode — release invariants.
-        NSSupportsLiveActivities: true
-        # Canonical session deep links (notification/Live Activity taps).
+        # No aps-environment and no remote-notification background mode —
+        # release invariants (there is no APNs sender for Mercury).
+        # Canonical session deep links (notification taps).
         CFBundleURLTypes:
           - CFBundleURLName: com.unsupportedpastels.mercury.session
             CFBundleURLSchemes:
@@ -138,25 +122,6 @@ targets:
               NSExtensionActivationSupportsImageWithMaxCount: 5
               NSExtensionActivationSupportsFileWithMaxCount: 5
 
-  # WidgetKit extension rendering the Lock Screen / Dynamic Island Live
-  # Activity. Local ActivityKit only — no push tokens, no APNs.
-  MercuryRunActivityWidget:
-    type: app-extension
-    platform: iOS
-    sources:
-      - MercuryRunActivityWidget
-    dependencies:
-      - target: MercuryRunActivityKit
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.unsupportedpastels.mercury.runactivity
-    info:
-      path: MercuryRunActivityWidget/Info.plist
-      properties:
-        CFBundleDisplayName: Mercury Run
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.widgetkit-extension
-
   MercuryTests:
     type: bundle.unit-test
     platform: iOS
@@ -175,7 +140,6 @@ targets:
     dependencies:
       - target: Mercury
       - target: MercuryShareKit
-      - target: MercuryRunActivityKit
 
   # Live integration tests: hit an operator-supplied Hermes origin and Nous Portal.
   # Kept in a separate target so the default MercuryTests suite stays hermetic
@@ -196,7 +160,23 @@ targets:
     type: bundle.ui-testing
     platform: iOS
     sources:
-      - MercuryUITests
+      - path: MercuryUITests
+        excludes:
+          - "Diagnostics/**"
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: Mercury
+
+  # Physical-device diagnostic harness (photo picker). Skips on the simulator
+  # and needs MERCURY_PHYSICAL_PICKER_DIAGNOSTICS=1, so it lives outside the
+  # default UI-test target and never counts as gate coverage.
+  MercuryDeviceDiagnosticUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - MercuryUITests/Diagnostics
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -227,3 +207,11 @@ schemes:
     test:
       targets:
         - MercuryUITests
+  MercuryDeviceDiagnosticUITests:
+    build:
+      targets:
+        Mercury: all
+        MercuryDeviceDiagnosticUITests: all
+    test:
+      targets:
+        - MercuryDeviceDiagnosticUITests

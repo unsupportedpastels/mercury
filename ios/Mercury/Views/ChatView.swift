@@ -1912,7 +1912,7 @@ struct ChatView: View {
         if let notifyID {
             let notifyEvent = event.withSessionID(notifyID)
             let notifySessionTitle = titleText
-            Task { await appModel.deliverLiveSurfaces(event: notifyEvent, sessionTitle: notifySessionTitle) }
+            Task { await appModel.deliverLiveNotification(event: notifyEvent, sessionTitle: notifySessionTitle) }
         }
 
         // UI-only reactions preserved verbatim from the pre-extraction

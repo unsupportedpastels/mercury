@@ -59,10 +59,6 @@ struct MercuryApp: App {
         // notification before iOS suspends the app. No server changes, no new
         // socket — best-effort widening only.
         runner.reconcile = { await model.performGraceReconciliation() }
-        // When the bounded background window expires with a run still live, the
-        // Live Activity flips to an honest stale/reconnecting presentation
-        // exactly once instead of pretending to be current.
-        runner.onExpire = { await model.runActivityCoordinator.markStaleForBackgroundExpiration() }
         delegate.onOpenSession = { sessionID in
             Task { @MainActor in model.requestOpenSession(sessionID) }
         }
@@ -129,16 +125,10 @@ struct MercuryApp: App {
                         await appModel.probeSelfHosted(origin: origin)
                     } else {
                         await appModel.bootstrapSavedServer()
-                        // Cold-launch orphan reconciliation: finalize persisted
-                        // Live Activities honestly once the active server's
-                        // sessions are conclusive.
-                        await appModel.reconcileRunActivities(
-                            sessionsAvailable: appModel.sessionsError == nil && !appModel.sessions.isEmpty
-                        )
                     }
                 }
                 .onOpenURL { url in
-                    // Canonical mercury://session deep link (Live Activity tap,
+                    // Canonical mercury://session deep link (notification tap,
                     // future shortcuts). Strictly parsed; invalid links no-op.
                     if let route = MercuryDeepLink.parse(url) {
                         appModel.handleSessionRoute(route)
@@ -156,11 +146,6 @@ struct MercuryApp: App {
                         Task {
                             await appModel.loadSessions()
                             await appModel.catchUpNotifications()
-                            // Foreground catch-up for persisted Live Activities:
-                            // ends stale UI honestly without posting banners.
-                            await appModel.reconcileRunActivities(
-                                sessionsAvailable: appModel.sessionsError == nil && !appModel.sessions.isEmpty
-                            )
                         }
                     case .background:
                         appModel.setAppForeground(false)

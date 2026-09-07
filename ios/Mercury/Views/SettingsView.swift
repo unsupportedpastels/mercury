@@ -2,9 +2,6 @@ import SwiftUI
 #if canImport(UIKit)
 import UIKit
 #endif
-#if canImport(ActivityKit)
-import ActivityKit
-#endif
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var appModel
@@ -227,14 +224,6 @@ private struct NotificationSettingsView: View {
         appModel.notificationPreferences
     }
 
-    private var systemActivitiesEnabled: Bool {
-        #if canImport(ActivityKit)
-        return ActivityAuthorizationInfo().areActivitiesEnabled
-        #else
-        return false
-        #endif
-    }
-
     var body: some View {
         List {
             statusSection
@@ -242,8 +231,6 @@ private struct NotificationSettingsView: View {
             if status.countsAsAuthorized && prefs.notificationsEnabled {
                 alertsSection
             }
-
-            liveActivitiesSection
 
             Section {
                 Label("Best effort on iOS", systemImage: "info.circle")
@@ -388,40 +375,6 @@ private struct NotificationSettingsView: View {
             )
         } header: {
             Text("Alerts")
-        }
-    }
-
-    @ViewBuilder
-    private var liveActivitiesSection: some View {
-        Section {
-            Toggle(
-                "Show current run on Lock Screen and Dynamic Island",
-                isOn: Binding(
-                    get: { prefs.liveActivitiesEnabled },
-                    set: { value in
-                        appModel.updateNotificationPreferences { $0.liveActivitiesEnabled = value }
-                    }
-                )
-            )
-            if prefs.liveActivitiesEnabled && !systemActivitiesEnabled {
-                Text("Live Activities are turned off for Mercury in iOS Settings. Enable them under Settings → Mercury → Live Activities.")
-                    .font(.footnote)
-                    .foregroundStyle(Color.statusAlert)
-            }
-            Toggle(
-                "Show response excerpt",
-                isOn: Binding(
-                    get: { prefs.liveActivityResponseExcerptsEnabled },
-                    set: { value in
-                        appModel.updateNotificationPreferences { $0.liveActivityResponseExcerptsEnabled = value }
-                    }
-                )
-            )
-            .disabled(!prefs.liveActivitiesEnabled)
-        } header: {
-            Text("Live Activities")
-        } footer: {
-            Text("The Lock Screen shows only the session title and a generic status — never prompts, commands, file paths, or secure input. Response excerpts are off by default; when enabled, a short cleaned excerpt of the reply appears on the Lock Screen where anyone can read it.")
         }
     }
 }
