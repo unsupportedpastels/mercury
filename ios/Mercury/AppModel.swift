@@ -154,14 +154,12 @@ final class AppModel {
         }
     }
 
-    /// Applies and persists a preference change (normalized: excerpts cannot
-    /// stay on while Live Activities are off).
+    /// Applies and persists a preference change.
     func updateNotificationPreferences(_ transform: (inout MercuryNotificationPreferences) -> Void) {
         var updated = notificationPreferences
         transform(&updated)
-        let normalized = updated.normalized()
-        notificationPreferences = normalized
-        notificationPreferencesStore.save(normalized)
+        notificationPreferences = updated
+        notificationPreferencesStore.save(updated)
     }
 
     /// Refreshes the cached system authorization status (Settings on-appear).
@@ -341,8 +339,6 @@ final class AppModel {
             }
             serverCatalog = try await serverCatalogStore.load()
             localSettingsError = nil
-            // A removed server's Live Activity can never update again.
-            await runActivityCoordinator.endActivity(forServerID: entry.id)
         } catch {
             localSettingsError = "The server could not be removed."
         }
@@ -374,11 +370,6 @@ final class AppModel {
         if case .failed(let message) = connectionPhase, !sessions.isEmpty {
             sessionsError = message
         }
-        // Explicit server switch: reconcile this scope's persisted Live
-        // Activities now that its session list state is conclusive.
-        await reconcileRunActivities(
-            sessionsAvailable: sessionsError == nil && !sessions.isEmpty
-        )
     }
 
     func rememberServer(origin: String) async {
@@ -643,7 +634,6 @@ final class AppModel {
         }
         guard let origin = serverOrigin else { return }
         notificationCoordinator.reset(origin: origin)
-        await runActivityCoordinator.endAllForSignOut()
         await controller.signOut(origin: origin)
     }
 
@@ -684,94 +674,6 @@ final class AppModel {
         )
     }
 
-    // MARK: - Live Activity coordination (local ActivityKit, pushType nil)
-
-    private var injectedRunActivityCoordinator: RunActivityCoordinator?
-
-    /// The Live Activity brain. Created lazily with the real ActivityKit-backed
-    /// client; tests inject a coordinator over a fake client.
-    var runActivityCoordinator: RunActivityCoordinator {
-        if let injectedRunActivityCoordinator { return injectedRunActivityCoordinator }
-        let created = RunActivityCoordinator(
-            client: ActivityKitRunActivityClient(),
-            preferencesProvider: { [weak self] in
-                self?.notificationPreferences ?? .newInstallDefaults
-            }
-        )
-        injectedRunActivityCoordinator = created
-        return created
-    }
-
-    func injectRunActivityCoordinator(_ coordinator: RunActivityCoordinator) {
-        injectedRunActivityCoordinator = coordinator
-    }
-
-    /// Per-session reduction state for the run-activity stream. Keyed by
-    /// durable session ID; reset when a new run starts for that session.
-    private var runActivityReductionStates: [String: RunActivityReductionState] = [:]
-
-    /// Fans one live, durable-ID-re-keyed chat event out to BOTH delivery
-    /// surfaces: the notification brain (dedupe + banner) and the Live
-    /// Activity coordinator. One surface failing must not block the other.
-    func deliverLiveSurfaces(event: ChatEvent, sessionTitle: String) async {
-        // Surface 1: local notifications (existing behavior, unchanged).
-        await deliverLiveNotification(event: event, sessionTitle: sessionTitle)
-
-        // Surface 2: Live Activity (local ActivityKit). Skip all reduction work
-        // when the master toggle is off.
-        guard notificationPreferences.liveActivitiesEnabled,
-              let activeEntry = serverCatalog.activeEntry else { return }
-
-        let sessionID = event.sessionID
-        var state = runActivityReductionStates[sessionID] ?? RunActivityReductionState()
-        let context = RunActivityReducerContext(
-            serverID: activeEntry.id,
-            profile: activeProfile,
-            durableSessionID: sessionID,
-            sessionTitle: sessionTitle,
-            baselineMessageCount: sessions.first(where: { $0.id == sessionID })?.messageCount ?? 0,
-            excerptsEnabled: notificationPreferences.liveActivityResponseExcerptsEnabled
-        )
-        let command = RunActivityReducer.reduce(event: event, state: &state, context: context)
-        // A fresh messageStart after finalization begins a new run: reset the
-        // reduction state so the next turn starts a new activity.
-        if case .messageStart = event, state.finalized {
-            state = RunActivityReductionState()
-            _ = RunActivityReducer.reduce(event: event, state: &state, context: context)
-        }
-        runActivityReductionStates[sessionID] = state
-        await runActivityCoordinator.apply(command)
-        if state.finalized {
-            runActivityReductionStates[sessionID] = nil
-        }
-    }
-
-    /// Reconciles orphaned persisted Live Activities against the freshly
-    /// loaded session list. Never fabricates success: unproven outcomes end as
-    /// status-unavailable, and banner ownership stays with the notification
-    /// reconciler. Call after sessions are loaded for the ACTIVE server.
-    func reconcileRunActivities(sessionsAvailable: Bool) async {
-        guard let activeEntry = serverCatalog.activeEntry else { return }
-        let persisted = runActivityCoordinator.persistedOrphans()
-        guard !persisted.isEmpty else { return }
-        var liveOwned: Set<String> = []
-        if let current = runActivityCoordinator.currentDurableSessionID() {
-            liveOwned.insert(current)
-        }
-        let actions = RunActivityReconciler.reconcile(
-            orphans: persisted,
-            activeServerID: activeEntry.id,
-            activeProfile: activeProfile,
-            knownServerIDs: Set(serverCatalog.entries.map(\.id)),
-            sessions: sessionsAvailable ? sessions : nil,
-            liveOwnedSessionIDs: liveOwned,
-            now: Date()
-        )
-        await runActivityCoordinator.applyReconcileActions(actions, orphans: persisted)
-    }
-
-    /// Silent reopen catch-up: advances dedupe watermarks from the freshly
-    /// loaded session list WITHOUT posting (the user is already here).
     func catchUpNotifications() async {
         let deltas = await buildReconcileDeltas()
         guard !deltas.isEmpty else { return }

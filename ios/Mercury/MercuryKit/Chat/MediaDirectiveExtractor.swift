@@ -83,7 +83,7 @@ struct MediaExtractionMessage: Sendable, Equatable {
 // MARK: - Extractor (facade over the shared KMP core)
 
 /// Facade over the shared core's `ArtifactExtractor`
-/// (shared/mercury-core, docs/plans/kmp-shared-core.md): the extraction
+/// (shared/mercury-core, AGENTS.md cross-platform rule): the extraction
 /// grammar, canonicalization, and bounds are decided once for both clients.
 /// The previous hand-written Swift port (including its re-implementations of
 /// `java.net.URI` behavior) is gone; this file only converts types.

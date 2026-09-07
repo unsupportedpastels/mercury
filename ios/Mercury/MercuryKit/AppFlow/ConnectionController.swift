@@ -61,6 +61,10 @@ final class ConnectionController {
     /// Session used for all Hermes + Portal HTTP traffic. Tests inject an
     /// ephemeral session whose `protocolClasses` include a mock URLProtocol.
     private let urlSession: URLSession
+    /// Session for Hermes-origin traffic (password login, bearer clients). It
+    /// refuses redirects; `urlSession` stays on the system default for the
+    /// Nous cloud clients only.
+    private let hermesURLSession: URLSession
 
     private let credentialStore: CredentialStoring
 
@@ -87,6 +91,9 @@ final class ConnectionController {
     ) {
         self.appModel = appModel
         self.urlSession = urlSession
+        // An injected session (tests, mocks) carries every request; the
+        // production default must never let a Hermes bearer follow a 3xx.
+        self.hermesURLSession = urlSession === URLSession.shared ? HermesURLSession.noRedirects : urlSession
         self.credentialStore = credentialStore
         self.signInFlowFactory = signInFlowFactory
     }
@@ -256,7 +263,7 @@ final class ConnectionController {
         defer { appModel.setSigningIn(false) }
 
         do {
-            try await PasswordLoginClient(session: urlSession).signIn(
+            try await PasswordLoginClient(session: hermesURLSession).signIn(
                 origin: origin,
                 provider: provider.name,
                 username: username,
@@ -617,7 +624,7 @@ final class ConnectionController {
     private func makeHTTPClient(origin: String) -> HermesHTTPClient {
         HermesHTTPClient.makeAuthenticated(
             origin: origin,
-            urlSession: urlSession,
+            urlSession: hermesURLSession,
             credentialStore: credentialStore
         )
     }

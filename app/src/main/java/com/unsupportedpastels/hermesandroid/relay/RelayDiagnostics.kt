@@ -135,7 +135,11 @@ class RelayDiagnostics(
     private val monotonicNanos: () -> Long = { System.nanoTime() },
     private val attemptIdFactory: () -> String = { UUID.randomUUID().toString().replace("-", "").take(12) },
     appBuildMetadata: RelayAppBuildMetadata = RelayAppBuildMetadata.Unknown,
-    private val logger: (String) -> Unit = { line -> Log.i(LOG_TAG, line) },
+    // Off unless enabled per tag (`adb shell setprop log.tag.MercuryRelay DEBUG`):
+    // release builds must not narrate relay attempts into logcat.
+    private val logger: (String) -> Unit = { line ->
+        if (Log.isLoggable(LOG_TAG, Log.DEBUG)) Log.d(LOG_TAG, line)
+    },
 ) {
     init {
         require(capacity in 1..MAX_CAPACITY) { "Relay diagnostics capacity must be between 1 and $MAX_CAPACITY" }

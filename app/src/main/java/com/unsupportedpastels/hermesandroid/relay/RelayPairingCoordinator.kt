@@ -1,6 +1,6 @@
 package com.unsupportedpastels.hermesandroid.relay
 
-import com.unsupportedpastels.mercury.core.relay.AndroidRelayCrypto
+import com.unsupportedpastels.mercury.core.relay.RelayPlatformCrypto
 import com.unsupportedpastels.mercury.core.relay.RelayCrypto
 import com.unsupportedpastels.mercury.core.relay.RelayFingerprint
 import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
@@ -40,10 +40,10 @@ class RelayPairingException(
 class RelayPairingCoordinator(
     private val socketFactory: RelayBinarySocketFactory,
     private val targets: RelayTargetRepository,
-    private val crypto: RelayCrypto = AndroidRelayCrypto,
+    private val crypto: RelayCrypto = RelayPlatformCrypto,
     private val nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1_000L },
     private val makeId: () -> String = { UUID.randomUUID().toString() },
-    private val makeDeviceKey: () -> ByteArray = { AndroidRelayCrypto.randomBytes(32) },
+    private val makeDeviceKey: () -> ByteArray = { RelayPlatformCrypto.randomBytes(32) },
     private val deterministicEphemeralPrivateKey: ByteArray? = null,
     private val diagnostics: RelayDiagnostics = RelayDiagnostics.shared,
 ) {

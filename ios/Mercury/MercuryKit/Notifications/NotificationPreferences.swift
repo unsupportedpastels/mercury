@@ -6,27 +6,21 @@ struct MercuryNotificationPreferences: Codable, Equatable, Sendable {
     var completionEnabled: Bool
     var attentionEnabled: Bool
     var failureAndCancellationEnabled: Bool
-    var liveActivitiesEnabled: Bool
-    var liveActivityResponseExcerptsEnabled: Bool
 
     init(
         notificationsEnabled: Bool = false,
         completionEnabled: Bool = false,
         attentionEnabled: Bool = false,
-        failureAndCancellationEnabled: Bool = false,
-        liveActivitiesEnabled: Bool = false,
-        liveActivityResponseExcerptsEnabled: Bool = false
+        failureAndCancellationEnabled: Bool = false
     ) {
         self.notificationsEnabled = notificationsEnabled
         self.completionEnabled = completionEnabled
         self.attentionEnabled = attentionEnabled
         self.failureAndCancellationEnabled = failureAndCancellationEnabled
-        self.liveActivitiesEnabled = liveActivitiesEnabled
-        self.liveActivityResponseExcerptsEnabled = liveActivityResponseExcerptsEnabled
     }
 
-    /// Preferences for a new installation: no notification or activity data is
-    /// emitted until the user opts in.
+    /// Preferences for a new installation: no notification is emitted until
+    /// the user opts in. Unknown keys from older payloads are ignored.
     static let newInstallDefaults = MercuryNotificationPreferences()
 
     /// The compatibility default used by the pre-preferences notification
@@ -35,20 +29,8 @@ struct MercuryNotificationPreferences: Codable, Equatable, Sendable {
         notificationsEnabled: true,
         completionEnabled: true,
         attentionEnabled: true,
-        failureAndCancellationEnabled: true,
-        liveActivitiesEnabled: true,
-        liveActivityResponseExcerptsEnabled: true
+        failureAndCancellationEnabled: true
     )
-
-    /// Response excerpts are meaningful only when the enclosing Live Activity
-    /// is enabled. Keep this invariant at every persistence boundary.
-    func normalized() -> MercuryNotificationPreferences {
-        var normalized = self
-        if !normalized.liveActivitiesEnabled {
-            normalized.liveActivityResponseExcerptsEnabled = false
-        }
-        return normalized
-    }
 }
 
 enum MercuryNotificationAuthorizationStatus: Equatable, Sendable {
@@ -149,9 +131,7 @@ final class NotificationPreferencesStore: NotificationPreferencesStoring, @unche
             notificationsEnabled: true,
             completionEnabled: true,
             attentionEnabled: true,
-            failureAndCancellationEnabled: true,
-            liveActivitiesEnabled: false,
-            liveActivityResponseExcerptsEnabled: false
+            failureAndCancellationEnabled: true
         )
     }
 
@@ -168,7 +148,7 @@ final class NotificationPreferencesStore: NotificationPreferencesStoring, @unche
 
             saveUnlocked(migrated)
             markMigratedUnlocked()
-            return migrated.normalized()
+            return migrated
         }
     }
 
@@ -183,11 +163,11 @@ final class NotificationPreferencesStore: NotificationPreferencesStoring, @unche
             return .newInstallDefaults
         }
 
-        return preferences.normalized()
+        return preferences
     }
 
     private func saveUnlocked(_ preferences: MercuryNotificationPreferences) {
-        guard let data = try? JSONEncoder().encode(preferences.normalized()) else {
+        guard let data = try? JSONEncoder().encode(preferences) else {
             return
         }
         userDefaults.set(data, forKey: Self.storageKey)

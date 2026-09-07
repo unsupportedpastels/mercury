@@ -151,7 +151,7 @@ final class NotificationCoordinator {
         }
 
         for notification in notifications {
-            let preferences = preferencesProvider().normalized()
+            let preferences = preferencesProvider()
             guard preferences.notificationsEnabled,
                   shouldPost(notification, preferences: preferences)
             else {

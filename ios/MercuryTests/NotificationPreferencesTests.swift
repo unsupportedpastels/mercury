@@ -15,8 +15,6 @@ final class NotificationPreferencesTests: XCTestCase {
         XCTAssertTrue(first.completionEnabled)
         XCTAssertTrue(first.attentionEnabled)
         XCTAssertTrue(first.failureAndCancellationEnabled)
-        XCTAssertFalse(first.liveActivitiesEnabled)
-        XCTAssertFalse(first.liveActivityResponseExcerptsEnabled)
         XCTAssertTrue(store.hasStoredPreferences)
     }
 
@@ -54,31 +52,6 @@ final class NotificationPreferencesTests: XCTestCase {
         let store = NotificationPreferencesStore(userDefaults: defaults)
 
         XCTAssertEqual(store.load(), .newInstallDefaults)
-    }
-
-    func testNormalizedClearsResponseExcerptsWithoutLiveActivities() {
-        let preferences = MercuryNotificationPreferences(
-            liveActivitiesEnabled: false,
-            liveActivityResponseExcerptsEnabled: true
-        )
-
-        let normalized = preferences.normalized()
-
-        XCTAssertFalse(normalized.liveActivityResponseExcerptsEnabled)
-        XCTAssertTrue(preferences.liveActivityResponseExcerptsEnabled)
-    }
-
-    func testLoadAndSaveNormalizeResponseExcerpts() {
-        let defaults = makeDefaults()
-        let store = NotificationPreferencesStore(userDefaults: defaults)
-        let preferences = MercuryNotificationPreferences(
-            liveActivitiesEnabled: false,
-            liveActivityResponseExcerptsEnabled: true
-        )
-
-        store.save(preferences)
-
-        XCTAssertFalse(store.load().liveActivityResponseExcerptsEnabled)
     }
 
     @MainActor
@@ -121,23 +94,6 @@ final class NotificationPreferencesTests: XCTestCase {
             "turn-1"
         )
         XCTAssertEqual(store.load(origin: "https://mercury.example")["session-1"]?.lastMessageCount, 1)
-    }
-
-    func testLiveActivitiesRemainIndependentOfMasterNotifications() {
-        let store = NotificationPreferencesStore(userDefaults: makeDefaults())
-        store.save(
-            MercuryNotificationPreferences(
-                notificationsEnabled: false,
-                liveActivitiesEnabled: true,
-                liveActivityResponseExcerptsEnabled: true
-            )
-        )
-
-        let loaded = store.load()
-
-        XCTAssertFalse(loaded.notificationsEnabled)
-        XCTAssertTrue(loaded.liveActivitiesEnabled)
-        XCTAssertTrue(loaded.liveActivityResponseExcerptsEnabled)
     }
 
     private func makeDefaults() -> UserDefaults {

@@ -31,8 +31,6 @@ class NativeRefreshTransientException : NativeRefreshException(
     "Hermes native refresh provider is temporarily unavailable",
 )
 
-typealias NativeRefreshProviderUnavailableException = NativeRefreshTransientException
-
 private const val MAX_REFRESH_FIELD_BYTES = 16 * 1024
 
 @Serializable

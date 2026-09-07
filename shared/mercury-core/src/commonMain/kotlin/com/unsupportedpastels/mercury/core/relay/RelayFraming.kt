@@ -1,6 +1,6 @@
 package com.unsupportedpastels.mercury.core.relay
 
-class RelayFramingException(
+internal class RelayFramingException(
     val reason: String,
 ) : Exception("Mercury Relay frame validation failed")
 

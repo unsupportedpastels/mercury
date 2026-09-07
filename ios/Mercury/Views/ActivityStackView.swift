@@ -25,7 +25,7 @@ struct ActivityStackView: View {
                             ProgressView().controlSize(.small)
                         } else {
                             Image(systemName: "checkmark.circle")
-                                .foregroundStyle(.green)
+                                .foregroundStyle(Color.statusHealthy)
                         }
                         Text(summary)
                             .font(.caption.weight(.semibold))

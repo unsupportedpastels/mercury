@@ -128,6 +128,18 @@ final class NetworkingTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.receivedRequests.map { $0.url?.host }, ["hermes.test"])
     }
 
+    /// The authenticated factory is how production builds every bearer-carrying
+    /// Hermes client, so its default session must refuse redirects as well.
+    func testAuthenticatedFactoryDefaultsToRedirectRefusingSession() {
+        let client = HermesHTTPClient.makeAuthenticated(
+            origin: "https://hermes.test",
+            credentialStore: FakeTokenStore()
+        )
+        XCTAssertTrue(client.refusesRedirects)
+        let plain = HermesHTTPClient(origin: "https://hermes.test", session: .shared)
+        XCTAssertFalse(plain.refusesRedirects)
+    }
+
     /// Control for the test above: the mock really does redirect when the
     /// session has no refusing delegate, so the assertion is meaningful.
     func testControlPlainSessionFollowsTheSameRedirect() async throws {

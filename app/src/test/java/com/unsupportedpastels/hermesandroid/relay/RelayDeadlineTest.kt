@@ -1,6 +1,6 @@
 package com.unsupportedpastels.hermesandroid.relay
 
-import com.unsupportedpastels.mercury.core.relay.AndroidRelayCrypto
+import com.unsupportedpastels.mercury.core.relay.RelayPlatformCrypto
 import com.unsupportedpastels.mercury.core.relay.RelayBase64
 import com.unsupportedpastels.mercury.core.relay.RelayCrypto
 import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
@@ -173,7 +173,7 @@ class RelayDeadlineTest {
         override fun randomBytes(count: Int): ByteArray = ByteArray(count)
     }
 
-    private fun target(crypto: RelayCrypto = AndroidRelayCrypto) = RelayPairedTarget(
+    private fun target(crypto: RelayCrypto = RelayPlatformCrypto) = RelayPairedTarget(
         id = "00000000-0000-4000-8000-000000000001",
         label = "study",
         relayOrigin = "https://relay.example.com",
@@ -188,7 +188,7 @@ class RelayDeadlineTest {
         relayRoutingToken = "routing.device.token",
     )
 
-    private fun qr(expires: Long, crypto: RelayCrypto = AndroidRelayCrypto): String =
+    private fun qr(expires: Long, crypto: RelayCrypto = RelayPlatformCrypto): String =
         "{\"c\":\"${RelayBase64.standardEncode(CAPABILITY)}\"," +
             "\"i\":\"${RelayBase64.standardEncode(INSTALLATION)}\"," +
             "\"k\":\"${RelayBase64.standardEncode(crypto.x25519PublicKey(HOST_PRIVATE))}\", " +

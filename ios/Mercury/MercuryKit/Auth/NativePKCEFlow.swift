@@ -193,7 +193,10 @@ final class NativePKCEFlow {
             throw FlowError.badResponse
         }
 
-        var request = URLRequest(url: URL(string: "\(origin)/auth/native/token")!)
+        guard let tokenURL = URL(string: "\(origin)/auth/native/token") else {
+            throw FlowError.badResponse
+        }
+        var request = URLRequest(url: tokenURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         // Matches the Hermes dashboard native_pkce contract (see Android

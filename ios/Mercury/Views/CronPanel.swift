@@ -20,7 +20,7 @@ struct CronPanel: View {
                 if let loadError {
                     Label(loadError, systemImage: "exclamationmark.triangle.fill")
                         .font(.footnote)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Color.statusAlert)
                 }
 
                 if isLoading && jobs.isEmpty {

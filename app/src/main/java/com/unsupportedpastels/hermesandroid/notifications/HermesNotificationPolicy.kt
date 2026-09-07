@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Notification text and visibility now decide in the shared KMP core
- * (docs/plans/kmp-shared-core.md, Phase 2) so Android and iOS stay
+ * (AGENTS.md cross-platform rule) so Android and iOS stay
  * identical. These wrappers keep the app's typed DurableSessionId surface.
  */
 internal fun finalResponsePreview(

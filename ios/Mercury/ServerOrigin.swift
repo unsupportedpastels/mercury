@@ -2,7 +2,7 @@ import Foundation
 import MercuryCore
 
 /// Facade over the shared KMP core's ServerOriginPolicy
-/// (shared/mercury-core, docs/plans/kmp-shared-core.md): canonicalization,
+/// (shared/mercury-core, AGENTS.md cross-platform rule): canonicalization,
 /// the bare-host "Use HTTPS" rule, default-port elision, punycode, and the
 /// loopback/private classifier are decided once for both clients.
 enum ServerOrigin {

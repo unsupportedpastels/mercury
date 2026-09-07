@@ -1,6 +1,6 @@
 package com.unsupportedpastels.hermesandroid.relay
 
-import com.unsupportedpastels.mercury.core.relay.AndroidRelayCrypto
+import com.unsupportedpastels.mercury.core.relay.RelayPlatformCrypto
 import com.unsupportedpastels.mercury.core.relay.RelayBase64
 import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
 import com.unsupportedpastels.mercury.core.relay.RelaySecureChannel
@@ -31,7 +31,7 @@ class RelayPairingCoordinatorTest {
                 sockets.device
             },
             targets = repository,
-            crypto = AndroidRelayCrypto,
+            crypto = RelayPlatformCrypto,
             nowEpochSeconds = { now },
             makeId = { "00000000-0000-4000-8000-000000000001" },
             makeDeviceKey = { DEVICE_PRIVATE.copyOf() },
@@ -40,7 +40,7 @@ class RelayPairingCoordinatorTest {
         )
         val hostTask = backgroundScope.async {
             val host = RelaySecureChannel(
-                AndroidRelayCrypto,
+                RelayPlatformCrypto,
                 false,
                 HOST_PRIVATE,
                 INSTALLATION,
@@ -67,7 +67,7 @@ class RelayPairingCoordinatorTest {
         assertEquals("routing.device.token", target.relayRoutingToken)
         assertEquals(
             com.unsupportedpastels.mercury.core.relay.RelayFingerprint.shortAuthenticationString(
-                AndroidRelayCrypto,
+                RelayPlatformCrypto,
                 binding,
             ),
             target.fingerprint,
@@ -90,7 +90,7 @@ class RelayPairingCoordinatorTest {
     private fun qr(expires: Long): String =
         "{\"c\":\"${RelayBase64.standardEncode(CAPABILITY)}\"," +
             "\"i\":\"${RelayBase64.standardEncode(INSTALLATION)}\"," +
-            "\"k\":\"${RelayBase64.standardEncode(AndroidRelayCrypto.x25519PublicKey(HOST_PRIVATE))}\"," +
+            "\"k\":\"${RelayBase64.standardEncode(RelayPlatformCrypto.x25519PublicKey(HOST_PRIVATE))}\"," +
             "\"o\":\"https://relay.example.com\",\"s\":\"mercury-relay\"," +
             "\"t\":\"routing.offer.token\",\"v\":1,\"x\":$expires}"
 

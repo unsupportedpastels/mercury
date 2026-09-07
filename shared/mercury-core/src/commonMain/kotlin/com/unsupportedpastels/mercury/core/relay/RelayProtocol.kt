@@ -328,14 +328,14 @@ object RelayAdmissionEnvelope {
     }
 
     /** Collapses whitespace, strips control characters, bounds to 64 chars; null when nothing is left. */
-    fun cleanDeviceName(name: String): String? {
+    internal fun cleanDeviceName(name: String): String? {
         val collapsed = name.split(' ', '\t', '\n', '\r').filter { it.isNotEmpty() }.joinToString(" ")
         if (collapsed.any { it.code < 0x20 || it.code == 0x7f }) return null
         return collapsed.take(RelayProtocolPolicy.maxDeviceNameCharacters).trim().ifEmpty { null }
     }
 
     /** Channel names: 1..64 of [A-Za-z0-9_-]; the plugin rejects anything else. */
-    fun isValidChannel(channel: String): Boolean =
+    internal fun isValidChannel(channel: String): Boolean =
         channel.isNotEmpty() && channel.length <= RelayProtocolPolicy.maxChannelCharacters &&
             channel.all { it.isAsciiLetterOrDigit() || it == '-' || it == '_' }
 
@@ -393,7 +393,7 @@ class RelayPairedTarget(
     )
 }
 
-class RelayTargetCodecException : Exception("Saved Mercury Relay targets are invalid")
+internal class RelayTargetCodecException : Exception("Saved Mercury Relay targets are invalid")
 
 object RelayTargetCodec {
     const val maxTargets = 8

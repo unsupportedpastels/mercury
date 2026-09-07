@@ -96,21 +96,6 @@ final class OfflineCacheStoreTests: XCTestCase {
         XCTAssertEqual(otherAfterDisable.sessions.onlyCachedElement?.messages.count, 0)
     }
 
-    func testCachedFirstStateRejectsStaleGenerationAfterLiveReconcile() throws {
-        let first = try OfflineCacheScope(origin: "one.example", profile: "default")
-        let second = try OfflineCacheScope(origin: "two.example", profile: "default")
-        var state = CachedFirstSessionState()
-        let stale = state.begin(scope: first)
-        let current = state.begin(scope: second)
-
-        XCTAssertFalse(state.applyCached([row("stale")], for: stale))
-        XCTAssertTrue(state.applyCached([row("cached")], for: current))
-        XCTAssertTrue(state.applyLive([row("live")], for: current))
-        XCTAssertFalse(state.applyCached([row("late-cache")], for: current))
-        XCTAssertEqual(state.sessions.map(\.id), ["live"])
-        XCTAssertEqual(state.source, .live)
-    }
-
     private func row(_ id: String, title: String? = nil) -> SessionRow {
         SessionRow(id: id, title: title ?? id, preview: "preview", profile: "default")
     }

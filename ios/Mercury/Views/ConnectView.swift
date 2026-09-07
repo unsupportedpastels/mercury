@@ -423,6 +423,7 @@ struct ConnectView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     ConnectView()
         .environment(AppModel())
@@ -434,3 +435,4 @@ struct ConnectView: View {
         .environment(AppModel())
         .preferredColorScheme(.light)
 }
+#endif

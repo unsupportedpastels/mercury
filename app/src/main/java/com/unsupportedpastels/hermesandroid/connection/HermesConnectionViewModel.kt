@@ -3173,13 +3173,6 @@ class HermesConnectionViewModel(
         }
     }
 
-    /**
-     * Selecting a local draft is UI navigation only. Its runtime is opened by the
-     * first send, so this must not replace or interrupt another selected runtime.
-     */
-    private fun openDraftSession(@Suppress("UNUSED_PARAMETER") durableSessionId: DurableSessionId): Job =
-        viewModelScope.launch { }
-
     private suspend fun loadRelayTranscript(
         target: RelayPairedTarget,
         durableSessionId: DurableSessionId,
@@ -3276,7 +3269,10 @@ class HermesConnectionViewModel(
         pinChatProfile(durableSessionId)
         sessionControllerRegistry.chatJobs[durableSessionId]?.takeIf { it.isActive }?.let { return it }
         if (durableSessionId in pendingDraftSessions) {
-            return openDraftSession(durableSessionId)
+            // Selecting a local draft is UI navigation only. Its runtime is opened
+            // by the first send, so this must not replace or interrupt another
+            // selected runtime.
+            return viewModelScope.launch { }
         }
         if (liveControllers[durableSessionId] != null) {
             return viewModelScope.launch { }

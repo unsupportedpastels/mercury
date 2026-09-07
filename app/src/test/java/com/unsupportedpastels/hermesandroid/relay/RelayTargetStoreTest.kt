@@ -3,7 +3,7 @@ package com.unsupportedpastels.hermesandroid.relay
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.google.crypto.tink.Aead
-import com.unsupportedpastels.mercury.core.relay.AndroidRelayCrypto
+import com.unsupportedpastels.mercury.core.relay.RelayPlatformCrypto
 import com.unsupportedpastels.mercury.core.relay.RelayBase64
 import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
 import com.unsupportedpastels.mercury.core.relay.RelayTargetStatus
@@ -90,7 +90,7 @@ class RelayTargetStoreTest {
         label = "",
         relayOrigin = "https://relay.example.com",
         installationId = ByteArray(32) { (it + 0x80).toByte() },
-        hostPublicKey = AndroidRelayCrypto.x25519PublicKey(ByteArray(32) { (it + 0x20).toByte() }),
+        hostPublicKey = RelayPlatformCrypto.x25519PublicKey(ByteArray(32) { (it + 0x20).toByte() }),
         deviceId = RelayBase64.urlSafeEncode(ByteArray(16) { (it + 3).toByte() }),
         deviceStaticPrivateKey = ByteArray(32) { (it + 0x40).toByte() },
         fingerprint = "0123456789abcdef",

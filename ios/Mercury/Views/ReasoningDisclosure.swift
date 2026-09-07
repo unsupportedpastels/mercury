@@ -88,6 +88,7 @@ private struct RoundedCornerPill: Shape {
     }
 }
 
+#if DEBUG
 #Preview("Collapsed + expanded") {
     VStack(spacing: 12) {
         ReasoningDisclosure(
@@ -99,3 +100,4 @@ private struct RoundedCornerPill: Shape {
     .padding()
     .amoledScreen()
 }
+#endif

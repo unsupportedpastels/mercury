@@ -26,8 +26,8 @@ final class BackgroundGraceRunner {
     var reconcile: () async -> Void = {}
 
     /// Invoked exactly once when the grace window ends WITHOUT the app having
-    /// returned to the foreground (natural expiry of the last poll). Used to
-    /// flip a still-live Live Activity to an honest stale presentation. An
+    /// returned to the foreground (natural expiry of the last poll), so a
+    /// surface can present honestly once iOS is about to suspend the app. An
     /// early `end()` (foreground return) does NOT fire this.
     var onExpire: () async -> Void = {}
 

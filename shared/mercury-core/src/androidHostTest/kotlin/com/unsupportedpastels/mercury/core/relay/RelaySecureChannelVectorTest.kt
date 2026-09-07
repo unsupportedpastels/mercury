@@ -7,7 +7,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class RelaySecureChannelVectorTest {
-    private val crypto = AndroidRelayCrypto
+    private val crypto = RelayPlatformCrypto
     private val installation = hex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f")
     private val initiatorStatic = hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
     private val responderStatic = hex("202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f")

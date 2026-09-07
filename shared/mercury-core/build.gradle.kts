@@ -8,7 +8,8 @@ plugins {
 // override with -Pmercury.enableAppleTargets=true|false.
 val appleTargetsEnabled =
   providers.gradleProperty("mercury.enableAppleTargets").map { it.toBoolean() }
-    .getOrElse(System.getProperty("os.name").startsWith("Mac"))
+    .orElse(providers.systemProperty("os.name").map { it.startsWith("Mac") })
+    .getOrElse(false)
 
 kotlin {
   jvmToolchain(17)
