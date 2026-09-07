@@ -86,10 +86,25 @@ final class AppModel {
 
     private let serverCatalogStore: ServerCatalogStore
     let offlineCacheStore: OfflineCacheStore
+    private let relayTargetStore: RelayTargetStore
+    private let startupChoiceStore: StartupConnectionChoiceStore
+    private var relayPairingModel: RelayAppModel?
     private(set) var serverCatalog: ServerCatalog = .empty
+    private(set) var relayTargets: [RelayPairedTarget] = []
+    private(set) var relayTargetsError: String?
+    private(set) var startupState: StartupConnectionState = .loading
+    private(set) var startupLastSuccessfulChoice: StartupConnectionIdentity?
     private(set) var transcriptCachingEnabled = false
     private(set) var localSettingsError: String?
     private var serverSwitchGeneration: UInt64 = 0
+    private var startupDecisionGeneration: UInt64 = 0
+    private var startupBootstrapStarted = false
+    #if DEBUG
+    private var startupUIFixtureActive = false
+    #endif
+    private var startupUserInteraction = false
+    private var startupAttemptIdentity: StartupConnectionIdentity?
+    private var activeConnectionAttempt: Task<Void, Never>?
     private(set) var pendingShareEntries: [ShareInboxEntry] = []
     private var shareInboxStore: ShareInboxStore?
 
@@ -272,10 +287,69 @@ final class AppModel {
 
     init(
         serverCatalogStore: ServerCatalogStore = ServerCatalogStore(),
-        offlineCacheStore: OfflineCacheStore = OfflineCacheStore()
+        offlineCacheStore: OfflineCacheStore = OfflineCacheStore(),
+        relayTargetStore: RelayTargetStore = RelayTargetStore(),
+        startupChoiceStore: StartupConnectionChoiceStore = StartupConnectionChoiceStore()
     ) {
         self.serverCatalogStore = serverCatalogStore
         self.offlineCacheStore = offlineCacheStore
+        self.relayTargetStore = relayTargetStore
+        self.startupChoiceStore = startupChoiceStore
+    }
+
+    /// The currently live, successfully selected identity. It is derived from
+    /// the active transport and never from a catalog's selection marker.
+    var activeStartupIdentity: StartupConnectionIdentity? {
+        if let target = activeRelayTarget {
+            return StartupConnectionIdentity(kind: .relay, id: target.id)
+        }
+        guard let origin = serverOrigin,
+              let entry = serverCatalog.entries.first(where: { $0.origin == origin }) else {
+            return nil
+        }
+        return StartupConnectionIdentity(kind: .direct, id: entry.id)
+    }
+
+    /// Secret-free rows used by the startup picker. Relay key material stays in
+    /// `relayTargets` and is resolved only after an explicit approved selection.
+    var startupTargetRows: [StartupConnectionTargetRow] {
+        let direct = serverCatalog.entries.map {
+            StartupConnectionTargetRow(
+                identity: StartupConnectionIdentity(kind: .direct, id: $0.id),
+                title: $0.displayLabel,
+                detail: $0.origin,
+                isUsable: true,
+                isPendingRelay: false
+            )
+        }
+        let relay = relayTargets.map {
+            StartupConnectionTargetRow(
+                identity: StartupConnectionIdentity(kind: .relay, id: $0.id),
+                title: $0.displayLabel,
+                detail: $0.status == .approved
+                    ? "Mercury Relay · Ready"
+                    : "Mercury Relay · Waiting for host approval",
+                isUsable: $0.status == .approved,
+                isPendingRelay: $0.status != .approved
+            )
+        }
+        return direct + relay
+    }
+
+    private var startupCandidates: [StartupConnectionCandidate] {
+        startupTargetRows.map {
+            StartupConnectionCandidate(identity: $0.identity, isUsable: $0.isUsable)
+        }
+    }
+
+    /// Creates one relay pairing model over the same store actor used by
+    /// startup. Keeping this instance shared prevents a pairing write from
+    /// being hidden behind another actor's stale in-memory catalog cache.
+    func makeRelayAppModel() -> RelayAppModel {
+        if let relayPairingModel { return relayPairingModel }
+        let model = RelayAppModel(store: relayTargetStore)
+        relayPairingModel = model
+        return model
     }
 
     // MARK: - Controller
@@ -297,21 +371,96 @@ final class AppModel {
     }
 
     func bootstrapSavedServer() async {
+        guard !startupBootstrapStarted else { return }
+        startupBootstrapStarted = true
+        let decisionGeneration = startupDecisionGeneration
         do {
-            serverCatalog = try await serverCatalogStore.load()
-            transcriptCachingEnabled = await offlineCacheStore.isTranscriptCachingEnabled()
-            guard let active = serverCatalog.activeEntry else { return }
-            await switchServer(active)
+            // Both independent catalogs and the last-successful preference are
+            // loaded before the shared policy is consulted. A pending relay is
+            // therefore visible in the same decision as direct targets.
+            async let catalogResult: ServerCatalog? = try? serverCatalogStore.load()
+            async let relayResult: [RelayPairedTarget]? = try? relayTargetStore.load()
+            async let cacheEnabled = offlineCacheStore.isTranscriptCachingEnabled()
+            async let savedChoice = startupChoiceStore.load()
+            let (catalog, relays, caching, choice) = try await (
+                catalogResult,
+                relayResult,
+                cacheEnabled,
+                savedChoice
+            )
+            guard decisionGeneration == startupDecisionGeneration,
+                  !startupUserInteraction else { return }
+
+            serverCatalog = catalog ?? .empty
+            relayTargets = relays ?? []
+            relayTargetsError = relays == nil ? "Saved relay pairings could not be read." : nil
+            transcriptCachingEnabled = caching
+            startupLastSuccessfulChoice = choice
+            guard catalog != nil, relays != nil else {
+                localSettingsError = "Some saved connections could not be loaded. Choose an available connection or add one."
+                startupState = .chooseTarget(savedChoiceUnavailable: choice != nil)
+                return
+            }
+
+            let decision = StartupConnectionDecisionPolicy.decide(
+                candidates: startupCandidates,
+                lastSuccessful: choice
+            )
+            switch decision.action {
+            case .onboarding:
+                startupState = .onboarding
+            case .chooseTarget:
+                startupState = .chooseTarget(
+                    savedChoiceUnavailable: decision.savedChoiceUnavailable
+                )
+            case .autoConnect:
+                guard let selected = decision.selected else {
+                    startupState = .chooseTarget(savedChoiceUnavailable: true)
+                    return
+                }
+                startupAttemptIdentity = selected
+                startupState = .connecting(selected)
+                let task = launchConnectionAttempt(selected, userInitiated: false)
+                await task.value
+            }
         } catch {
-            localSettingsError = "Saved server settings could not be loaded."
+            guard decisionGeneration == startupDecisionGeneration,
+                  !startupUserInteraction else { return }
+            localSettingsError = "Saved connection settings could not be loaded."
+            startupState = .onboarding
+        }
+    }
+
+    /// Reloads only the relay catalog after pairing/removal. The startup
+    /// preference remains untouched until a connection reaches `.connected`.
+    func loadRelayTargets() async {
+        #if DEBUG
+        guard !startupUIFixtureActive else { return }
+        #endif
+        do {
+            relayTargets = try await relayTargetStore.load()
+            relayTargetsError = nil
+        } catch {
+            relayTargets = []
+            relayTargetsError = "Saved relay pairings could not be read."
         }
     }
 
     func addServer(origin: String, label: String) async {
+        // Adding a server is an explicit user boundary. Invalidate bootstrap
+        // before the catalog write so a late load cannot replace this choice.
+        markStartupInteraction()
+        let generation = startupDecisionGeneration
         do {
             let entry = try await serverCatalogStore.add(origin: origin, label: label)
-            serverCatalog = try await serverCatalogStore.load()
-            await switchServer(entry)
+            let catalog = try await serverCatalogStore.load()
+            guard generation == startupDecisionGeneration else { return }
+            serverCatalog = catalog
+            let task = launchConnectionAttempt(
+                StartupConnectionIdentity(kind: .direct, id: entry.id),
+                userInitiated: false
+            )
+            await task.value
         } catch let error as LocalizedError {
             localSettingsError = error.errorDescription
         } catch {
@@ -344,17 +493,106 @@ final class AppModel {
         }
     }
 
-    func switchServer(_ entry: ServerCatalogEntry) async {
+    func renameRelay(_ target: RelayPairedTarget, label: String) async {
         do {
-            try await serverCatalogStore.select(id: entry.id)
-            serverCatalog = try await serverCatalogStore.load()
+            try await relayTargetStore.updateLabel(id: target.id, label: label)
+            relayTargets = try await relayTargetStore.load()
+            localSettingsError = nil
+        } catch let error as LocalizedError {
+            localSettingsError = error.errorDescription
         } catch {
-            localSettingsError = "The selected server could not be saved."
+            localSettingsError = "The relay label could not be saved."
+        }
+    }
+
+    func removeRelay(_ target: RelayPairedTarget) async {
+        guard activeRelayTarget?.id != target.id,
+              selectedRelayTarget?.id != target.id else {
+            localSettingsError = "Disconnect from this relay before removing its pairing."
             return
         }
+        do {
+            try await relayTargetStore.remove(id: target.id)
+            relayTargets = try await relayTargetStore.load()
+            localSettingsError = nil
+        } catch {
+            localSettingsError = "The relay pairing could not be removed."
+        }
+    }
+
+    /// Explicit server selection from Settings or the startup picker. The
+    /// returned task is the single owner of the in-flight connection attempt.
+    func switchServer(_ entry: ServerCatalogEntry) async {
+        let task = launchConnectionAttempt(
+            StartupConnectionIdentity(kind: .direct, id: entry.id),
+            userInitiated: true
+        )
+        await task.value
+    }
+
+    private func performStartupConnection(
+        _ identity: StartupConnectionIdentity,
+        decisionGeneration: UInt64
+    ) async {
+        guard decisionGeneration == startupDecisionGeneration else { return }
+        switch identity.kind {
+        case .direct:
+            do {
+                let catalog = try await serverCatalogStore.load()
+                guard decisionGeneration == startupDecisionGeneration, !Task.isCancelled else { return }
+                serverCatalog = catalog
+            } catch {
+                guard decisionGeneration == startupDecisionGeneration else { return }
+                setPhase(.failed("Saved server settings could not be loaded."))
+                return
+            }
+            guard let entry = serverCatalog.entries.first(where: { $0.id == identity.id }) else {
+                startupState = .chooseTarget(savedChoiceUnavailable: true)
+                return
+            }
+            await performDirectConnection(entry)
+        case .relay:
+            guard let target = relayTargets.first(where: { $0.id == identity.id }),
+                  target.status == .approved else {
+                startupState = .chooseTarget(savedChoiceUnavailable: true)
+                return
+            }
+            await performRelayConnection(target)
+        }
+    }
+
+    /// Starts and owns exactly one startup/direct/relay attempt. User-facing
+    /// entry points use this instead of creating detached Tasks themselves.
+    @discardableResult
+    private func launchConnectionAttempt(
+        _ identity: StartupConnectionIdentity,
+        userInitiated: Bool
+    ) -> Task<Void, Never> {
+        if userInitiated { markStartupInteraction() }
+        activeConnectionAttempt?.cancel()
+        let decisionGeneration = startupDecisionGeneration
+        startupAttemptIdentity = identity
+        startupState = .connecting(identity)
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performStartupConnection(identity, decisionGeneration: decisionGeneration)
+            guard self.startupDecisionGeneration == decisionGeneration else { return }
+            self.activeConnectionAttempt = nil
+        }
+        activeConnectionAttempt = task
+        return task
+    }
+
+    private func performDirectConnection(_ entry: ServerCatalogEntry) async {
+        let identity = StartupConnectionIdentity(kind: .direct, id: entry.id)
+        startupAttemptIdentity = identity
+        startupState = .connecting(identity)
         serverSwitchGeneration &+= 1
         let generation = serverSwitchGeneration
+        endRelaySelection()
         serverOrigin = entry.origin
+        activeRelayTarget = nil
+        selectedRelayTarget = nil
         hermesVersion = nil
         sessions = []
         sessionsError = nil
@@ -472,10 +710,69 @@ final class AppModel {
         guard ProcessInfo.processInfo.arguments.contains("-uitest-reset-local-state") else { return }
         KeychainServerCatalogPersistence().clearCatalogData()
         UserDefaultsLegacyServerOrigin().clearLegacyOrigin()
-        try? await RelayTargetStore().removeAll()
+        try? await relayTargetStore.removeAll()
+        try? await startupChoiceStore.clear()
         try? await offlineCacheStore.clear()
         serverCatalog = .empty
+        relayTargets = []
+        relayTargetsError = nil
+        startupLastSuccessfulChoice = nil
+        startupState = .loading
         sessions = []
+    }
+
+    /// In-memory only startup fixtures. They use `.test` identities and empty
+    /// key data, never real origins or credentials, and are not written to any
+    /// catalog. The UI suite uses them to exercise picker/failure boundaries.
+    func applyStartupUITestFixtureIfRequested() -> Bool {
+        guard ProcessInfo.processInfo.arguments.contains(where: {
+            $0 == "-uitest-startup-empty"
+                || $0 == "-uitest-startup-multiple"
+                || $0 == "-uitest-startup-failed"
+        }) else { return false }
+        startupBootstrapStarted = true
+        startupUIFixtureActive = true
+        startupUserInteraction = true
+        startupLastSuccessfulChoice = nil
+        let directID = UUID(uuidString: "00000000-0000-0000-0000-000000000701")!
+        let relayID = UUID(uuidString: "00000000-0000-0000-0000-000000000702")!
+        if ProcessInfo.processInfo.arguments.contains("-uitest-startup-empty") {
+            serverCatalog = .empty
+            relayTargets = []
+            startupState = .onboarding
+            connectionPhase = .disconnected
+            return true
+        }
+        let direct = try! ServerCatalogEntry(
+            id: directID,
+            origin: "https://direct.test",
+            label: "Direct test server"
+        )
+        let pendingRelay = RelayPairedTarget(
+            id: relayID,
+            label: "Pending relay test",
+            relayOrigin: "wss://relay.test",
+            installationID: Data(),
+            hostPublicKey: Data(),
+            deviceID: "fixture-device",
+            deviceStaticPrivateKey: Data(),
+            fingerprint: "fixture",
+            status: .pending,
+            createdAtEpochSeconds: 0,
+            lastUsedEpochSeconds: nil
+        )
+        serverCatalog = ServerCatalog(entries: [direct], activeID: nil)
+        relayTargets = [pendingRelay]
+        if ProcessInfo.processInfo.arguments.contains("-uitest-startup-failed") {
+            let identity = StartupConnectionIdentity(kind: .direct, id: directID)
+            startupAttemptIdentity = identity
+            startupState = .failed(identity, "Could not connect to the last server.")
+            connectionPhase = .failed("Could not connect to the last server.")
+        } else {
+            startupState = .chooseTarget(savedChoiceUnavailable: false)
+            connectionPhase = .disconnected
+        }
+        return true
     }
 
     func enqueueSharedTextForUITest(_ text: String) {
@@ -550,21 +847,58 @@ final class AppModel {
     // MARK: - Connection lifecycle
 
     /// Validates the entered origin synchronously and kicks off the probe in
-    /// a task. Returns the normalized origin, or `nil` after setting a
-    /// `.failed` phase for bad input.
+    /// the model-owned connection task. Returns the normalized origin, or
+    /// `nil` after setting a `.failed` phase for bad input.
     @discardableResult
     func beginProbe(origin rawOrigin: String) -> String? {
         guard let normalized = ServerOrigin.normalize(rawOrigin) else {
             connectionPhase = .failed("Enter a valid server address, e.g. hermes.example.com")
             return nil
         }
-        Task { await controller.probeSelfHosted(origin: normalized) }
+        launchManualProbe(normalized, userInitiated: true)
         return normalized
     }
 
-    /// Runs the probe inline; prefer `beginProbe` from synchronous call sites.
+    /// Runs a manually entered origin through the same single owned task used
+    /// by startup and configured-target selection.
     func probeSelfHosted(origin: String) async {
-        await controller.probeSelfHosted(origin: origin)
+        let task = launchManualProbe(origin, userInitiated: true)
+        await task.value
+    }
+
+    @discardableResult
+    private func launchManualProbe(
+        _ origin: String,
+        userInitiated: Bool
+    ) -> Task<Void, Never> {
+        if userInitiated { markStartupInteraction() }
+        activeConnectionAttempt?.cancel()
+        let decisionGeneration = startupDecisionGeneration
+        startupAttemptIdentity = serverCatalog.entries
+            .first(where: { $0.origin == origin })
+            .map { StartupConnectionIdentity(kind: .direct, id: $0.id) }
+        if let identity = startupAttemptIdentity {
+            startupState = .connecting(identity)
+        } else {
+            // A manually entered origin has no local typed identity until the
+            // controller successfully catalogs it. Never retain an older ID.
+            startupState = .onboarding
+        }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.controller.probeSelfHosted(origin: origin)
+            guard self.startupDecisionGeneration == decisionGeneration else { return }
+            self.activeConnectionAttempt = nil
+        }
+        activeConnectionAttempt = task
+        return task
+    }
+
+    private func cancelConnectionAttempt() {
+        activeConnectionAttempt?.cancel()
+        activeConnectionAttempt = nil
+        serverSwitchGeneration &+= 1
+        relaySelectionGeneration &+= 1
     }
 
     /// Opens the native sign-in browser flow and awaits callback + exchange.
@@ -861,6 +1195,62 @@ final class AppModel {
 
     // MARK: - Local transitions
 
+    private func markStartupInteraction() {
+        startupUserInteraction = true
+        startupDecisionGeneration &+= 1
+        activeConnectionAttempt?.cancel()
+        activeConnectionAttempt = nil
+        controller.resetProfileCatalogForConnectionBoundary()
+    }
+
+    /// Shows the configured-target list after an explicit user request. It
+    /// never starts a connection itself, even when only one row is usable.
+    func showStartupPicker() {
+        markStartupInteraction()
+        serverSwitchGeneration &+= 1
+        endRelaySelection()
+        activeRelayTarget = nil
+        selectedRelayTarget = nil
+        serverOrigin = nil
+        hermesVersion = nil
+        sessions = []
+        sessionsError = nil
+        authenticationError = nil
+        authProviders = []
+        startupAttemptIdentity = nil
+        connectionPhase = .disconnected
+        startupState = .chooseTarget(savedChoiceUnavailable: false)
+    }
+
+    func beginManualStartupSelection() {
+        markStartupInteraction()
+        serverSwitchGeneration &+= 1
+        endRelaySelection()
+        activeRelayTarget = nil
+        selectedRelayTarget = nil
+        serverOrigin = nil
+        startupAttemptIdentity = nil
+        startupState = .onboarding
+        connectionPhase = .disconnected
+    }
+
+    /// Retries the exact failed identity. No other target is considered.
+    func retryStartupConnection() {
+        guard case .failed(let identity?, _) = startupState else { return }
+        _ = launchConnectionAttempt(identity, userInitiated: true)
+    }
+
+    /// Starts one explicitly selected approved target. Pending relays are
+    /// intentionally disabled by the picker and never enter this path.
+    func selectStartupTarget(_ identity: StartupConnectionIdentity) {
+        guard let row = startupTargetRows.first(where: { $0.identity == identity }),
+              row.isUsable else {
+            localSettingsError = "This relay is waiting for host approval."
+            return
+        }
+        _ = launchConnectionAttempt(identity, userInitiated: true)
+    }
+
     private func endRelaySelection() {
         relaySelectionGeneration &+= 1
         let token = relaySelectionGeneration
@@ -875,19 +1265,50 @@ final class AppModel {
     }
 
     func disconnect() {
+        markStartupInteraction()
+        cancelConnectionAttempt()
         endRelaySelection()
         activeRelayTarget = nil
         selectedRelayTarget = nil
+        serverOrigin = nil
         sessionsError = nil
         connectionPhase = .disconnected
+        startupAttemptIdentity = nil
+        startupState = .chooseTarget(savedChoiceUnavailable: false)
     }
 
     /// Connects through a paired, approved Mercury Relay target and enters
-    /// the normal connected experience.
+    /// the normal connected experience using the same owned task as startup.
     func connectRelay(_ target: RelayPairedTarget) async {
+        markStartupInteraction()
+        let generation = startupDecisionGeneration
+        await loadRelayTargets()
+        guard generation == startupDecisionGeneration else { return }
+        guard relayTargets.contains(where: { $0.id == target.id && $0.status == .approved }) else {
+            localSettingsError = "This relay is no longer configured."
+            return
+        }
+        let task = launchConnectionAttempt(
+            StartupConnectionIdentity(kind: .relay, id: target.id),
+            userInitiated: false
+        )
+        await task.value
+    }
+
+    private func performRelayConnection(_ target: RelayPairedTarget) async {
+        guard target.status == .approved else {
+            startupState = .chooseTarget(savedChoiceUnavailable: false)
+            localSettingsError = "This relay is waiting for host approval."
+            return
+        }
         relaySelectionGeneration &+= 1
+        let generation = relaySelectionGeneration
+        let identity = StartupConnectionIdentity(kind: .relay, id: target.id)
+        startupAttemptIdentity = identity
+        startupState = .connecting(identity)
         selectedRelayTarget = target
         await controller.connectRelay(target: target)
+        guard relaySelectionGeneration == generation else { return }
     }
 
     func signedOutPreservingServer(_ origin: String) {
@@ -903,9 +1324,12 @@ final class AppModel {
         connectionPhase = .signInRequired
     }
 
-    /// Clears transient connection state without touching stored credentials.
+    /// Clears transient connection state without touching stored credentials or
+    /// the last successful startup identity. This is intentionally not a user
+    /// interaction boundary: internal controller reset paths must not cancel
+    /// their own active task or invalidate a newer selection.
     func reset() {
-        endRelaySelection()
+        controller.resetProfileCatalogForConnectionBoundary()
         activeRelayTarget = nil
         selectedRelayTarget = nil
         serverOrigin = nil
@@ -915,6 +1339,7 @@ final class AppModel {
         authProviders = []
         pendingPortalDeviceCode = nil
         connectionPhase = .disconnected
+        startupState = .onboarding
         canLoadMoreSessions = false
         isLoadingMoreSessions = false
         sessionArchived = [:]
@@ -935,16 +1360,44 @@ final class AppModel {
 
     func setPhase(_ phase: ConnectionPhase) {
         connectionPhase = phase
-        // Bind notification dedupe state to the live origin the moment a
-        // connection is established, so live events can be deduped/persisted.
-        if case .connected = phase, let origin = serverOrigin {
-            configureNotifications(origin: origin)
+        switch phase {
+        case .connected:
+            // The catalog/relay store has already been updated by the
+            // controller before it emits `.connected`. Resolve the identity
+            // from the live transport now so a newly entered origin gets its
+            // newly generated catalog UUID, never a stale previous attempt.
+            if let identity = activeStartupIdentity {
+                startupLastSuccessfulChoice = identity
+                startupState = .connected(identity)
+                // Saving is deliberately triggered only by this successful
+                // transition. A selected/added/paired row never writes here.
+                Task { @MainActor [weak self] in
+                    await self?.recordSuccessfulStartupChoice(identity)
+                }
+            }
+            // Bind notification dedupe state to the live origin the moment a
+            // connection is established, so live events can be deduped/persisted.
+            if let origin = serverOrigin {
+                configureNotifications(origin: origin)
+            }
             // A retained deep-link route (notification/Live Activity tap that
             // arrived before this server finished connecting or signing in)
             // completes now.
             completePendingRouteIfReady()
+        case .failed(let message):
+            if let identity = startupAttemptIdentity {
+                startupState = .failed(identity, message)
+            }
+        default:
+            break
         }
     }
+
+    private func recordSuccessfulStartupChoice(_ identity: StartupConnectionIdentity) async {
+        guard startupLastSuccessfulChoice == identity else { return }
+        try? await startupChoiceStore.save(identity)
+    }
+
     func setServerOrigin(_ origin: String?) { serverOrigin = origin }
     func setActiveRelayTarget(_ target: RelayPairedTarget?) { activeRelayTarget = target }
     func setHermesVersion(_ version: String?) { hermesVersion = version }
@@ -953,7 +1406,16 @@ final class AppModel {
     func setAuthenticationError(_ message: String?) { authenticationError = message }
     func setPendingPortalDeviceCode(_ code: DeviceCode?) { pendingPortalDeviceCode = code }
     func setSigningIn(_ value: Bool) { isSigningIn = value }
-    func setActiveProfile(_ profile: String) { activeProfile = profile }
+    func setActiveProfile(_ profile: String) {
+        guard activeProfile != profile else { return }
+        activeProfile = profile
+        sessions = []
+        sessionsError = nil
+        canLoadMoreSessions = false
+        isLoadingMoreSessions = false
+        sessionArchived = [:]
+        sessionPinned = [:]
+    }
     func setCanLoadMoreSessions(_ value: Bool) { canLoadMoreSessions = value }
     func setIsLoadingMoreSessions(_ value: Bool) { isLoadingMoreSessions = value }
     func setCloudPolling(_ value: Bool) { isCloudPolling = value }

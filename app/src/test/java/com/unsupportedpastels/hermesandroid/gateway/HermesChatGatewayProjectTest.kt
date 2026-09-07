@@ -57,7 +57,7 @@ class HermesChatGatewayProjectTest {
             assertEquals("profiles.list", request["method"]!!.jsonPrimitive.content)
             assertFalse(request["params"]!!.jsonObject["include_sessions"]!!.jsonPrimitive.content.toBoolean())
             socket.offer(
-                """{"jsonrpc":"2.0","id":${request["id"]!!.jsonPrimitive.content},"result":{"profiles":[{"name":"default"},{"name":"work"},{"name":"../invalid"},{"name":"work"}]}}""",
+                """{"jsonrpc":"2.0","id":${request["id"]!!.jsonPrimitive.content},"result":{"profiles":[{"name":"default"},{"name":"work"},{"name":"../invalid"},{"name":"work"},{"name":" default "},{"name":"Work Profile"}]}}""",
             )
         }
         val connection = HermesChatGateway(

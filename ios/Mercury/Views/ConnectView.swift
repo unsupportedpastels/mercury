@@ -13,7 +13,7 @@ struct ConnectView: View {
     @State private var useTls = true
     @State private var validationError: String?
     @State private var showSavedServers = false
-    @State private var relay = RelayAppModel()
+    @State private var relay: RelayAppModel?
     @State private var relayPendingRemoval: RelayPairedTarget?
     @State private var showRelayPairing = false
     /// Error banner text injected when arriving via `.failed(_)` phase.
@@ -31,10 +31,77 @@ struct ConnectView: View {
     }
 
     var body: some View {
+        Group {
+            switch appModel.startupState {
+            case .loading:
+                startupLoadingView
+            case .chooseTarget(let savedChoiceUnavailable):
+                startupPickerView(savedChoiceUnavailable: savedChoiceUnavailable)
+            case .failed(let identity?, let message):
+                startupFailureView(message: message, identity: identity)
+            case .connecting(let identity):
+                startupConnectingView(identity: identity)
+            default:
+                connectionForm
+            }
+        }
+        .amoledScreen()
+        .task {
+            let model = appModel.makeRelayAppModel()
+            relay = model
+            await model.loadTargets()
+            await appModel.loadRelayTargets()
+        }
+        .sheet(isPresented: $showRelayPairing, onDismiss: {
+            relay?.cancelPairing()
+            Task { await appModel.loadRelayTargets() }
+        }) {
+            if let relay { RelayPairingView(relay: relay) }
+        }
+        .sheet(isPresented: $showSavedServers) {
+            NavigationStack {
+                ServerListView(
+                    catalog: appModel.serverCatalog,
+                    relayTargets: appModel.relayTargets,
+                    activeIdentity: appModel.activeStartupIdentity,
+                    onSelect: { entry in
+                        showSavedServers = false
+                        Task { await appModel.switchServer(entry) }
+                    },
+                    onSelectRelay: { target in
+                        showSavedServers = false
+                        Task { await appModel.connectRelay(target) }
+                    },
+                    onAdd: { origin, label in
+                        showSavedServers = false
+                        Task { await appModel.addServer(origin: origin, label: label) }
+                    },
+                    onPairRelay: {
+                        showSavedServers = false
+                        mode = .mercuryRelay
+                        showRelayPairing = true
+                    },
+                    onEditLabel: { entry, label in
+                        Task { await appModel.renameServer(entry, label: label) }
+                    },
+                    onEditRelayLabel: { target, label in
+                        Task { await appModel.renameRelay(target, label: label) }
+                    },
+                    onRemove: { entry in
+                        Task { await appModel.removeServer(entry) }
+                    },
+                    onRemoveRelay: { target in
+                        Task { await appModel.removeRelay(target) }
+                    }
+                )
+            }
+        }
+    }
+
+    private var connectionForm: some View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-
                     Text("Connect to Hermes")
                         .font(.largeTitle.bold())
                         .foregroundStyle(Color.primary)
@@ -71,27 +138,131 @@ struct ConnectView: View {
             }
             .scrollDismissesKeyboard(.interactively)
         }
-        .amoledScreen()
-        .task { await relay.loadTargets() }
-        .sheet(isPresented: $showRelayPairing, onDismiss: {
-            relay.cancelPairing()
-        }) {
-            RelayPairingView(relay: relay)
+    }
+
+    private var startupLoadingView: some View {
+        VStack(spacing: 14) {
+            ProgressView()
+            Text("Loading saved connections…")
+                .font(.subheadline)
+                .foregroundStyle(Color.secondary)
         }
-        .sheet(isPresented: $showSavedServers) {
-            NavigationStack {
-                ServerListView(
-                    catalog: appModel.serverCatalog,
-                    onSelect: { entry in
-                        showSavedServers = false
-                        Task { await appModel.switchServer(entry) }
-                    },
-                    onAdd: { origin, label in Task { await appModel.addServer(origin: origin, label: label) } },
-                    onEditLabel: { entry, label in Task { await appModel.renameServer(entry, label: label) } },
-                    onRemove: { entry in Task { await appModel.removeServer(entry) } }
-                )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func startupPickerView(savedChoiceUnavailable: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Choose a connection")
+                .font(.largeTitle.bold())
+            Text(
+                savedChoiceUnavailable
+                    ? "The last successful connection is no longer available. Choose another configured connection."
+                    : "Choose a configured Hermes server or paired relay."
+            )
+            .font(.subheadline)
+            .foregroundStyle(savedChoiceUnavailable ? Color.statusAlert : Color.secondary)
+
+            if let message = appModel.localSettingsError {
+                errorBanner(message)
+            }
+
+            ServerListView(
+                catalog: appModel.serverCatalog,
+                relayTargets: appModel.relayTargets,
+                activeIdentity: appModel.activeStartupIdentity,
+                onSelect: { entry in
+                    appModel.selectStartupTarget(
+                        StartupConnectionIdentity(kind: .direct, id: entry.id)
+                    )
+                },
+                onSelectRelay: { target in
+                    appModel.selectStartupTarget(
+                        StartupConnectionIdentity(kind: .relay, id: target.id)
+                    )
+                },
+                onAdd: { origin, label in
+                    Task { await appModel.addServer(origin: origin, label: label) }
+                },
+                onPairRelay: {
+                    mode = .mercuryRelay
+                    showRelayPairing = true
+                },
+                onEditLabel: { entry, label in
+                    Task { await appModel.renameServer(entry, label: label) }
+                },
+                onEditRelayLabel: { target, label in
+                    Task { await appModel.renameRelay(target, label: label) }
+                },
+                onRemove: { entry in
+                    Task { await appModel.removeServer(entry) }
+                },
+                onRemoveRelay: { target in
+                    Task { await appModel.removeRelay(target) }
+                },
+                embedded: true
+            )
+            Button("Connection options") {
+                appModel.beginManualStartupSelection()
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(.top, 24)
+        .padding(.horizontal, 16)
+        .frame(maxWidth: 620, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func startupConnectingView(identity: StartupConnectionIdentity) -> some View {
+        VStack(spacing: 16) {
+            ProgressView()
+            Text("Connecting…")
+                .font(.title2.bold())
+            if let row = appModel.startupTargetRows.first(where: { $0.identity == identity }) {
+                Text(row.title)
+                    .font(.headline)
+                Text(row.detail)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(Color.secondary)
+                    .lineLimit(1)
+            }
+            Button("Choose another") {
+                appModel.showStartupPicker()
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func startupFailureView(message: String, identity: StartupConnectionIdentity) -> some View {
+        VStack(spacing: 16) {
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .font(.footnote)
+                .foregroundStyle(Color.statusAlert)
+                .multilineTextAlignment(.center)
+                .padding(12)
+                .frame(maxWidth: 520)
+                .background(Color.surfaceMid, in: RoundedRectangle(cornerRadius: 10))
+            if let row = appModel.startupTargetRows.first(where: { $0.identity == identity }) {
+                Text(row.title)
+                    .font(.headline)
+                Text(row.detail)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(Color.secondary)
+                    .lineLimit(1)
+            }
+            HStack(spacing: 12) {
+                Button("Retry") {
+                    appModel.retryStartupConnection()
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Choose another") {
+                    appModel.showStartupPicker()
+                }
+                .buttonStyle(.bordered)
             }
         }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Self-hosted
@@ -268,6 +439,11 @@ struct ConnectView: View {
 
     @ViewBuilder
     private var relaySection: some View {
+        if let relay { relayControls(for: relay) }
+    }
+
+    @ViewBuilder
+    private func relayControls(for relay: RelayAppModel) -> some View {
         Button {
             showRelayPairing = true
         } label: {
@@ -349,6 +525,7 @@ struct ConnectView: View {
                                         appModel.disconnect()
                                     }
                                     await relay.removeTarget(target)
+                                    await appModel.loadRelayTargets()
                                 }
                             }
                         } message: {

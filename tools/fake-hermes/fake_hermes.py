@@ -45,15 +45,286 @@ WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 VIDEO_FIXTURE_FILE = os.environ.get("MERCURY_E2E_VIDEO_FILE")
 VIDEO_MANAGED_PATH = "/tmp/mercury-test-video.mp4"
 
+# The normal fake deliberately keeps the old interrupt-sentinel behavior. The
+# startup scenario is opt-in so existing sentinel/video tests remain unchanged.
+FAKE_HERMES_SCENARIO = os.environ.get("FAKE_HERMES_SCENARIO", "default")
+STARTUP_SCENARIO_NAMES = {"ios-startup", "startup", "startup-flow", "startup_flow"}
+DELAY_FIRST_PROMPT_ACK_ENV = "FAKE_HERMES_DELAY_FIRST_PROMPT_ACK"
+DELAY_FIRST_PROMPT_ACK_SECONDS_ENV = "FAKE_HERMES_DELAY_FIRST_PROMPT_ACK_SECONDS"
+DELAY_FIRST_PROMPT_ERROR_ENV = "FAKE_HERMES_DELAY_FIRST_PROMPT_ERROR"
+STARTUP_DELAYED_ACK_SECONDS = 0.75
+SYNTHETIC_FILESYSTEM_ROOT = "/srv/mercury-e2e"
+SYNTHETIC_WORKSPACE_PATH = SYNTHETIC_FILESYSTEM_ROOT + "/workspace"
+SYNTHETIC_PROFILES = ("default", "work")
+WORK_DURABLE_SESSION_ID = "work-e2e-session-1"
+WORK_SESSION_TITLE = "Work Session"
+STARTUP_RESPONSE_TEXTS = ("First startup response", "Second startup response")
 
-def transcript_messages():
-    if not VIDEO_FIXTURE_FILE:
-        return []
-    return [{"role": "assistant", "content": "Video playback fixture\nMEDIA: " + VIDEO_MANAGED_PATH}]
 
-_lock = threading.Lock()
+# These are deliberately in-memory objects. The startup contract never maps a
+# requested path to the host filesystem and only exposes entries registered here.
+_lock = threading.RLock()
 SESSION_TOKENS = set()      # cookie/bearer values minted by password-login
 WS_TICKETS = {}             # ticket -> expiry epoch seconds (single-use)
+SYNTHETIC_DIRECTORIES = {}
+SYNTHETIC_FILES = {}
+SYNTHETIC_PROJECTS = {}
+SYNTHETIC_ACTIVE_PROJECTS = {}
+SYNTHETIC_TRANSCRIPTS = {}
+
+
+def startup_scenario_enabled():
+    value = os.environ.get("FAKE_HERMES_SCENARIO", FAKE_HERMES_SCENARIO)
+    return value.strip().lower() in STARTUP_SCENARIO_NAMES or os.environ.get("FAKE_HERMES_STARTUP") == "1"
+
+
+def startup_delayed_ack_enabled():
+    """Opt in to the prompt-completion-before-ACK race used by one UI test."""
+    return startup_scenario_enabled() and os.environ.get(DELAY_FIRST_PROMPT_ACK_ENV) == "1"
+
+
+def startup_delayed_ack_seconds():
+    """Return a bounded delay so a malformed test env cannot hang the server."""
+    raw = os.environ.get(DELAY_FIRST_PROMPT_ACK_SECONDS_ENV)
+    try:
+        requested = float(raw) if raw is not None else STARTUP_DELAYED_ACK_SECONDS
+    except (TypeError, ValueError):
+        requested = STARTUP_DELAYED_ACK_SECONDS
+    if not 0.05 <= requested <= 2.0:
+        return STARTUP_DELAYED_ACK_SECONDS
+    return requested
+
+
+def startup_delayed_ack_is_error():
+    """Optionally deliver a fixed late RPC error instead of the ACK."""
+    return startup_delayed_ack_enabled() and os.environ.get(DELAY_FIRST_PROMPT_ERROR_ENV) == "1"
+
+
+def _reset_synthetic_state_locked():
+    global SYNTHETIC_DIRECTORIES, SYNTHETIC_FILES
+    global SYNTHETIC_PROJECTS, SYNTHETIC_ACTIVE_PROJECTS, SYNTHETIC_TRANSCRIPTS
+    SYNTHETIC_DIRECTORIES = {
+        SYNTHETIC_FILESYSTEM_ROOT: {SYNTHETIC_WORKSPACE_PATH},
+        SYNTHETIC_WORKSPACE_PATH: {SYNTHETIC_WORKSPACE_PATH + "/existing"},
+        SYNTHETIC_WORKSPACE_PATH + "/existing": set(),
+    }
+    SYNTHETIC_FILES = {
+        SYNTHETIC_WORKSPACE_PATH + "/README.md": {
+            "content": b"# Mercury startup fixture\n",
+            "mime_type": "text/markdown",
+        },
+    }
+    SYNTHETIC_PROJECTS = {
+        "default": {
+            "existing-project": {
+                "id": "existing-project",
+                "label": "Existing Project",
+                "path": SYNTHETIC_WORKSPACE_PATH,
+                "session_ids": [DURABLE_SESSION_ID],
+            },
+        },
+        "work": {
+            "work-project": {
+                "id": "work-project",
+                "label": "Work Project",
+                "path": SYNTHETIC_WORKSPACE_PATH,
+                "session_ids": [WORK_DURABLE_SESSION_ID],
+            },
+        },
+    }
+    SYNTHETIC_ACTIVE_PROJECTS = {
+        profile: next(iter(projects), None)
+        for profile, projects in SYNTHETIC_PROJECTS.items()
+    }
+    SYNTHETIC_TRANSCRIPTS = {
+        ("default", DURABLE_SESSION_ID): [],
+        ("work", WORK_DURABLE_SESSION_ID): [],
+    }
+
+
+def reset_synthetic_state():
+    """Reset only the opt-in scenario's in-memory state for isolated tests."""
+    with _lock:
+        _reset_synthetic_state_locked()
+
+
+def _synthetic_profile(value):
+    profile = "default" if value is None else str(value).strip()
+    return profile if profile in SYNTHETIC_PROFILES else None
+
+
+def _safe_synthetic_path(path):
+    if not isinstance(path, str) or not path or len(path) > 1_024:
+        return None
+    if path != SYNTHETIC_FILESYSTEM_ROOT and not path.startswith(SYNTHETIC_FILESYSTEM_ROOT + "/"):
+        return None
+    components = path.split("/")
+    if any(not component or component in (".", "..") for component in components[1:]):
+        return None
+    if any("\\\\" in component or any(ord(char) < 32 for char in component) for component in components):
+        return None
+    return path
+
+
+def _synthetic_session_row(profile, session_id):
+    if profile == "work":
+        title = WORK_SESSION_TITLE
+    else:
+        title = DURABLE_SESSION_TITLE
+    with _lock:
+        transcript = list(SYNTHETIC_TRANSCRIPTS.get((profile, session_id), []))
+    preview = next((row.get("content", "") for row in reversed(transcript) if row.get("role") == "assistant"), "")
+    return {
+        "id": session_id,
+        "session_key": session_id,
+        "title": title,
+        "preview": preview,
+        "last_active": time.time(),
+        "message_count": len(transcript),
+        "model": "fake-model",
+        "billing_provider": "fake",
+        "profile": profile,
+        "cwd": SYNTHETIC_WORKSPACE_PATH,
+        "pinned": False,
+        "archived": False,
+    }
+
+
+def _synthetic_project_row(profile, project):
+    session_ids = project["session_ids"]
+    sessions = [_synthetic_session_row(profile, session_id) for session_id in session_ids]
+    return {
+        "id": project["id"],
+        "label": project["label"],
+        "path": project["path"],
+        "primary_path": project["path"],
+        "is_auto": False,
+        "is_no_project": False,
+        "session_count": len(sessions),
+        "preview_sessions": sessions[:3],
+    }
+
+
+def _synthetic_listing(path=None):
+    requested = SYNTHETIC_FILESYSTEM_ROOT if path is None else _safe_synthetic_path(path)
+    with _lock:
+        if requested not in SYNTHETIC_DIRECTORIES:
+            raise KeyError(requested)
+        children = sorted(SYNTHETIC_DIRECTORIES[requested] | {
+            file_path for file_path in SYNTHETIC_FILES if file_path.rsplit("/", 1)[0] == requested
+        })
+        entries = []
+        for child in children:
+            if child in SYNTHETIC_DIRECTORIES:
+                entries.append({
+                    "name": child.rsplit("/", 1)[-1],
+                    "path": child,
+                    "is_directory": True,
+                })
+            else:
+                file_info = SYNTHETIC_FILES[child]
+                entries.append({
+                    "name": child.rsplit("/", 1)[-1],
+                    "path": child,
+                    "is_directory": False,
+                    "size": len(file_info["content"]),
+                    "mime_type": file_info["mime_type"],
+                })
+        parent = None if requested == SYNTHETIC_FILESYSTEM_ROOT else requested.rsplit("/", 1)[0]
+        return {
+            "path": requested,
+            "parent": parent,
+            "entries": entries,
+            "root": SYNTHETIC_FILESYSTEM_ROOT,
+            "locked_root": SYNTHETIC_FILESYSTEM_ROOT,
+            "can_change_path": True,
+        }
+
+
+def _record_synthetic_turn(profile, session_id, prompt, response):
+    with _lock:
+        transcript = SYNTHETIC_TRANSCRIPTS.setdefault((profile, session_id), [])
+        transcript.extend([
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": response, "status": "completed"},
+        ])
+
+
+def transcript_messages(profile="default", session_id=DURABLE_SESSION_ID):
+    messages = []
+    if VIDEO_FIXTURE_FILE:
+        messages.append({"role": "assistant", "content": "Video playback fixture\nMEDIA: " + VIDEO_MANAGED_PATH})
+    if startup_scenario_enabled():
+        with _lock:
+            messages.extend(dict(row) for row in SYNTHETIC_TRANSCRIPTS.get((profile, session_id), []))
+    return messages
+
+
+def _synthetic_project_tree(profile):
+    with _lock:
+        projects = list(SYNTHETIC_PROJECTS.get(profile, {}).values())
+        active_id = SYNTHETIC_ACTIVE_PROJECTS.get(profile)
+        scoped_ids = [session_id for project in projects for session_id in project["session_ids"]]
+    return {
+        "projects": [_synthetic_project_row(profile, project) for project in projects],
+        "active_id": active_id,
+        "scoped_session_ids": scoped_ids,
+    }
+
+
+def _synthetic_create_project(params):
+    profile = _synthetic_profile(params.get("profile"))
+    name = params.get("name")
+    folders = params.get("folders")
+    primary_path = params.get("primary_path")
+    if profile is None:
+        return None, "profile not found"
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 160:
+        return None, "project name is invalid"
+    if any(ord(char) < 32 for char in name):
+        return None, "project name is invalid"
+    if not isinstance(folders, list) or not folders:
+        return None, "project requires a folder"
+    canonical_folders = []
+    with _lock:
+        for folder in folders:
+            canonical = _safe_synthetic_path(folder)
+            if canonical is None or canonical not in SYNTHETIC_DIRECTORIES:
+                return None, "folder not found"
+            if canonical not in canonical_folders:
+                canonical_folders.append(canonical)
+        primary = _safe_synthetic_path(primary_path)
+        if primary is None or primary not in canonical_folders:
+            return None, "primary folder is invalid"
+        projects = SYNTHETIC_PROJECTS.setdefault(profile, {})
+        base_id = "".join(char.lower() if char.isalnum() else "-" for char in name.strip()).strip("-") or "project"
+        project_id = base_id[:128]
+        suffix = 2
+        while project_id in projects:
+            project_id = f"{base_id[:120]}-{suffix}"
+            suffix += 1
+        project = {
+            "id": project_id,
+            "label": name.strip(),
+            "path": primary,
+            "session_ids": [],
+        }
+        projects[project_id] = project
+        if params.get("use") is True:
+            SYNTHETIC_ACTIVE_PROJECTS[profile] = project_id
+    return _synthetic_project_row(profile, project), None
+
+
+def _synthetic_project_sessions(profile, project_id):
+    with _lock:
+        project = SYNTHETIC_PROJECTS.get(profile, {}).get(project_id)
+    if project is None:
+        return None
+    row = _synthetic_project_row(profile, project)
+    return {"project": row, "sessions": row["preview_sessions"]}
+
+
+_reset_synthetic_state_locked()
 
 log_lock = threading.Lock()
 
@@ -190,35 +461,100 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"user_id": "e2e-user", "provider": "basic"})
         elif path == "/api/profiles":
             if self.require_auth():
-                self.send_json({"profiles": [{"name": "default"}]})
+                names = SYNTHETIC_PROFILES if startup_scenario_enabled() else ("default",)
+                self.send_json({"profiles": [{"name": name} for name in names]})
         elif path == "/api/profiles/sessions":
             if self.require_auth():
-                self.send_json({
-                    "sessions": [{
-                        "id": DURABLE_SESSION_ID,
-                        "session_key": DURABLE_SESSION_ID,
-                        "title": DURABLE_SESSION_TITLE,
-                        "preview": "",
-                        "last_active": time.time(),
-                        "message_count": 0,
-                        "model": "fake-model",
-                        "billing_provider": "fake",
-                        "profile": "default",
-                        "cwd": "/tmp/e2e",
-                        "pinned": False,
-                        "archived": False,
-                    }],
-                    "total": 1,
-                    "limit": int(query.get("limit", ["20"])[0]),
-                    "offset": int(query.get("offset", ["0"])[0]),
-                })
+                requested_profile = query.get("profile", [None])[0]
+                if startup_scenario_enabled():
+                    profile = _synthetic_profile(requested_profile)
+                    if profile is None:
+                        self.send_json({"error": "profile not found"}, status=404)
+                        return
+                    session_id = WORK_DURABLE_SESSION_ID if profile == "work" else DURABLE_SESSION_ID
+                    rows = [_synthetic_session_row(profile, session_id)]
+                    self.send_json({
+                        "sessions": rows,
+                        "total": len(rows),
+                        "limit": int(query.get("limit", ["20"])[0]),
+                        "offset": int(query.get("offset", ["0"])[0]),
+                    })
+                else:
+                    self.send_json({
+                        "sessions": [{
+                            "id": DURABLE_SESSION_ID,
+                            "session_key": DURABLE_SESSION_ID,
+                            "title": DURABLE_SESSION_TITLE,
+                            "preview": "",
+                            "last_active": time.time(),
+                            "message_count": 0,
+                            "model": "fake-model",
+                            "billing_provider": "fake",
+                            "profile": "default",
+                            "cwd": "/tmp/e2e",
+                            "pinned": False,
+                            "archived": False,
+                        }],
+                        "total": 1,
+                        "limit": int(query.get("limit", ["20"])[0]),
+                        "offset": int(query.get("offset", ["0"])[0]),
+                    })
         elif path.startswith("/api/sessions/") and path.endswith("/messages"):
             if self.require_auth():
-                messages = transcript_messages()
+                session_id = path.split("/")[3]
+                profile = _synthetic_profile(query.get("profile", [None])[0]) or "default"
+                messages = transcript_messages(profile, session_id)
                 self.send_json({
-                    "session_id": path.split("/")[3],
+                    "session_id": session_id,
                     "messages": messages,
                     "pagination": {"limit": 100, "offset": 0, "returned": len(messages)},
+                })
+        elif path == "/api/sessions/search":
+            if not startup_scenario_enabled():
+                self.send_json({"error": "not found"}, status=404)
+            elif self.require_auth():
+                profile = _synthetic_profile(query.get("profile", [None])[0])
+                needle = (query.get("q", [""])[0] or "").strip().lower()
+                if profile is None:
+                    self.send_json({"error": "profile not found"}, status=404)
+                    return
+                session_id = WORK_DURABLE_SESSION_ID if profile == "work" else DURABLE_SESSION_ID
+                row = _synthetic_session_row(profile, session_id)
+                if needle and any(needle in str(row[field]).lower() for field in ("id", "title", "preview")):
+                    results = [{
+                        "session_id": row["id"],
+                        "title": row["title"],
+                        "snippet": row["preview"],
+                        "role": "session",
+                    }]
+                else:
+                    results = []
+                self.send_json({"results": results})
+        elif path == "/api/files":
+            if not startup_scenario_enabled():
+                self.send_json({"error": "not found"}, status=404)
+            elif self.require_auth():
+                try:
+                    self.send_json(_synthetic_listing((query.get("path") or [None])[0]))
+                except (KeyError, TypeError):
+                    self.send_json({"error": "folder not found"}, status=404)
+        elif path == "/api/files/read":
+            if not startup_scenario_enabled():
+                self.send_json({"error": "not found"}, status=404)
+            elif self.require_auth():
+                requested = _safe_synthetic_path((query.get("path") or [None])[0])
+                with _lock:
+                    file_info = SYNTHETIC_FILES.get(requested)
+                if file_info is None:
+                    self.send_json({"error": "file not found"}, status=404)
+                    return
+                encoded = base64.b64encode(file_info["content"]).decode("ascii")
+                self.send_json({
+                    "name": requested.rsplit("/", 1)[-1],
+                    "path": requested,
+                    "mime_type": file_info["mime_type"],
+                    "size": len(file_info["content"]),
+                    "data_url": f"data:{file_info['mime_type']};base64,{encoded}",
                 })
         elif path == "/api/files/download":
             if not self.require_auth():
@@ -294,6 +630,26 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/auth/ws-ticket":
             if self.require_auth():
                 self.send_json({"ticket": mint_ws_ticket(), "ttl_seconds": 60})
+        elif path == "/api/files/mkdir":
+            if not startup_scenario_enabled():
+                self.send_json({"error": "not found"}, status=404)
+            elif self.require_auth():
+                body = self.read_body_json()
+                requested = _safe_synthetic_path(body.get("path"))
+                if requested is None or requested == SYNTHETIC_FILESYSTEM_ROOT:
+                    self.send_json({"error": "invalid folder path"}, status=400)
+                    return
+                parent = requested.rsplit("/", 1)[0]
+                with _lock:
+                    if parent not in SYNTHETIC_DIRECTORIES:
+                        self.send_json({"error": "parent folder not found"}, status=404)
+                        return
+                    if requested in SYNTHETIC_DIRECTORIES or requested in SYNTHETIC_FILES:
+                        self.send_json({"error": "folder already exists"}, status=409)
+                        return
+                    SYNTHETIC_DIRECTORIES[parent].add(requested)
+                    SYNTHETIC_DIRECTORIES[requested] = set()
+                self.send_json({"ok": True, "path": requested})
         else:
             self.send_json({"error": "not found"}, status=404)
 
@@ -361,6 +717,11 @@ class WsSession:
         self.interrupt_event = threading.Event()
         self.prompt_thread = None
         self.closed = False
+        self.profile = "default"
+        self.durable_session_id = DURABLE_SESSION_ID
+        self.startup_turn_count = 0
+        self.follow_up_received = threading.Event()
+        self.first_response_settled = threading.Event()
 
     # -- framing ------------------------------------------------------------
 
@@ -454,6 +815,72 @@ class WsSession:
             },
         })
 
+    def _handle_startup_rpc(self, request_id, method, params):
+        if method == "profiles.list":
+            self.respond(request_id, {"profiles": [{"name": name} for name in SYNTHETIC_PROFILES]})
+            return True
+        if method == "session.active_list":
+            self.respond(request_id, {"sessions": []})
+            return True
+        if method == "projects.tree":
+            profile = _synthetic_profile(params.get("profile"))
+            if profile is None:
+                self.respond_error(request_id, -32602, "profile not found")
+            else:
+                self.respond(request_id, _synthetic_project_tree(profile))
+            return True
+        if method == "projects.for_cwd":
+            profile = _synthetic_profile(params.get("profile"))
+            requested = _safe_synthetic_path(params.get("cwd"))
+            if profile is None or requested not in SYNTHETIC_DIRECTORIES:
+                self.respond_error(request_id, -32602, "host folder not found")
+            else:
+                self.respond(request_id, {"cwd": requested})
+            return True
+        if method == "projects.create":
+            project, error = _synthetic_create_project(params)
+            if project is None:
+                self.respond_error(request_id, -32602, error or "project creation failed")
+            else:
+                self.respond(request_id, {"project": project})
+            return True
+        if method == "projects.project_sessions":
+            profile = _synthetic_profile(params.get("profile"))
+            project_id = params.get("project_id")
+            result = _synthetic_project_sessions(profile, project_id) if profile and isinstance(project_id, str) else None
+            if result is None:
+                self.respond_error(request_id, -32602, "project not found")
+            else:
+                self.respond(request_id, result)
+            return True
+        if method == "projects.set_active":
+            profile = _synthetic_profile(params.get("profile"))
+            project_id = params.get("id")
+            with _lock:
+                known = profile is not None and project_id in SYNTHETIC_PROJECTS.get(profile, {})
+                if known:
+                    SYNTHETIC_ACTIVE_PROJECTS[profile] = project_id
+            if not known:
+                self.respond_error(request_id, -32602, "project not found")
+            else:
+                self.respond(request_id, {"active_id": project_id})
+            return True
+        if method == "projects.delete":
+            profile = _synthetic_profile(params.get("profile"))
+            project_id = params.get("id")
+            with _lock:
+                known = profile is not None and project_id in SYNTHETIC_PROJECTS.get(profile, {})
+                if known:
+                    del SYNTHETIC_PROJECTS[profile][project_id]
+                    if SYNTHETIC_ACTIVE_PROJECTS.get(profile) == project_id:
+                        SYNTHETIC_ACTIVE_PROJECTS[profile] = next(iter(SYNTHETIC_PROJECTS[profile]), None)
+            if not known:
+                self.respond_error(request_id, -32602, "project not found")
+            else:
+                self.respond(request_id, {})
+            return True
+        return False
+
     def handle_rpc(self, text):
         try:
             message = json.loads(text)
@@ -467,18 +894,33 @@ class WsSession:
         if request_id is None or not isinstance(method, str):
             return
 
+        if startup_scenario_enabled() and self._handle_startup_rpc(request_id, method, params):
+            return
+
         if method == "session.create":
+            requested_profile = _synthetic_profile(params.get("profile")) if startup_scenario_enabled() else "default"
+            self.profile = requested_profile or "default"
+            self.durable_session_id = params.get("session_id") or (
+                WORK_DURABLE_SESSION_ID if self.profile == "work" else DURABLE_SESSION_ID
+            )
             self.respond(request_id, {
                 "session_id": RUNTIME_SESSION_ID,
-                "stored_session_id": DURABLE_SESSION_ID,
+                "stored_session_id": self.durable_session_id,
             })
         elif method == "session.resume":
             requested = params.get("session_id") or DURABLE_SESSION_ID
+            if startup_scenario_enabled():
+                requested_profile = _synthetic_profile(params.get("profile"))
+                if requested_profile is None:
+                    self.respond_error(request_id, -32602, "profile not found")
+                    return
+                self.profile = requested_profile
+                self.durable_session_id = requested
             self.respond(request_id, {
                 "session_id": RUNTIME_SESSION_ID,
                 "session_key": requested,
                 "resumed": True,
-                "messages": transcript_messages(),
+                "messages": transcript_messages(self.profile, self.durable_session_id),
                 "running": False,
                 "info": {
                     "model": "fake-model",
@@ -487,12 +929,36 @@ class WsSession:
                 },
             })
         elif method == "prompt.submit":
-            self.respond(request_id, {"status": "streaming"})
             self.interrupt_event.clear()
-            self.prompt_thread = threading.Thread(
-                target=self.stream_prompt_events, daemon=True,
-            )
-            self.prompt_thread.start()
+            if startup_scenario_enabled():
+                self.startup_turn_count += 1
+                if self.startup_turn_count == 2:
+                    self.follow_up_received.set()
+                prompt = params.get("text") if isinstance(params.get("text"), str) else ""
+                self.prompt_thread = threading.Thread(
+                    target=self.stream_startup_prompt_events,
+                    args=(self.startup_turn_count, prompt, self.profile, self.durable_session_id),
+                    daemon=True,
+                )
+                if self.startup_turn_count == 1 and startup_delayed_ack_enabled():
+                    # Deliberately exercise the real race: completion events are
+                    # written before the first prompt.submit response, while the
+                    # reader loop remains free to accept the next prompt.
+                    self.prompt_thread.start()
+                    threading.Thread(
+                        target=self.send_delayed_startup_ack,
+                        args=(request_id,),
+                        daemon=True,
+                    ).start()
+                else:
+                    self.respond(request_id, {"status": "streaming"})
+                    self.prompt_thread.start()
+            else:
+                self.respond(request_id, {"status": "streaming"})
+                self.prompt_thread = threading.Thread(
+                    target=self.stream_prompt_events, daemon=True,
+                )
+                self.prompt_thread.start()
         elif method == "session.interrupt":
             self.respond(request_id, {"status": "ok"})
             self.interrupt_event.set()
@@ -526,6 +992,41 @@ class WsSession:
             self.respond(request_id, {"processes": []})
         else:
             self.respond_error(request_id, -32601, f"Method not found: {method}")
+
+    def send_delayed_startup_ack(self, request_id):
+        try:
+            # Hold until the next request, rather than assuming a UI driver
+            # can type within a subsecond window. A broken client times out.
+            self.follow_up_received.wait(timeout=30)
+            time.sleep(startup_delayed_ack_seconds())
+            if self.closed:
+                return
+            if startup_delayed_ack_is_error():
+                self.respond_error(request_id, -32001, "synthetic delayed prompt rejection")
+            else:
+                self.respond(request_id, {"status": "streaming"})
+            self.first_response_settled.set()
+        except (ConnectionError, OSError) as error:
+            log(f"WS delayed prompt response aborted: {error}")
+
+    def stream_startup_prompt_events(self, turn_number, prompt, profile, session_id):
+        try:
+            if turn_number == 2 and startup_delayed_ack_enabled():
+                self.first_response_settled.wait(timeout=5)
+            response = STARTUP_RESPONSE_TEXTS[min(turn_number - 1, len(STARTUP_RESPONSE_TEXTS) - 1)] + ": " + prompt
+            self.push_event("message.start", {})
+            time.sleep(0.02)
+            self.push_event("message.delta", {"text": response})
+            time.sleep(0.02)
+            if self.closed:
+                return
+            self.push_event("message.complete", {
+                "text": response,
+                "status": "completed",
+            })
+            _record_synthetic_turn(profile, session_id, prompt, response)
+        except (ConnectionError, OSError) as error:
+            log(f"WS prompt stream aborted: {error}")
 
     def stream_prompt_events(self):
         try:

@@ -1,6 +1,7 @@
 package com.unsupportedpastels.hermesandroid.connection
 
 import com.unsupportedpastels.mercury.core.artifacts.ManagedVideoPolicy
+import com.unsupportedpastels.mercury.core.profiles.ProfileCatalogPolicy
 
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
@@ -993,14 +994,11 @@ class HttpHermesConnectionClient(
         if (!response.status.isSuccess()) {
             throw HermesConnectionException("Hermes profiles returned HTTP ${response.status.value}")
         }
-        return json.decodeFromString<ProfilesResponse>(body).profiles
-            .mapNotNull { row ->
+        return ProfileCatalogPolicy.sanitizeRestNames(
+            json.decodeFromString<ProfilesResponse>(body).profiles.mapNotNull { row ->
                 row["name"]?.jsonPrimitive?.contentOrNull
-                    ?.trim()
-                    ?.takeIf { it.isNotEmpty() && it.length <= 64 }
-            }
-            .distinct()
-            .take(32)
+            },
+        )
     }
 
     override suspend fun loadDefaultModelOptions(

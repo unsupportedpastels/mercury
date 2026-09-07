@@ -297,8 +297,17 @@ private struct CreateProjectView: View {
     let controller: ProjectMetadataController
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
-    @State private var canonicalFolder: String?
+    @State private var folderPath = ""
     @State private var showFolderBrowser = false
+
+    private var canonicalFolder: String? {
+        validCanonicalHostFilePath(folderPath)
+    }
+
+    private var hasInvalidFolderPath: Bool {
+        !folderPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && canonicalFolder == nil
+    }
 
     private var canCreate: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -315,16 +324,30 @@ private struct CreateProjectView: View {
                     showFolderBrowser = true
                 } label: {
                     HStack {
-                        Label(canonicalFolder == nil ? "Choose server folder" : "Change server folder", systemImage: "folder")
+                        Label(folderPath.isEmpty ? "Browse server folders" : "Change server folder", systemImage: "folder")
                         Spacer()
                         Image(systemName: "chevron.right")
                     }
                 }
+                .accessibilityLabel(folderPath.isEmpty ? "Browse server folders" : "Change server folder")
+
+                // Keep manual registration available when the active transport
+                // has no folder-browser capability (notably Relay). The server
+                // remains authoritative for whether the existing path exists.
+                TextField("Absolute server folder path", text: $folderPath)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.asciiCapable)
+                    .accessibilityLabel("Server folder path")
                 if let canonicalFolder {
                     Text(canonicalFolder)
                         .font(.caption.monospaced())
                         .foregroundStyle(Color.secondary)
                         .textSelection(.enabled)
+                } else if hasInvalidFolderPath {
+                    Text("Enter an absolute server path without ‘.’ or ‘..’ components.")
+                        .font(.caption)
+                        .foregroundStyle(Color.statusAlert)
                 }
             }
             if let error = controller.errorMessage {
@@ -348,7 +371,7 @@ private struct CreateProjectView: View {
         .sheet(isPresented: $showFolderBrowser) {
             NavigationStack {
                 HostFilesView(mode: .projectFolder, onSelectFolder: { path in
-                    canonicalFolder = path
+                    folderPath = path
                 })
             }
         }

@@ -1,4 +1,5 @@
 import Foundation
+import MercuryCore
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -71,6 +72,32 @@ final class ConnectionController {
     /// Builds the sign-in flow for a given origin. Injectable for tests.
     private let signInFlowFactory: @MainActor (String) -> SelfHostedSignInFlowing
 
+    /// Optional profile seams. Production uses the official direct REST
+    /// endpoint and the existing relay pool read channel; tests inject real
+    /// `ProfilesClient` instances or deterministic fakes.
+    private let directProfilesClientFactory: (@MainActor (String) -> any ProfilesListing)?
+    private let relayProfilesClientFactory: (@MainActor (RelayPairedTarget, String) async throws -> any ProfilesListing)?
+    private let relaySessionsPageLoader: (@MainActor (RelayPairedTarget, String, Int, Int) async throws -> SessionPage)?
+    private let sessionPageLoader: (@MainActor (String, String, Int, Int) async throws -> SessionPage)?
+
+    /// Monotonic controller identity. Cancellation is an optimization; these
+    /// generations are the publication fence for non-cooperative responses.
+    private var connectionGeneration: UInt64 = 0
+    private var sessionRequestGeneration: UInt64 = 0
+
+    private struct SessionRequestScope: Equatable {
+        let origin: String?
+        let relayTargetID: UUID?
+        let relaySelectionGeneration: UInt64
+        let profile: String
+        let connectionGeneration: UInt64
+    }
+
+    /// Scope of the rows currently known to be an authoritative server page.
+    /// Cached/startup rows are intentionally unscoped until a refresh succeeds;
+    /// this prevents pagination from appending a new profile/host to stale rows.
+    private var publishedSessionScope: SessionRequestScope?
+
     /// Opens a URL in the user's browser. Injectable so tests never launch
     /// Safari. Default routes through `UIApplication.shared.open`.
     var openExternalURL: @MainActor (URL) async -> Void = ConnectionController.defaultURLOpener
@@ -87,7 +114,11 @@ final class ConnectionController {
         appModel: AppModel,
         urlSession: URLSession = .shared,
         credentialStore: CredentialStoring = KeychainCredentialStore(),
-        signInFlowFactory: @escaping @MainActor (String) -> SelfHostedSignInFlowing = { NativePKCEFlow(origin: $0) }
+        signInFlowFactory: @escaping @MainActor (String) -> SelfHostedSignInFlowing = { NativePKCEFlow(origin: $0) },
+        directProfilesClientFactory: (@MainActor (String) -> any ProfilesListing)? = nil,
+        relayProfilesClientFactory: (@MainActor (RelayPairedTarget, String) async throws -> any ProfilesListing)? = nil,
+        relaySessionsPageLoader: (@MainActor (RelayPairedTarget, String, Int, Int) async throws -> SessionPage)? = nil,
+        sessionPageLoader: (@MainActor (String, String, Int, Int) async throws -> SessionPage)? = nil
     ) {
         self.appModel = appModel
         self.urlSession = urlSession
@@ -96,6 +127,10 @@ final class ConnectionController {
         self.hermesURLSession = urlSession === URLSession.shared ? HermesURLSession.noRedirects : urlSession
         self.credentialStore = credentialStore
         self.signInFlowFactory = signInFlowFactory
+        self.directProfilesClientFactory = directProfilesClientFactory
+        self.relayProfilesClientFactory = relayProfilesClientFactory
+        self.relaySessionsPageLoader = relaySessionsPageLoader
+        self.sessionPageLoader = sessionPageLoader
     }
 
     // MARK: - Self-hosted probe
@@ -115,7 +150,9 @@ final class ConnectionController {
             return
         }
 
+        let generation = beginDirectConnectionBoundary(origin: origin)
         appModel.setServerOrigin(origin)
+        appModel.setActiveRelayTarget(nil)
         appModel.setPhase(.probing)
         appModel.setAuthProviders([])
         appModel.setAuthenticationError(nil)
@@ -127,28 +164,30 @@ final class ConnectionController {
         do {
             status = try await probe.probe()
         } catch {
-            guard appModel.serverOrigin == origin else { return }
+            guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
             appModel.setPhase(.failed(Self.failureMessage(for: error, origin: origin)))
             return
         }
 
-        guard appModel.serverOrigin == origin else { return }
+        guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
         await appModel.rememberServer(origin: origin)
-        guard appModel.serverOrigin == origin else { return }
+        guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
 
         appModel.setHermesVersion(status.version.isEmpty ? nil : status.version)
 
         guard status.authRequired else {
             appModel.setPhase(.connected)
+            await discoverDirectProfiles(origin: origin, generation: generation)
             return
         }
 
         if credentialStore.tokens(for: origin) != nil || hasSessionCookie(for: origin) {
             do {
                 let (_, response) = try await client.get(path: "/api/auth/me")
-                guard appModel.serverOrigin == origin else { return }
+                guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
                 if (200..<300).contains(response.statusCode) {
                     appModel.setPhase(.connected)
+                    await discoverDirectProfiles(origin: origin, generation: generation)
                     return
                 }
                 if response.statusCode != 401 && response.statusCode != 403 {
@@ -156,7 +195,7 @@ final class ConnectionController {
                     return
                 }
             } catch {
-                guard appModel.serverOrigin == origin else { return }
+                guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
                 appModel.setPhase(.failed(Self.failureMessage(for: error, origin: origin)))
                 return
             }
@@ -164,7 +203,7 @@ final class ConnectionController {
 
         do {
             let providers = try await probe.authProviders()
-            guard appModel.serverOrigin == origin else { return }
+            guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
             appModel.setAuthProviders(providers.providers)
             if providers.providers.contains(where: {
                 $0.name.lowercased() == "nous" || $0.supportsPassword
@@ -176,7 +215,7 @@ final class ConnectionController {
                 ))
             }
         } catch {
-            guard appModel.serverOrigin == origin else { return }
+            guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
             appModel.setPhase(.failed(Self.failureMessage(for: error, origin: origin)))
         }
     }
@@ -200,6 +239,7 @@ final class ConnectionController {
             return
         }
 
+        let generation = beginDirectConnectionBoundary(origin: origin)
         appModel.setSigningIn(true)
         appModel.setAuthenticationError(nil)
         defer { appModel.setSigningIn(false) }
@@ -225,16 +265,17 @@ final class ConnectionController {
             let outcome = try await flow.exchange(code: callback.code)
             authDebug("token-exchange-complete")
 
-            guard appModel.serverOrigin == origin else { return }
+            guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
             persist(outcome: outcome, origin: origin)
             await appModel.rememberServer(origin: origin)
-            guard appModel.serverOrigin == origin else { return }
+            guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
             appModel.setPhase(.connected)
+            await discoverDirectProfiles(origin: origin, generation: generation)
             authDebug("connected")
         } catch {
             authDebug("failed")
             flow.cancel()
-            guard appModel.serverOrigin == origin else { return }
+            guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
             if case FlowError.stateMismatch = error {
                 appModel.setPhase(.failed("Sign-in failed"))
             } else {
@@ -258,6 +299,7 @@ final class ConnectionController {
             return
         }
 
+        let generation = beginDirectConnectionBoundary(origin: origin)
         appModel.setSigningIn(true)
         appModel.setAuthenticationError(nil)
         defer { appModel.setSigningIn(false) }
@@ -269,7 +311,7 @@ final class ConnectionController {
                 username: username,
                 password: password
             )
-            guard appModel.serverOrigin == origin else { return }
+            guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
 
             // Android stores the password flow's intentionally-empty access
             // token before validation. Clearing the origin-scoped bearer is
@@ -282,7 +324,7 @@ final class ConnectionController {
             // login page is not success until the issued cookie opens an
             // authenticated API endpoint.
             let (_, response) = try await makeHTTPClient(origin: origin).get(path: "/api/auth/me")
-            guard appModel.serverOrigin == origin else { return }
+            guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
             guard (200..<300).contains(response.statusCode) else {
                 if response.statusCode == 401 || response.statusCode == 403 {
                     throw PasswordLoginError.invalidCredentials
@@ -291,17 +333,18 @@ final class ConnectionController {
             }
 
             await appModel.rememberServer(origin: origin)
-            guard appModel.serverOrigin == origin else { return }
+            guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
             appModel.setAuthenticationError(nil)
             appModel.setPhase(.connected)
+            await discoverDirectProfiles(origin: origin, generation: generation)
         } catch is CancellationError {
             return
         } catch PasswordLoginError.invalidCredentials {
-            guard appModel.serverOrigin == origin else { return }
+            guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
             appModel.setAuthenticationError("Invalid username or password.")
             appModel.setPhase(.signInRequired)
         } catch {
-            guard appModel.serverOrigin == origin else { return }
+            guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
             appModel.setAuthenticationError("Password sign-in is temporarily unavailable.")
             appModel.setPhase(.signInRequired)
         }
@@ -318,26 +361,89 @@ final class ConnectionController {
     /// in-process read, seeds the session list, and enters `.connected` with
     /// no server origin (origin-scoped REST features stand down on nil).
     func connectRelay(target: RelayPairedTarget) async {
-        let generation = appModel.relaySelectionGeneration
+        let generation = beginRelayConnectionBoundary(target: target)
+        let selectionGeneration = appModel.relaySelectionGeneration
         let profile = appModel.activeProfile
         await RelayConnectionPool.shared.select(target: target, profile: profile)
-        guard appModel.relaySelectionGeneration == generation else { return }
+        guard isCurrentRelayConnection(
+            target: target,
+            profile: profile,
+            generation: generation,
+            selectionGeneration: selectionGeneration
+        ) else { return }
         appModel.setActiveRelayTarget(nil)
         appModel.setServerOrigin(nil)
         appModel.setPhase(.connecting)
         do {
-            let page = try await Self.relaySessionsPage(
-                target: target, profile: profile, limit: 20, offset: 0
-            )
-            guard appModel.relaySelectionGeneration == generation else { return }
+            // Discovery is best-effort. A released Hermes host may not expose
+            // profiles.list; that must not turn a successful session-list read
+            // into a failed authenticated connection.
+            var discoveredProfiles: [String]?
+            do {
+                let profilesClient: any ProfilesListing
+                if let relayProfilesClientFactory {
+                    profilesClient = try await relayProfilesClientFactory(target, profile)
+                } else {
+                    let connection = try await RelayConnectionPool.shared.acquire(
+                        target: target,
+                        profile: profile
+                    )
+                    profilesClient = ProfilesClient(rpcRequest: { method, params in
+                        try await connection.relayRequest(method, params: params)
+                    })
+                }
+                discoveredProfiles = try await profilesClient.list()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                discoveredProfiles = nil
+            }
+            guard isCurrentRelayConnection(
+                target: target,
+                profile: profile,
+                generation: generation,
+                selectionGeneration: selectionGeneration
+            ) else { return }
+
+            let page: SessionPage
+            if let relaySessionsPageLoader {
+                page = try await relaySessionsPageLoader(target, profile, 20, 0)
+            } else {
+                page = try await Self.relaySessionsPage(
+                    target: target, profile: profile, limit: 20, offset: 0
+                )
+            }
+            guard isCurrentRelayConnection(
+                target: target,
+                profile: profile,
+                generation: generation,
+                selectionGeneration: selectionGeneration
+            ) else { return }
             appModel.setActiveRelayTarget(target)
+            appModel.profiles = reconciledProfiles(
+                discoveredProfiles ?? [], selectedProfile: profile, rpc: true
+            )
             appModel.sessions = page.rows
+            publishedSessionScope = SessionRequestScope(
+                origin: nil,
+                relayTargetID: target.id,
+                relaySelectionGeneration: selectionGeneration,
+                profile: profile,
+                connectionGeneration: generation
+            )
             appModel.setCanLoadMoreSessions(page.hasMore)
             appModel.setSessionsError(nil)
             appModel.setHermesVersion(nil)
             appModel.setPhase(.connected)
+        } catch is CancellationError {
+            return
         } catch {
-            guard appModel.relaySelectionGeneration == generation else { return }
+            guard isCurrentRelayConnection(
+                target: target,
+                profile: profile,
+                generation: generation,
+                selectionGeneration: selectionGeneration
+            ) else { return }
             let message = Self.relayFailureMessage(error)
             // Cached sessions keep the list on screen; the banner carries the
             // reason so a stale list is never mistaken for a live one.
@@ -382,37 +488,80 @@ final class ConnectionController {
     /// Returns `nil` on failure; the previous rows are kept and
     /// `sessionsError` carries a friendly message (never token material).
     func loadSessionsPage(limit: Int = 20, offset: Int = 0) async -> SessionPage? {
+        let requestGeneration = beginSessionRequest()
+        let scope = captureSessionRequestScope()
+        return await loadSessionsPage(
+            limit: limit,
+            offset: offset,
+            requestGeneration: requestGeneration,
+            scope: scope
+        )
+    }
+
+    private func loadSessionsPage(
+        limit: Int,
+        offset: Int,
+        requestGeneration: UInt64,
+        scope: SessionRequestScope
+    ) async -> SessionPage? {
         guard case .connected = appModel.connectionPhase else { return nil }
 
-        if let target = appModel.activeRelayTarget {
+        if let targetID = scope.relayTargetID,
+           let target = appModel.activeRelayTarget,
+           target.id == targetID {
             // Reads use the default lease channel; open chats own their own
             // channels, so a visible chat never blocks a list refresh.
             do {
-                return try await Self.relaySessionsPage(
-                    target: target,
-                    profile: appModel.activeProfile,
-                    limit: limit,
-                    offset: offset
-                )
+                let page: SessionPage
+                if let relaySessionsPageLoader {
+                    page = try await relaySessionsPageLoader(
+                        target, scope.profile, limit, offset
+                    )
+                } else {
+                    page = try await Self.relaySessionsPage(
+                        target: target,
+                        profile: scope.profile,
+                        limit: limit,
+                        offset: offset
+                    )
+                }
+                guard isCurrentSessionRequest(requestGeneration: requestGeneration, scope: scope) else {
+                    return nil
+                }
+                return page
+            } catch is CancellationError {
+                return nil
             } catch {
-                guard appModel.activeRelayTarget?.id == target.id else { return nil }
+                guard isCurrentSessionRequest(requestGeneration: requestGeneration, scope: scope) else {
+                    return nil
+                }
                 appModel.setSessionsError(Self.relayFailureMessage(error))
                 return nil
             }
         }
 
-        guard let origin = appModel.serverOrigin else { return nil }
-
-        let sessionsClient = SessionsClient(
-            client: makeHTTPClient(origin: origin),
-            profile: appModel.activeProfile
-        )
+        guard scope.relayTargetID == nil, let origin = scope.origin else { return nil }
         do {
-            let page = try await sessionsClient.sessions(limit: limit, offset: offset)
-            guard appModel.serverOrigin == origin else { return nil }
+            let page: SessionPage
+            if let sessionPageLoader {
+                page = try await sessionPageLoader(origin, scope.profile, limit, offset)
+            } else {
+                let sessionsClient = SessionsClient(
+                    client: makeHTTPClient(origin: origin),
+                    profile: scope.profile
+                )
+                page = try await sessionsClient.sessions(limit: limit, offset: offset)
+            }
+            guard isCurrentSessionRequest(requestGeneration: requestGeneration, scope: scope) else {
+                return nil
+            }
             return page
+        } catch is CancellationError {
+            return nil
         } catch {
-            guard appModel.serverOrigin == origin else { return nil }
+            guard isCurrentSessionRequest(requestGeneration: requestGeneration, scope: scope) else {
+                return nil
+            }
             appModel.setSessionsError(Self.failureMessage(for: error, origin: origin))
             return nil
         }
@@ -425,18 +574,31 @@ final class ConnectionController {
     /// On failure the previous rows are kept and `sessionsError` carries a
     /// friendly message (never token material).
     func refreshSessions() async {
-        guard let page = await loadSessionsPage(limit: 20, offset: 0) else { return }
+        let requestGeneration = beginSessionRequest()
+        let scope = captureSessionRequestScope()
+        guard let page = await loadSessionsPage(
+            limit: 20,
+            offset: 0,
+            requestGeneration: requestGeneration,
+            scope: scope
+        ), isCurrentSessionRequest(requestGeneration: requestGeneration, scope: scope) else {
+            return
+        }
         let merged = SessionListMerge.merged(
             serverSessions: page.rows,
             currentSessions: appModel.sessions,
             pendingDraftIDs: []
         )
+        guard isCurrentSessionRequest(requestGeneration: requestGeneration, scope: scope) else {
+            return
+        }
         appModel.sessions = merged
+        publishedSessionScope = scope
         appModel.pruneLifecycleMirrors(keeping: Set(merged.map(\.id)))
         appModel.setCanLoadMoreSessions(page.hasMore)
         appModel.setSessionsError(nil)
-        if let origin = appModel.serverOrigin {
-            await appModel.cacheSessionMetadata(origin: origin, profile: appModel.activeProfile, rows: merged)
+        if let origin = scope.origin {
+            await appModel.cacheSessionMetadata(origin: origin, profile: scope.profile, rows: merged)
         }
     }
 
@@ -458,7 +620,18 @@ final class ConnectionController {
         appModel.setIsLoadingMoreSessions(true)
         defer { appModel.setIsLoadingMoreSessions(false) }
 
-        guard let page = await loadSessionsPage(limit: 20, offset: appModel.sessions.count) else {
+        let scope = captureSessionRequestScope()
+        guard publishedSessionScope == scope else {
+            return
+        }
+        let requestGeneration = beginSessionRequest()
+        let offset = appModel.sessions.count
+        guard let page = await loadSessionsPage(
+            limit: 20,
+            offset: offset,
+            requestGeneration: requestGeneration,
+            scope: scope
+        ), isCurrentSessionRequest(requestGeneration: requestGeneration, scope: scope) else {
             return
         }
         let existingIDs = Set(appModel.sessions.map(\.id))
@@ -621,6 +794,154 @@ final class ConnectionController {
 
     // MARK: - Internals
 
+    private func clearUnscopedSessionRows() {
+        appModel.sessions = []
+        appModel.setCanLoadMoreSessions(false)
+        appModel.setSessionsError(nil)
+        appModel.setIsLoadingMoreSessions(false)
+    }
+
+    /// Parent-owned AppModel transitions can call this before disconnect/reset.
+    /// It invalidates every in-flight catalog/session response and removes the
+    /// previous host's profile scope without changing credentials.
+    func resetProfileCatalogForConnectionBoundary() {
+        connectionGeneration &+= 1
+        sessionRequestGeneration &+= 1
+        publishedSessionScope = nil
+        clearUnscopedSessionRows()
+        appModel.profiles = ["default"]
+        appModel.setActiveProfile("default")
+    }
+
+    private func beginDirectConnectionBoundary(origin: String) -> UInt64 {
+        connectionGeneration &+= 1
+        sessionRequestGeneration &+= 1
+        publishedSessionScope = nil
+        if appModel.activeRelayTarget != nil || appModel.serverOrigin != nil && appModel.serverOrigin != origin {
+            clearUnscopedSessionRows()
+        }
+        appModel.profiles = ["default"]
+        appModel.setActiveProfile("default")
+        appModel.setActiveRelayTarget(nil)
+        return connectionGeneration
+    }
+
+    private func beginRelayConnectionBoundary(target: RelayPairedTarget) -> UInt64 {
+        connectionGeneration &+= 1
+        sessionRequestGeneration &+= 1
+        publishedSessionScope = nil
+        // A different relay is a different host scope. Never carry the prior
+        // host's selected profile into its admission; reconnecting the same
+        // target may retain the user's current profile.
+        if appModel.activeRelayTarget?.id != target.id {
+            appModel.setActiveProfile("default")
+        }
+        // Keep only the profile used for admission visible while the new host
+        // catalog is loading; do not expose the previous host's catalog.
+        appModel.profiles = [appModel.activeProfile]
+        return connectionGeneration
+    }
+
+    private func beginSessionRequest() -> UInt64 {
+        sessionRequestGeneration &+= 1
+        return sessionRequestGeneration
+    }
+
+    private func captureSessionRequestScope() -> SessionRequestScope {
+        let relayTargetID = appModel.activeRelayTarget?.id
+        return SessionRequestScope(
+            origin: relayTargetID == nil ? appModel.serverOrigin : nil,
+            relayTargetID: relayTargetID,
+            relaySelectionGeneration: appModel.relaySelectionGeneration,
+            profile: appModel.activeProfile,
+            connectionGeneration: connectionGeneration
+        )
+    }
+
+    private func isCurrentDirectConnection(origin: String, generation: UInt64) -> Bool {
+        connectionGeneration == generation &&
+            appModel.serverOrigin == origin &&
+            appModel.activeRelayTarget == nil
+    }
+
+    private func isCurrentRelayConnection(
+        target: RelayPairedTarget,
+        profile: String,
+        generation: UInt64,
+        selectionGeneration: UInt64
+    ) -> Bool {
+        connectionGeneration == generation &&
+            appModel.relaySelectionGeneration == selectionGeneration &&
+            appModel.selectedRelayTarget?.id == target.id &&
+            appModel.activeProfile == profile
+    }
+
+    private func isCurrentSessionRequest(
+        requestGeneration: UInt64,
+        scope: SessionRequestScope
+    ) -> Bool {
+        guard sessionRequestGeneration == requestGeneration,
+              connectionGeneration == scope.connectionGeneration,
+              appModel.activeProfile == scope.profile,
+              case .connected = appModel.connectionPhase else {
+            return false
+        }
+        if let targetID = scope.relayTargetID {
+            return appModel.serverOrigin == nil &&
+                appModel.relaySelectionGeneration == scope.relaySelectionGeneration &&
+                appModel.activeRelayTarget?.id == targetID
+        }
+        return appModel.activeRelayTarget == nil && appModel.serverOrigin == scope.origin
+    }
+
+    private func discoverDirectProfiles(origin: String, generation: UInt64) async {
+        guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
+        do {
+            let client: any ProfilesListing
+            if let directProfilesClientFactory {
+                client = directProfilesClientFactory(origin)
+            } else {
+                client = ProfilesClient(httpClient: makeHTTPClient(origin: origin))
+            }
+            let names = try await client.list()
+            guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
+            appModel.profiles = reconciledProfiles(
+                names, selectedProfile: appModel.activeProfile, rpc: false
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            guard isCurrentDirectConnection(origin: origin, generation: generation) else { return }
+            appModel.profiles = reconciledProfiles(
+                [], selectedProfile: appModel.activeProfile, rpc: false
+            )
+        }
+    }
+
+    private func reconciledProfiles(
+        _ discovered: [String],
+        selectedProfile: String,
+        rpc: Bool
+    ) -> [String] {
+        let core = MercuryCore.ProfileCatalogPolicy.shared
+        let sanitized = rpc
+            ? Array(core.sanitizeRpcNames(names: discovered))
+            : Array(core.sanitizeRestNames(names: discovered))
+        let capacity = rpc ? Int(core.maxRpcProfiles) : Int(core.maxRestProfiles)
+        var names = sanitized.isEmpty ? ["default"] : sanitized
+        if !names.contains("default") {
+            if names.count >= capacity { names.removeLast() }
+            names.insert("default", at: 0)
+        }
+        if rpc,
+           !names.contains(selectedProfile),
+           core.isValidRpcName(name: selectedProfile) {
+            if names.count >= capacity { names.removeLast() }
+            names.append(selectedProfile)
+        }
+        return Array(names.prefix(capacity))
+    }
+
     private func makeHTTPClient(origin: String) -> HermesHTTPClient {
         HermesHTTPClient.makeAuthenticated(
             origin: origin,
@@ -711,6 +1032,7 @@ final class ConnectionController {
     func signOut(origin rawOrigin: String) async {
         guard let origin = ServerOrigin.normalize(rawOrigin) else { return }
 
+        resetProfileCatalogForConnectionBoundary()
         credentialStore.clearTokens(for: origin)
         purgeCookies(hostOf: origin)
         try? await appModel.offlineCacheStore.clearForLogout(origin: origin)

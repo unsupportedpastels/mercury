@@ -10,8 +10,15 @@ struct HostFilesBrowserState: Equatable {
         let path: String?
     }
 
+    struct OperationRequest: Equatable, Sendable {
+        let generation: UInt64
+        let scope: String
+        let path: String?
+    }
+
     private(set) var scope = ""
     private(set) var generation: UInt64 = 0
+    private(set) var operationGeneration: UInt64 = 0
     private(set) var listing: HostFileListing?
     private(set) var isLoading = false
     private(set) var errorMessage: String?
@@ -32,6 +39,7 @@ struct HostFilesBrowserState: Equatable {
     /// state because paths are identities only within the authenticated host.
     mutating func beginLoad(scope newScope: String, path: String?) -> LoadRequest {
         generation &+= 1
+        operationGeneration &+= 1
         if scope != newScope {
             scope = newScope
             listing = nil
@@ -40,6 +48,32 @@ struct HostFilesBrowserState: Equatable {
         isLoading = true
         errorMessage = nil
         return LoadRequest(generation: generation, scope: newScope, path: path)
+    }
+
+    /// Starts a preview operation without changing the visible listing. The
+    /// token is invalidated by any later list, preview, or create request.
+    mutating func beginPreview(path: String) -> OperationRequest {
+        beginOperation(path: path)
+    }
+
+    /// Starts a directory-creation operation rooted at the server-returned
+    /// parent path. The path is carried for identity only; callers must still
+    /// submit the server's canonical value unchanged.
+    mutating func beginCreate(parentPath: String) -> OperationRequest {
+        beginOperation(path: parentPath)
+    }
+
+    func isCurrent(_ request: OperationRequest) -> Bool {
+        request.generation == operationGeneration && request.scope == scope
+    }
+
+    private mutating func beginOperation(path: String) -> OperationRequest {
+        operationGeneration &+= 1
+        return OperationRequest(
+            generation: operationGeneration,
+            scope: scope,
+            path: path
+        )
     }
 
     @discardableResult

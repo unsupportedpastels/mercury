@@ -59,6 +59,17 @@ Version numbers come from `project.yml` (`MARKETING_VERSION`,
 
 ## Notes
 
+- Startup restores the last successfully used direct server or relay. With no
+  saved choice, one usable configured connection starts automatically; multiple
+  configured connections show a picker. A failed or unavailable saved choice
+  never silently switches to another host. Settings → Servers lists both kinds.
+- Project folders can be browsed and created over a direct connection, within
+  the host's managed-files permissions. The current Relay contract does not
+  expose folder browsing or creation; an existing host folder can instead be
+  entered by path for project registration, with validation by the host.
+- These native startup/toolbar changes are iOS-scoped. Android's corresponding
+  native UI changes are deferred rather than changing its navigation as part of
+  the reported iOS fixes. Shared profile-name policy is consumed by both clients.
 - Native UI, networking, and secure storage use Apple frameworks; the shared
   KMP core uses `cryptography-kotlin`'s CryptoKit provider for Relay primitives.
 - Minimum deployment target: iOS 17.0.

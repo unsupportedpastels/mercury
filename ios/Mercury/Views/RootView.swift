@@ -16,7 +16,9 @@ struct RootView: View {
             case .connected:
                 home
             case .failed(let message):
-                if appModel.sessions.isEmpty {
+                if case .failed(let identity?, _) = appModel.startupState {
+                    ConnectView(errorMessage: message)
+                } else if appModel.sessions.isEmpty {
                     ConnectView(errorMessage: message)
                 } else {
                     home

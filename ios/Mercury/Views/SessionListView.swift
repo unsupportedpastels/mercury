@@ -43,7 +43,6 @@ struct SessionListView: View {
     // UI-level pin toggle until `pinned` is surfaced on SessionRow (see
     // swipe/context actions below).
     @State private var locallyPinnedIDs = Set<String>()
-    @State private var showHostFiles = false
     @State private var showProjects = false
     @State private var showAllSessions = false
     @State private var showSettings = false
@@ -347,7 +346,8 @@ struct SessionListView: View {
                             .foregroundStyle(Color.secondary)
                     }
                     .accessibilityLabel("Profile: \(appModel.activeProfile)")
-
+                }
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
                         toggleSearch()
                     } label: {
@@ -355,15 +355,6 @@ struct SessionListView: View {
                     }
                     .foregroundStyle(Color.secondary)
                     .accessibilityLabel(searchPresented ? "Close search" : "Search sessions")
-                }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button {
-                        showHostFiles = true
-                    } label: {
-                        Image(systemName: "folder")
-                    }
-                    .accessibilityLabel("Host files")
-                    .foregroundStyle(Color.secondary)
 
                     Button { showSettings = true } label: {
                         Image(systemName: "gearshape")
@@ -388,9 +379,6 @@ struct SessionListView: View {
             }
             .navigationDestination(item: $incomingShareDraft) { draft in
                 ChatView.newSession(incomingShare: draft)
-            }
-            .sheet(isPresented: $showHostFiles) {
-                NavigationStack { HostFilesView() }
             }
             .sheet(isPresented: $showProjects) {
                 NavigationStack { ProjectsView(controller: projectController) }
@@ -641,6 +629,7 @@ struct SessionListView: View {
             Text(title)
             Spacer()
             Button(actionTitle, action: action)
+                .accessibilityLabel("\(actionTitle) \(title.lowercased())")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(Color.accentPrimary)
                 .textCase(nil)
@@ -717,6 +706,7 @@ struct SessionListView: View {
             get: { appModel.activeProfile },
             set: { selected in
                 guard selected != appModel.activeProfile else { return }
+                splitSelection?.wrappedValue = nil
                 Task { await appModel.switchProfile(selected) }
             }
         )

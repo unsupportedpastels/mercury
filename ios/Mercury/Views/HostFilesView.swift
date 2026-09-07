@@ -32,8 +32,37 @@ struct HostFilesView: View {
         var id: String { path }
     }
 
+    private var relayTarget: RelayPairedTarget? {
+        appModel.activeRelayTarget ?? appModel.selectedRelayTarget
+    }
+
     private var scope: String {
-        "\(appModel.serverOrigin ?? "")\u{0}\(appModel.activeProfile)"
+        if let target = relayTarget {
+            return "relay:\(target.relayOrigin)\u{0}\(target.id.uuidString)\u{0}\(appModel.activeProfile)"
+        }
+        return "direct:\(appModel.serverOrigin ?? "")\u{0}\(appModel.activeProfile)"
+    }
+
+    private var displayedEntries: [HostFileEntry] {
+        guard mode == .projectFolder, let listing = browser.listing else {
+            return browser.visibleEntries
+        }
+        let permittedPaths = Set(
+            HostFilesFolderPickerPolicy.directories(in: listing).map(\.path)
+        )
+        return browser.visibleEntries.filter { permittedPaths.contains($0.path) }
+    }
+
+    private var displayedIsEmpty: Bool {
+        if mode == .projectFolder, browser.listing != nil {
+            return !browser.isLoading && browser.errorMessage == nil && displayedEntries.isEmpty
+        }
+        return browser.isEmpty
+    }
+
+    private var parentPath: String? {
+        guard let listing = browser.listing else { return nil }
+        return HostFilesFolderPickerPolicy.parentPath(in: listing)
     }
 
     var body: some View {
@@ -52,7 +81,9 @@ struct HostFilesView: View {
                         } label: {
                             Label("Choose this folder", systemImage: "checkmark.circle.fill")
                         }
-                        .disabled(mutationPending)
+                        .disabled(
+                            mutationPending || !HostFilesFolderPickerPolicy.canSelect(listing)
+                        )
                     }
                 }
             }
@@ -70,12 +101,17 @@ struct HostFilesView: View {
                 if browser.isLoading && browser.listing == nil {
                     HStack { Spacer(); ProgressView(); Spacer() }
                         .listRowBackground(Color.clear)
-                } else if browser.isEmpty {
-                    Label(browser.filter.isEmpty ? "This folder is empty" : "No matching files", systemImage: "tray")
+                } else if displayedIsEmpty {
+                    Label(
+                        mode == .projectFolder
+                            ? (browser.filter.isEmpty ? "No permitted folders" : "No matching folders")
+                            : (browser.filter.isEmpty ? "This folder is empty" : "No matching files"),
+                        systemImage: "tray"
+                    )
                         .foregroundStyle(Color.secondary)
                 }
 
-                ForEach(browser.visibleEntries, id: \.path) { entry in
+                ForEach(displayedEntries, id: \.path) { entry in
                     row(entry)
                 }
             }
@@ -86,14 +122,16 @@ struct HostFilesView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                if browser.listing != nil {
+                if let listing = browser.listing {
                     Button {
                         folderName = ""
                         showCreateFolder = true
                     } label: {
                         Image(systemName: "folder.badge.plus")
                     }
-                    .disabled(mutationPending)
+                    .disabled(
+                        mutationPending || !HostFilesFolderPickerPolicy.canSelect(listing)
+                    )
                     .accessibilityLabel("Create folder")
                 }
                 Button { Task { await reloadCurrent() } } label: {
@@ -102,8 +140,13 @@ struct HostFilesView: View {
                 .disabled(browser.isLoading || mutationPending)
                 .accessibilityLabel("Refresh files")
             }
-            ToolbarItem(placement: .topBarLeading) {
-                if let parent = browser.listing?.parentPath {
+            ToolbarItemGroup(placement: .topBarLeading) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .accessibilityLabel("Back")
+
+                if let parent = parentPath {
                     Button {
                         Task { await load(path: parent) }
                     } label: {
@@ -158,6 +201,7 @@ struct HostFilesView: View {
             }
         }
         .amoledScreen()
+        .interactiveDismissDisabled(true)
     }
 
     @ViewBuilder
@@ -199,15 +243,27 @@ struct HostFilesView: View {
     }
 
     private func load(path: String?) async {
-        if browser.scope != scope { client = nil }
-        let request = browser.beginLoad(scope: scope, path: path)
+        let requestedScope = scope
+        let scopeChanged = browser.scope != requestedScope
+        if scopeChanged {
+            client = nil
+        }
+        preview = nil
+        previewLoading = false
+        mutationPending = false
+        // A path is only an identity within its origin/profile. A refresh
+        // racing a transport switch must restart at the new server's root.
+        let requestedPath = scopeChanged ? nil : path
+        let request = browser.beginLoad(scope: requestedScope, path: requestedPath)
         do {
             let activeClient = try filesClient()
-            let listing = try await activeClient.list(path: path)
+            let listing = try await activeClient.list(path: requestedPath)
+            guard request.scope == scope else { return }
             _ = browser.apply(listing, for: request)
         } catch is CancellationError {
             return
         } catch {
+            guard request.scope == scope else { return }
             _ = browser.fail(safeFilesError(error), for: request)
         }
     }
@@ -218,15 +274,10 @@ struct HostFilesView: View {
 
     private func filesClient() throws -> HostFilesClient {
         if let client { return client }
-        guard let origin = appModel.serverOrigin else { throw HermesAuthError.authRejected }
-        let created: HostFilesClient
-        if let pair = KeychainCredentialStore().tokens(for: origin),
-           let token = String(data: pair.accessToken, encoding: .utf8),
-           !token.isEmpty {
-            created = try HostFilesClient(origin: origin, bearerToken: token)
-        } else {
-            created = try HostFilesClient(cookieAuthenticatedOrigin: origin)
-        }
+        let created = try HostFilesAccess.makeClient(
+            origin: appModel.serverOrigin,
+            relayActive: relayTarget != nil
+        )
         client = created
         return created
     }
@@ -243,8 +294,10 @@ struct HostFilesView: View {
 
     private func previewFile(_ entry: HostFileEntry) {
         guard !entry.isDirectory else { return }
+        let request = browser.beginPreview(path: entry.path)
         previewLoading = true
         Task {
+            guard request.scope == scope, browser.isCurrent(request) else { return }
             do {
                 let content = try await filesClient().read(path: entry.path)
                 let textual = content.mimeType.hasPrefix("text/")
@@ -252,31 +305,58 @@ struct HostFilesView: View {
                     || content.mimeType == "application/xml"
                 let text = textual ? String(data: content.bytes, encoding: .utf8) : nil
                 await MainActor.run {
+                    guard request.scope == scope, browser.isCurrent(request) else { return }
                     previewLoading = false
                     preview = FilePreview(path: content.path, title: content.name, text: text, mimeType: content.mimeType)
                 }
-            } catch {
+            } catch is CancellationError {
                 await MainActor.run {
+                    guard request.scope == scope, browser.isCurrent(request) else { return }
                     previewLoading = false
-                    browser = failingCurrentState(safeFilesError(error))
+                }
+            } catch {
+                let message = safeFilesError(error)
+                await MainActor.run {
+                    guard request.scope == scope, browser.isCurrent(request) else { return }
+                    previewLoading = false
+                    browser = failingCurrentState(message)
                 }
             }
         }
     }
 
     private func createFolder() {
-        guard let parent = browser.listing?.path else { return }
+        guard let listing = browser.listing,
+              HostFilesFolderPickerPolicy.canSelect(listing),
+              let parent = validCanonicalHostFilePath(listing.path) else { return }
+        let request = browser.beginCreate(parentPath: parent)
         let requestedName = folderName
         mutationPending = true
         Task {
+            guard request.scope == scope, browser.isCurrent(request) else { return }
             do {
-                let listing = try await filesClient().createDirectory(parentPath: parent, name: requestedName)
-                let request = browser.beginLoad(scope: scope, path: listing.path)
-                _ = browser.apply(listing, for: request)
-                mutationPending = false
+                let created = try await filesClient().createDirectory(
+                    parentPath: parent,
+                    name: requestedName
+                )
+                await MainActor.run {
+                    guard request.scope == scope, browser.isCurrent(request) else { return }
+                    let loadRequest = browser.beginLoad(scope: request.scope, path: created.path)
+                    _ = browser.apply(created, for: loadRequest)
+                    mutationPending = false
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    guard request.scope == scope, browser.isCurrent(request) else { return }
+                    mutationPending = false
+                }
             } catch {
-                mutationPending = false
-                browser = failingCurrentState(safeFilesError(error))
+                let message = safeFilesError(error)
+                await MainActor.run {
+                    guard request.scope == scope, browser.isCurrent(request) else { return }
+                    mutationPending = false
+                    browser = failingCurrentState(message)
+                }
             }
         }
     }
@@ -289,6 +369,14 @@ struct HostFilesView: View {
     }
 
     private func safeFilesError(_ error: Error) -> String {
+        if let access = error as? HostFilesAccessError {
+            switch access {
+            case .relayUnsupported:
+                return "Folder browsing and creation are unavailable through Mercury Relay; enter an existing server folder path manually."
+            case .directOriginUnavailable:
+                return "Connect directly to a Hermes server to browse folders."
+            }
+        }
         if let auth = error as? HermesAuthError {
             switch auth {
             case .authRejected:

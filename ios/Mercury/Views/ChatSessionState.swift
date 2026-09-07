@@ -61,6 +61,7 @@ final class ChatSessionState {
     var isSending = false
     var isStopping = false
     var isComposerActionPending = false
+    var promptSubmission = PromptSubmissionLifecycle()
     var userMessageScrollGeneration = 0
     var connectionNote: String?
 

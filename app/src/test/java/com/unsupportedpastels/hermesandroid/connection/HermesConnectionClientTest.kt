@@ -115,6 +115,22 @@ class HermesConnectionClientTest {
     }
 
     @Test
+    fun profileRestNamesPreserveTrimmingAndLegacyGrammar() = runTest {
+        val engine = MockEngine { request ->
+            assertEquals("/api/profiles", request.url.encodedPath)
+            respond(
+                """{"profiles":[{"name":" default "},{"name":"Work Profile"},{"name":"default"},{"name":"  "},{"name":"work"}]}""",
+                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+        val profiles = HttpHermesConnectionClient(HttpClient(engine)).loadProfiles(
+            ServerOrigin.parse("https://hermes.example"),
+            "opaque-access",
+        )
+        assertEquals(listOf("default", "Work Profile", "work"), profiles)
+    }
+
+    @Test
     fun settingsLoadsProfilesAndProfileDefaultAndRequiresExplicitExpensiveConfirmation() = runTest {
         val requested = mutableListOf<String>()
         val engine = MockEngine { request ->
