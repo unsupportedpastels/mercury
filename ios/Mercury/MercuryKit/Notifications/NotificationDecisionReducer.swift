@@ -79,7 +79,7 @@ enum NotificationDecisionReducer {
                 body: preview
             )
 
-        case .clarifyRequest(_, _, let question, _, _):
+        case .clarifyRequest(_, _, let question, _, _, _):
             guard !watermark.hasOpenClarify else { return nil }
             watermark.hasOpenClarify = true
             guard NotificationVisibilityPolicy.shouldPost(

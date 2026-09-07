@@ -49,8 +49,8 @@ extension ChatEvent {
             return .toolComplete(sessionID: newID, toolID: toolID, name: name, summary: summary)
         case .statusUpdate(_, let kind, let text):
             return .statusUpdate(sessionID: newID, kind: kind, text: text)
-        case .clarifyRequest(_, let requestID, let question, let choices, let multiSelect):
-            return .clarifyRequest(sessionID: newID, requestID: requestID, question: question, choices: choices, multiSelect: multiSelect)
+        case .clarifyRequest(_, let requestID, let question, let choices, let multiSelect, let questions):
+            return .clarifyRequest(sessionID: newID, requestID: requestID, question: question, choices: choices, multiSelect: multiSelect, questions: questions)
         case .clarifyExpire(_, let requestID):
             return .clarifyExpire(sessionID: newID, requestID: requestID)
         case .approvalRequest(_, let requestID, let command, let description, let choices):

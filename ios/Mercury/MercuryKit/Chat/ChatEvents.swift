@@ -86,7 +86,9 @@ enum ChatEvent: Sendable, Equatable {
     case toolStart(sessionID: String, toolID: String, name: String, context: String?)
     case toolComplete(sessionID: String, toolID: String, name: String, summary: String?)
     case statusUpdate(sessionID: String, kind: String, text: String)
-    case clarifyRequest(sessionID: String, requestID: String, question: String, choices: [String], multiSelect: Bool)
+    /// A batch request carries `questions`; the top-level fields mirror the
+    /// first question so single-question code paths keep working.
+    case clarifyRequest(sessionID: String, requestID: String, question: String, choices: [String], multiSelect: Bool, questions: [ClarifyQuestion] = [])
     case clarifyExpire(sessionID: String, requestID: String)
     case approvalRequest(sessionID: String, requestID: String?, command: String?, description: String?, choices: [String])
     case approvalExpire(sessionID: String, requestID: String)
@@ -102,7 +104,7 @@ enum ChatEvent: Sendable, Equatable {
              .toolGenerating(let s, _), .sessionTitle(let s, _),
              .sessionInfo(let s, _, _, _, _, _, _, _), .error(let s, _),
              .toolStart(let s, _, _, _), .toolComplete(let s, _, _, _),
-             .statusUpdate(let s, _, _), .clarifyRequest(let s, _, _, _, _),
+             .statusUpdate(let s, _, _), .clarifyRequest(let s, _, _, _, _, _),
              .clarifyExpire(let s, _), .approvalRequest(let s, _, _, _, _),
              .approvalExpire(let s, _),
              .unsupportedBlockingRequest(let s, _, _, _),
@@ -184,4 +186,12 @@ struct ChatResponse: Sendable, Equatable {
 
     var status: Status
     var nextApproval: ChatEvent?
+}
+
+/// One question of a batch clarify request; `qid` is echoed back in `clarify.respond`.
+struct ClarifyQuestion: Equatable, Sendable, Hashable {
+    let qid: String
+    let question: String
+    let choices: [String]
+    let multiSelect: Bool
 }

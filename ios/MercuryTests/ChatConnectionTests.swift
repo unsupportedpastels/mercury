@@ -1087,6 +1087,24 @@ final class ChatConnectionTests: XCTestCase {
         XCTAssertEqual(params.count, 1)
     }
 
+    func testClarifyRespondSendsQuestionIDOnlyForBatchAnswers() async throws {
+        let socket = m7Socket(method: "clarify.respond", result: #"{"status":"ok","remaining":["q1"]}"#)
+        let connection = try ChatConnection(socket: socket)
+        _ = connection.start()
+        let response = try await connection.respondToClarification(requestID: "rid", answer: "staging", questionID: "q0")
+        XCTAssertEqual(response.status, .ok)
+        let params = try decodedSentParams(of: socket)
+        XCTAssertEqual(params["request_id"] as? String, "rid")
+        XCTAssertEqual(params["question_id"] as? String, "q0")
+        XCTAssertEqual(params["answer"] as? String, "staging")
+
+        let single = m7Socket(method: "clarify.respond", result: #"{"status":"ok"}"#)
+        let singleConnection = try ChatConnection(socket: single)
+        _ = singleConnection.start()
+        _ = try await singleConnection.respondToClarification(requestID: "rid", answer: "")
+        XCTAssertNil(try decodedSentParams(of: single)["question_id"])
+    }
+
     func testM7MethodNotFoundPreservesExactMethod() async throws {
         let socket = ConnectionTestSocket(frames: [])
         socket.autoRespond = { sent in

@@ -328,7 +328,11 @@ struct ChatView: View {
                 onClarifyAnswer: { answer in
                     await answerClarify(answer)
                 },
-                onDismiss: { state.pendingRequest = nil }
+                onDismiss: { state.pendingRequest = nil },
+                clarifyQuestion: state.currentClarifyQuestion,
+                clarifyPosition: state.currentClarifyQuestion.map { current in
+                    (index: (state.clarifyQuestions.firstIndex(of: current) ?? 0) + 1, total: state.clarifyQuestions.count)
+                }
             )
         }
         .sheet(item: $state.pendingSecure) { secure in
@@ -413,7 +417,7 @@ extension ApprovalSheet.Request: Identifiable {
             }
             return "approval:\(requestID ?? [command ?? "", description ?? "", choices.joined(separator: "\u{1F}")].joined(separator: "\u{1E}"))"
         case .clarify(let event):
-            guard case .clarifyRequest(_, let requestID, _, _, _) = event else {
+            guard case .clarifyRequest(_, let requestID, _, _, _, _) = event else {
                 return "clarify:unknown"
             }
             return "clarify:\(requestID)"

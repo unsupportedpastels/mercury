@@ -194,7 +194,7 @@ internal fun SessionDetailScreen(
     onReasoningSelected: (String) -> Unit,
     onFastSelected: (Boolean) -> Unit,
     onOpenModelPicker: () -> Unit,
-    onClarificationResponse: (String, String) -> Unit,
+    onClarificationResponse: (String, String?, String) -> Unit,
     onApprovalResponse: (String, Boolean) -> Unit,
     onBlockingResponse: (UnsupportedBlockingKind, String, String) -> Unit,
     showStop: Boolean,
@@ -1245,7 +1245,7 @@ private fun RunStateContent(
     processRows: List<ProcessRow>,
     runActive: Boolean,
     durableSessionId: DurableSessionId,
-    onClarificationResponse: (String, String) -> Unit,
+    onClarificationResponse: (String, String?, String) -> Unit,
     onApprovalResponse: (String, Boolean) -> Unit,
     onBlockingResponse: (UnsupportedBlockingKind, String, String) -> Unit,
 ) {

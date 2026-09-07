@@ -65,6 +65,7 @@ extension ChatView {
             Task { await loadProcessRows() }
 
         case .approvalRequest, .clarifyRequest:
+            state.clarifyAnsweredIDs = []
             state.pendingRequest = state.transcript.pendingRequest.map { request in
                 switch request {
                 case .approval(let approvalEvent): return .approval(approvalEvent)

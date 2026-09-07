@@ -104,13 +104,22 @@ sealed interface ChatEvent {
 
     data class StatusUpdate(override val sessionId: String, val kind: String, val text: String) : ChatEvent
 
+    /**
+     * A clarify request. Hermes emits either one question (`question`,
+     * `choices`, `multi_select`) or a batch (`questions[]`, each answered
+     * separately by `question_id`). For a batch the top-level fields mirror
+     * the first question so single-question renderers still show something.
+     */
     data class ClarifyRequest(
         override val sessionId: String,
         val requestId: String,
         val question: String,
         val choices: List<String>,
         val multiSelect: Boolean,
-    ) : ChatEvent
+        val questions: List<ClarifyQuestion> = emptyList(),
+    ) : ChatEvent {
+        val isBatch: Boolean get() = questions.isNotEmpty()
+    }
 
     data class ClarifyExpire(override val sessionId: String, val requestId: String) : ChatEvent
 
@@ -137,3 +146,11 @@ sealed interface ChatEvent {
         val requestId: String,
     ) : ChatEvent
 }
+
+/** One question of a batch clarify request; `qid` is what `clarify.respond` echoes back. */
+data class ClarifyQuestion(
+    val qid: String,
+    val question: String,
+    val choices: List<String>,
+    val multiSelect: Boolean,
+)

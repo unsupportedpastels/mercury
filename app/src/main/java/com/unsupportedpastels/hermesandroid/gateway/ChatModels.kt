@@ -1,5 +1,6 @@
 package com.unsupportedpastels.hermesandroid.gateway
 
+import com.unsupportedpastels.mercury.core.transcript.ClarifyQuestion
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.RunTodoItem
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
@@ -334,6 +335,8 @@ interface HermesChatEvent {
         val question: String,
         val choices: List<String>,
         val multiSelect: Boolean,
+        /** Batch form: answered one `qid` at a time; empty for a single question. */
+        val questions: List<ClarifyQuestion> = emptyList(),
     ) : HermesChatEvent
 
     data class ClarifyExpire(

@@ -188,7 +188,7 @@ fun HermesApp(
     onSteerMessage: (DurableSessionId, String) -> Unit = { _, _ -> },
     onReasoningSelected: (DurableSessionId, String) -> Unit = { _, _ -> },
     onFastSelected: (DurableSessionId, Boolean) -> Unit = { _, _ -> },
-    onClarificationResponse: (DurableSessionId, String, String) -> Unit = { _, _, _ -> },
+    onClarificationResponse: (DurableSessionId, String, String?, String) -> Unit = { _, _, _, _ -> },
     onApprovalResponse: (DurableSessionId, String, Boolean) -> Unit = { _, _, _ -> },
     onBlockingResponse: (DurableSessionId, UnsupportedBlockingKind, String, String) -> Unit = { _, _, _, _ -> },
     onStopSession: (DurableSessionId) -> Unit = {},
@@ -852,8 +852,8 @@ fun HermesApp(
                         onBranchSession = { count, name ->
                             onBranchSession(session.id, count, name)
                         },
-                        onClarificationResponse = { requestId, answer ->
-                            onClarificationResponse(session.id, requestId, answer)
+                        onClarificationResponse = { requestId, questionId, answer ->
+                            onClarificationResponse(session.id, requestId, questionId, answer)
                         },
                         onApprovalResponse = { choice, all ->
                             onApprovalResponse(session.id, choice, all)

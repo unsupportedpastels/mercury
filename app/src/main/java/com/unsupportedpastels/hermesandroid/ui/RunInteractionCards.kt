@@ -133,11 +133,18 @@ internal fun ThinkingBlock(
 internal fun ClarificationCard(
     durableSessionId: DurableSessionId,
     interaction: ClarificationInteraction,
-    onResponse: (String, String) -> Unit,
+    onResponse: (requestId: String, questionId: String?, answer: String) -> Unit,
 ) {
+    // A batch presents one question at a time (shared decision); a single
+    // request renders its only question.
+    val current = interaction.currentQuestion
+    val questionId = current?.qid
+    val questionText = interaction.displayQuestion
+    val choices = interaction.displayChoices
+    val multiSelect = interaction.displayMultiSelect
     // Answer semantics are the shared clarify decision (same on iOS).
-    var clarifyState by remember(interaction.requestId) {
-        mutableStateOf(ClarifyAnswerState(interaction.choices, interaction.multiSelect))
+    var clarifyState by remember(interaction.requestId, questionId) {
+        mutableStateOf(ClarifyAnswerState(choices, multiSelect))
     }
     val pending = interaction.lifecycle == RunInteractionLifecycle.Pending
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -146,20 +153,27 @@ internal fun ClarificationCard(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text("Clarification", style = MaterialTheme.typography.titleSmall)
-            Text(interaction.question)
+            if (current != null && interaction.questions.size > 1) {
+                Text(
+                    "Question ${ClarifyAnswerPolicy.positionOf(interaction.questions, current)} of ${interaction.questions.size}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(questionText)
             if (pending) {
                 // Grounded in the desktop clarify card: choices are shown as
                 // selectable rows, an "Other" free-text field is ALWAYS offered
                 // alongside them, and the card is confirmed with Skip / Continue.
                 // Typing in the field and picking a choice are mutually exclusive.
-                if (interaction.choices.isNotEmpty()) {
-                    if (interaction.multiSelect) {
+                if (choices.isNotEmpty()) {
+                    if (multiSelect) {
                         FlowRow(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
-                            interaction.choices.forEach { choice ->
+                            choices.forEach { choice ->
                                 FilterChip(
                                     selected = choice in clarifyState.selectedChoices,
                                     onClick = { clarifyState = clarifyState.select(choice) },
@@ -172,7 +186,7 @@ internal fun ClarificationCard(
                             modifier = Modifier.fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            interaction.choices.forEach { choice ->
+                            choices.forEach { choice ->
                                 val chosen = choice in clarifyState.selectedChoices
                                 Surface(
                                     onClick = { clarifyState = clarifyState.select(choice) },
@@ -203,7 +217,7 @@ internal fun ClarificationCard(
                     value = clarifyState.answer,
                     onValueChange = { clarifyState = clarifyState.typeAnswer(it) },
                     label = {
-                        Text(ClarifyAnswerPolicy.otherFieldLabel(hasChoices = interaction.choices.isNotEmpty()))
+                        Text(ClarifyAnswerPolicy.otherFieldLabel(hasChoices = choices.isNotEmpty()))
                     },
                     modifier = Modifier.fillMaxWidth(),
                     enabled = true,
@@ -218,7 +232,7 @@ internal fun ClarificationCard(
                     // treats it as "no preference / proceed".
                     TextButton(
                         onClick = {
-                            onResponse(interaction.requestId, ClarifyAnswerPolicy.SKIP_ANSWER)
+                            onResponse(interaction.requestId, questionId, ClarifyAnswerPolicy.SKIP_ANSWER)
                         },
                     ) {
                         Text("Skip")
@@ -226,7 +240,7 @@ internal fun ClarificationCard(
                     Button(
                         enabled = pendingAnswer != null,
                         onClick = {
-                            pendingAnswer?.let { onResponse(interaction.requestId, it) }
+                            pendingAnswer?.let { onResponse(interaction.requestId, questionId, it) }
                         },
                     ) {
                         Text("Continue")

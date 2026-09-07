@@ -449,9 +449,16 @@ class HermesChatConnection internal constructor(
     override suspend fun respondToClarification(
         requestId: String,
         answer: String,
+    ): HermesChatResponse = respondToClarification(requestId, questionId = null, answer = answer)
+
+    override suspend fun respondToClarification(
+        requestId: String,
+        questionId: String?,
+        answer: String,
     ): HermesChatResponse {
         val params = buildJsonObject {
             put("request_id", boundedRpcInput(requestId, HERMES_CHAT_MAX_EVENT_ID_CHARS, "request ID"))
+            questionId?.let { put("question_id", boundedRpcInput(it, HERMES_CHAT_MAX_EVENT_ID_CHARS, "question ID")) }
             put("answer", boundedRpcInput(answer, HERMES_CHAT_MAX_EVENT_TEXT_CHARS, "answer", allowBlank = true))
         }
         return parseInteractionResponse(request("clarify.respond", params))

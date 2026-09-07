@@ -3,6 +3,8 @@ package com.unsupportedpastels.hermesandroid.app
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatEvent
 import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
 import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
+import com.unsupportedpastels.mercury.core.interaction.ClarifyAnswerPolicy
+import com.unsupportedpastels.mercury.core.transcript.ClarifyQuestion
 
 const val MAX_RUN_TOOL_ROWS = 50
 const val MAX_RUN_TODO_ITEMS = 50
@@ -66,7 +68,21 @@ data class ClarificationInteraction(
     val choices: List<String>,
     val multiSelect: Boolean,
     val lifecycle: RunInteractionLifecycle = RunInteractionLifecycle.Pending,
-)
+    /** Batch form; empty for a single question. */
+    val questions: List<ClarifyQuestion> = emptyList(),
+    val answeredQuestionIds: Set<String> = emptySet(),
+) {
+    val isBatch: Boolean get() = questions.isNotEmpty()
+
+    /** The question to show now: the next unanswered one of a batch (shared decision). */
+    val currentQuestion: ClarifyQuestion?
+        get() = ClarifyAnswerPolicy.nextQuestion(questions, answeredQuestionIds)
+
+    /** Text, choices and mode to render: the current batch question or the single question. */
+    val displayQuestion: String get() = currentQuestion?.question ?: question
+    val displayChoices: List<String> get() = currentQuestion?.choices ?: choices
+    val displayMultiSelect: Boolean get() = currentQuestion?.multiSelect ?: multiSelect
+}
 
 data class ApprovalInteraction(
     val runtimeSessionId: RuntimeSessionId,
@@ -207,8 +223,33 @@ data class RunEventState(
                     .take(MAX_RUN_INTERACTION_CHOICES)
                     .map { it.take(MAX_RUN_INTERACTION_CHOICE_CHARS) },
                 multiSelect = event.multiSelect,
+                questions = event.questions.take(MAX_RUN_INTERACTION_CHOICES).map { entry ->
+                    ClarifyQuestion(
+                        qid = entry.qid.take(MAX_RUN_INTERACTION_ID_CHARS),
+                        question = entry.question.take(MAX_RUN_INTERACTION_TEXT_CHARS),
+                        choices = entry.choices
+                            .take(MAX_RUN_INTERACTION_CHOICES)
+                            .map { it.take(MAX_RUN_INTERACTION_CHOICE_CHARS) },
+                        multiSelect = entry.multiSelect,
+                    )
+                },
             ),
         )
+
+    /**
+     * Records one answered batch question. The card stays pending while
+     * questions remain; the host resolves the request after the last one.
+     */
+    fun markClarificationQuestionAnswered(requestId: String, questionId: String): RunEventState {
+        val current = clarification ?: return this
+        if (current.requestId != requestId.take(MAX_RUN_INTERACTION_ID_CHARS)) return this
+        return copy(
+            clarification = current.copy(
+                answeredQuestionIds = current.answeredQuestionIds + questionId,
+                lifecycle = RunInteractionLifecycle.Pending,
+            ),
+        )
+    }
 
     private fun reduceClarificationExpiry(event: HermesChatEvent.ClarifyExpire): RunEventState {
         val current = clarification ?: return this

@@ -155,6 +155,13 @@ interface HermesChatSession {
         answer: String,
     ): HermesChatResponse = throw HermesChatProtocolException("Clarification response is not available")
 
+    /** Batch clarify: answers one question of the request by its `qid`. */
+    suspend fun respondToClarification(
+        requestId: String,
+        questionId: String?,
+        answer: String,
+    ): HermesChatResponse = respondToClarification(requestId, answer)
+
     suspend fun respondToApproval(
         runtimeSessionId: RuntimeSessionId,
         choice: String,
