@@ -332,8 +332,8 @@ private struct CreateProjectView: View {
                 .accessibilityLabel(folderPath.isEmpty ? "Browse server folders" : "Change server folder")
 
                 // Keep manual registration available when the active transport
-                // has no folder-browser capability (notably Relay). The server
-                // remains authoritative for whether the existing path exists.
+                // has no folder-browser capability (for example an older Relay host). The server
+                // registers metadata only; manual entry does not create or check a folder.
                 TextField("Absolute server folder path", text: $folderPath)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()

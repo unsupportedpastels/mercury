@@ -58,6 +58,8 @@ Mercury is a client, not an agent host. Install and configure Hermes Agent on a 
 
 The optional **Relay** tab can instead scan the one-time QR code produced by a Mercury Relay-enabled host. Compare and approve the short fingerprint on the host before connecting. The router receives opaque routing metadata and encrypted records only; QR capabilities and device keys never enter logs or the direct-server credential store.
 
+**New Project** on Android and iOS lets you browse the connected host's existing folders, create a new folder inside the selected directory, and register that folder as a project. Direct mode uses the official Hermes files API. Relay requires the host plugin's versioned folder capability; older hosts show upgrade guidance and allow an existing absolute folder path to be entered manually. Host permissions and managed-root restrictions still apply, and folder paths remain encrypted across Relay.
+
 For a self-hosted server, Mercury detects the authentication providers advertised by the backend and shows the matching sign-in option:
 
 - **Nous OAuth** — system-browser PKCE through Nous Portal. This is the recommended choice for any host reachable beyond your trusted network.

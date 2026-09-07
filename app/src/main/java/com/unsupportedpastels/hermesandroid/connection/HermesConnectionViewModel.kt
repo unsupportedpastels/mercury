@@ -108,6 +108,7 @@ import com.unsupportedpastels.hermesandroid.session.SessionFilterScope
 import com.unsupportedpastels.hermesandroid.session.evaluateBulkDeleteSelection
 import com.unsupportedpastels.hermesandroid.session.SessionListFilter
 import com.unsupportedpastels.hermesandroid.session.toggleBulkSelection
+import com.unsupportedpastels.hermesandroid.relay.RelayFoldersClient
 import com.unsupportedpastels.hermesandroid.relay.TlsRelayBinarySocketFactory
 import com.unsupportedpastels.hermesandroid.relay.RelayConnector
 import com.unsupportedpastels.hermesandroid.relay.RelayHermesChatSocket
@@ -2644,10 +2645,37 @@ class HermesConnectionViewModel(
         return job
     }
 
+    private val relayFoldersClient = RelayFoldersClient()
+
     suspend fun loadHostDirectories(
         path: String? = null,
-    ): HostDirectoryListing = withHermesRestOperation { serverOrigin, accessToken ->
-        client.loadHostDirectories(serverOrigin, accessToken, path)
+    ): HostDirectoryListing {
+        val target = activeRelayTarget
+        if (target == null) {
+            return withHermesRestOperation { serverOrigin, accessToken ->
+                client.loadHostDirectories(serverOrigin, accessToken, path)
+            }
+        }
+        val profile = mutableSnapshots.value.selectedProfile
+        val expectedGeneration = generation
+        val expectedOrigin = activeOrigin
+        return withRelayReader(target, profile) { session ->
+            relayFoldersClient.list(
+                profile = profile,
+                path = path,
+                ensureCurrent = {
+                    ensureRelayFolderScope(target, expectedOrigin, profile, expectedGeneration)
+                },
+                request = { method, params ->
+                    ensureRelayFolderScope(target, expectedOrigin, profile, expectedGeneration)
+                    session.relayRequest(method, params).also {
+                        ensureRelayFolderScope(target, expectedOrigin, profile, expectedGeneration)
+                    }
+                },
+            )
+        }.also {
+            ensureRelayFolderScope(target, expectedOrigin, profile, expectedGeneration)
+        }
     }
 
     suspend fun loadHostFiles(path: String? = null): HostFileListing =
@@ -2663,8 +2691,34 @@ class HermesConnectionViewModel(
     suspend fun createHostDirectory(
         parentPath: String,
         name: String,
-    ): HostDirectoryListing = withHermesRestOperation { serverOrigin, accessToken ->
-        client.createHostDirectory(serverOrigin, accessToken, parentPath, name)
+    ): HostDirectoryListing {
+        val target = activeRelayTarget
+        if (target == null) {
+            return withHermesRestOperation { serverOrigin, accessToken ->
+                client.createHostDirectory(serverOrigin, accessToken, parentPath, name)
+            }
+        }
+        val profile = mutableSnapshots.value.selectedProfile
+        val expectedGeneration = generation
+        val expectedOrigin = activeOrigin
+        return withRelayReader(target, profile) { session ->
+            relayFoldersClient.create(
+                profile = profile,
+                parentPath = parentPath,
+                name = name,
+                ensureCurrent = {
+                    ensureRelayFolderScope(target, expectedOrigin, profile, expectedGeneration)
+                },
+                request = { method, params ->
+                    ensureRelayFolderScope(target, expectedOrigin, profile, expectedGeneration)
+                    session.relayRequest(method, params).also {
+                        ensureRelayFolderScope(target, expectedOrigin, profile, expectedGeneration)
+                    }
+                },
+            )
+        }.also {
+            ensureRelayFolderScope(target, expectedOrigin, profile, expectedGeneration)
+        }
     }
 
     private val relayImageReader = com.unsupportedpastels.hermesandroid.relay.RelayImageReader()
@@ -2763,10 +2817,24 @@ class HermesConnectionViewModel(
     suspend fun createProject(
         name: String,
         path: String,
-        profile: String = "default",
+        profile: String = mutableSnapshots.value.selectedProfile,
     ): ProjectSummary {
-        val created = withProjectMetadataSession { session ->
-            session.createProject(name, path, profile)
+        val target = activeRelayTarget
+        val created = if (target != null) {
+            val expectedGeneration = generation
+            val expectedOrigin = activeOrigin
+            withRelayReader(target, profile) { session ->
+                ensureRelayFolderScope(target, expectedOrigin, profile, expectedGeneration)
+                session.createProject(name, path, profile).also {
+                    ensureRelayFolderScope(target, expectedOrigin, profile, expectedGeneration)
+                }
+            }.also {
+                ensureRelayFolderScope(target, expectedOrigin, profile, expectedGeneration)
+            }
+        } else {
+            withProjectMetadataSession { session ->
+                session.createProject(name, path, profile)
+            }
         }
         val snapshot = mutableSnapshots.value
         val projects = listOf(created) + snapshot.projects.filterNot { it.id == created.id }
@@ -3020,6 +3088,23 @@ class HermesConnectionViewModel(
                 ) }
             }
             parseRelayTranscriptRows(result)
+    }
+
+    private suspend fun ensureRelayFolderScope(
+        target: RelayPairedTarget,
+        expectedOrigin: ServerOrigin?,
+        profile: String,
+        expectedGeneration: Long,
+    ) {
+        currentCoroutineContext().ensureActive()
+        if (
+            generation != expectedGeneration ||
+            activeOrigin != expectedOrigin ||
+            activeRelayTarget?.id != target.id ||
+            mutableSnapshots.value.selectedProfile != profile
+        ) {
+            throw CancellationException("Relay folder scope changed")
+        }
     }
 
     /** Metadata borrows a controller, never replaces its admitted device channel. */
@@ -6679,7 +6764,10 @@ class HermesConnectionViewModel(
                     socket.snapshot?.routingToken?.takeIf { it != target.relayRoutingToken }?.let { renewed ->
                         relayScope.launch { runCatching { relayTargetStore.updateRoutingToken(target.id, renewed) } }
                     }
-                    HermesChatConnection(socket, HERMES_CHAT_MAX_FRAME_BYTES, relayScope, relayRequestIds)
+                    HermesChatConnection(
+                        socket, HERMES_CHAT_MAX_FRAME_BYTES, relayScope, relayRequestIds,
+                        projectPathPreflight = false,
+                    )
                 } catch (error: Throwable) {
                     withContext(NonCancellable) { socket.close() }
                     throw error

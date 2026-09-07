@@ -63,10 +63,12 @@ Version numbers come from `project.yml` (`MARKETING_VERSION`,
   saved choice, one usable configured connection starts automatically; multiple
   configured connections show a picker. A failed or unavailable saved choice
   never silently switches to another host. Settings → Servers lists both kinds.
-- Project folders can be browsed and created over a direct connection, within
-  the host's managed-files permissions. The current Relay contract does not
-  expose folder browsing or creation; an existing host folder can instead be
-  entered by path for project registration, with validation by the host.
+- New Project browses existing host folders and creates new folders within the
+  host's managed-files permissions. Direct mode uses the official Hermes file
+  API; Relay uses the encrypted, versioned `folders` capability advertised by
+  the Mercury Relay host plugin. Older hosts receive upgrade guidance and can
+  still register an existing folder by its absolute path. No direct credentials
+  are used as a Relay fallback, and registering a project does not create a folder.
 - These native startup/toolbar changes are iOS-scoped. Android's corresponding
   native UI changes are deferred rather than changing its navigation as part of
   the reported iOS fixes. Shared profile-name policy is consumed by both clients.

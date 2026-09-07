@@ -82,7 +82,7 @@ struct HostFilesView: View {
                             Label("Choose this folder", systemImage: "checkmark.circle.fill")
                         }
                         .disabled(
-                            mutationPending || !HostFilesFolderPickerPolicy.canSelect(listing)
+                            browser.isLoading || mutationPending || !HostFilesFolderPickerPolicy.canSelect(listing)
                         )
                     }
                 }
@@ -104,7 +104,7 @@ struct HostFilesView: View {
                 } else if displayedIsEmpty {
                     Label(
                         mode == .projectFolder
-                            ? (browser.filter.isEmpty ? "No permitted folders" : "No matching folders")
+                            ? (browser.filter.isEmpty ? "No subfolders here" : "No matching folders")
                             : (browser.filter.isEmpty ? "This folder is empty" : "No matching files"),
                         systemImage: "tray"
                     )
@@ -130,7 +130,7 @@ struct HostFilesView: View {
                         Image(systemName: "folder.badge.plus")
                     }
                     .disabled(
-                        mutationPending || !HostFilesFolderPickerPolicy.canSelect(listing)
+                        browser.isLoading || mutationPending || !HostFilesFolderPickerPolicy.canSelect(listing)
                     )
                     .accessibilityLabel("Create folder")
                 }
@@ -233,6 +233,7 @@ struct HostFilesView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .disabled(browser.isLoading || mutationPending)
 
             if mode == .chatReference && entry.isDirectory {
                 Button { selectReference(entry) } label: { Image(systemName: "at.circle") }
@@ -256,8 +257,12 @@ struct HostFilesView: View {
         let requestedPath = scopeChanged ? nil : path
         let request = browser.beginLoad(scope: requestedScope, path: requestedPath)
         do {
-            let activeClient = try filesClient()
-            let listing = try await activeClient.list(path: requestedPath)
+            let listing: HostFileListing
+            if relayTarget != nil, mode == .projectFolder {
+                listing = try await relayFoldersClient().list(path: requestedPath)
+            } else {
+                listing = try await filesClient().list(path: requestedPath)
+            }
             guard request.scope == scope else { return }
             _ = browser.apply(listing, for: request)
         } catch is CancellationError {
@@ -269,6 +274,7 @@ struct HostFilesView: View {
     }
 
     private func reloadCurrent() async {
+        guard !mutationPending else { return }
         await load(path: browser.listing?.path)
     }
 
@@ -280,6 +286,32 @@ struct HostFilesView: View {
         )
         client = created
         return created
+    }
+
+    private func relayFoldersClient() async throws -> RelayFoldersClient {
+        guard let target = relayTarget else { throw CancellationError() }
+        let expectedScope = scope
+        let profile = appModel.activeProfile
+        let selectionGeneration = appModel.relaySelectionGeneration
+        // Borrow the metadata admission. Opening a competing device connection
+        // here would displace another reader or a retained chat controller.
+        let connection = try await RelayConnectionPool.shared.acquire(target: target, profile: profile)
+        try Task.checkCancellation()
+        guard scope == expectedScope, appModel.relaySelectionGeneration == selectionGeneration else {
+            throw CancellationError()
+        }
+        return RelayFoldersClient(profile: profile) { method, params in
+            try Task.checkCancellation()
+            guard scope == expectedScope, appModel.relaySelectionGeneration == selectionGeneration else {
+                throw CancellationError()
+            }
+            let result = try await connection.relayRequest(method, params: params)
+            try Task.checkCancellation()
+            guard scope == expectedScope, appModel.relaySelectionGeneration == selectionGeneration else {
+                throw CancellationError()
+            }
+            return result
+        }
     }
 
     private func selectReference(_ entry: HostFileEntry) {
@@ -326,7 +358,7 @@ struct HostFilesView: View {
     }
 
     private func createFolder() {
-        guard let listing = browser.listing,
+        guard !mutationPending, !browser.isLoading, let listing = browser.listing,
               HostFilesFolderPickerPolicy.canSelect(listing),
               let parent = validCanonicalHostFilePath(listing.path) else { return }
         let request = browser.beginCreate(parentPath: parent)
@@ -335,10 +367,12 @@ struct HostFilesView: View {
         Task {
             guard request.scope == scope, browser.isCurrent(request) else { return }
             do {
-                let created = try await filesClient().createDirectory(
-                    parentPath: parent,
-                    name: requestedName
-                )
+                let created: HostFileListing
+                if relayTarget != nil, mode == .projectFolder {
+                    created = try await relayFoldersClient().createDirectory(parentPath: parent, name: requestedName)
+                } else {
+                    created = try await filesClient().createDirectory(parentPath: parent, name: requestedName)
+                }
                 await MainActor.run {
                     guard request.scope == scope, browser.isCurrent(request) else { return }
                     let loadRequest = browser.beginLoad(scope: request.scope, path: created.path)
@@ -369,6 +403,7 @@ struct HostFilesView: View {
     }
 
     private func safeFilesError(_ error: Error) -> String {
+        if let folders = error as? RelayFoldersError { return folders.localizedDescription }
         if let access = error as? HostFilesAccessError {
             switch access {
             case .relayUnsupported:
