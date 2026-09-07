@@ -12,7 +12,6 @@ secrets.properties
 # Play publisher service-account key (scoped, never a bare *.json).
 app-play-publisher*.json
 play-service-account*.json
-/local.properties
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml
@@ -21,6 +20,7 @@ play-service-account*.json
 /.idea/assetWizardSettings.xml
 .DS_Store
 /build
+**/build/
 /captures
 .externalNativeBuild
 .cxx

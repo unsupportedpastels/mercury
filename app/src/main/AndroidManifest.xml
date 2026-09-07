@@ -33,7 +33,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
-        android:theme="@style/Theme.HermesAndroid">
+        android:theme="@style/Theme.Mercury">
         <meta-data
             android:name="com.google.mlkit.vision.DEPENDENCIES"
             android:value="barcode_ui" />
@@ -59,7 +59,7 @@
             android:excludeFromRecents="true"
             android:exported="false"
             android:noHistory="true"
-            android:theme="@style/Theme.HermesAndroid.NotificationTap" />
+            android:theme="@style/Theme.Mercury.NotificationTap" />
         <service
             android:name=".notifications.HermesTurnNotificationService"
             android:exported="false"

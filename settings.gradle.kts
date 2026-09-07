@@ -29,6 +29,6 @@ plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
-rootProject.name = "HAM"
+rootProject.name = "mercury"
 include(":app")
 include(":shared:mercury-core")

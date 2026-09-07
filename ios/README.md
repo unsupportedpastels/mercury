@@ -38,17 +38,36 @@ xcodegen
 
 ## Building & testing
 
+Building needs a JDK on `PATH` (or `JAVA_HOME` set): the `Mercury` target's
+pre-build phase runs `./gradlew :shared:mercury-core:link…Framework…` to
+produce the static `MercuryCore` framework. `brew install openjdk@17` and
+follow Homebrew's caveat to put it on your `PATH`.
+
 ```bash
 xcodebuild -project Mercury.xcodeproj -scheme Mercury \
-  -destination 'platform=iOS Simulator,name=iPhone 16 Pro' build test
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build test
 ```
+
+This is the required iOS gate from [`../AGENTS.md`](../AGENTS.md). It also runs
+in CI on macOS (`.github/workflows/ios-ci.yml`) for any change under `ios/`,
+`shared/`, or the Gradle build files; the workflow falls back to the newest
+available iPhone simulator when the runner image lacks an iPhone 17 Pro.
+
+Version numbers come from `project.yml` (`MARKETING_VERSION`,
+`CURRENT_PROJECT_VERSION` under `settings.base`) and track the Android
+`versionName`; see [`../docs/release-readiness.md`](../docs/release-readiness.md).
 
 ## Notes
 
 - Native UI, networking, and secure storage use Apple frameworks; the shared
   KMP core uses `cryptography-kotlin`'s CryptoKit provider for Relay primitives.
 - Minimum deployment target: iOS 17.0.
-- AMOLED-first dark theme: pure `#000000` background (`Theme.swift`), raised
-  surfaces as subtle gray steps. All colors live in `Theme.swift`.
+- Adaptive light/dark theme: every color is defined once in `Theme.swift` as
+  a light/dark pair (`Color.token(light:dark:)`) that resolves from the
+  system appearance via `UIColor` dynamic providers. The roles mirror the
+  Android Material 3 scheme (`background`/`surfaceContainer*`, teal primary,
+  gold "active", green "healthy", Material error) so both apps share one
+  palette; the dark canvas is pure `#000000` with neutral gray surface tiers
+  for OLED screens. No hardcoded hex outside `Theme.swift`.
 - Credentials are stored in the Keychain scoped to the normalized server origin;
   token material is never logged.
