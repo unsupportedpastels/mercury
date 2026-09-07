@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.HermesAndroid" parent="android:Theme.Material.Light.NoActionBar" />
-    <style name="Theme.HermesAndroid.NotificationTap" parent="android:style/Theme.NoDisplay" />
+    <style name="Theme.Mercury" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.Mercury.NotificationTap" parent="android:style/Theme.NoDisplay" />
 </resources>

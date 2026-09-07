@@ -4,9 +4,9 @@
     android:insetBottom="21dp"
     android:insetLeft="21dp"
     android:insetRight="21dp">
-    <!-- Keep the complete official HAM artwork within Android's 66dp adaptive-icon safe zone. -->
+    <!-- Keep the complete official Mercury artwork within Android's 66dp adaptive-icon safe zone. -->
     <bitmap
-        android:src="@drawable/ham_launcher_art"
+        android:src="@drawable/mercury_launcher_art"
         android:gravity="fill"
         android:filter="true" />
 </inset>

@@ -10,6 +10,13 @@ settings:
     SWIFT_VERSION: "5.10"
     CODE_SIGN_STYLE: Automatic
     MERCURY_APP_GROUP_IDENTIFIER: group.com.unsupportedpastels.mercury
+    # Version story mirrors Android (versionName / versionCode in
+    # app/build.gradle.kts). Applied project-wide so the app and its embedded
+    # extensions always carry the same CFBundleShortVersionString and build
+    # number, which App Store validation requires. Bump MARKETING_VERSION with
+    # each release alongside versionName.
+    MARKETING_VERSION: "0.2.3"
+    CURRENT_PROJECT_VERSION: 1
 
 targets:
   MercuryShareKit:
