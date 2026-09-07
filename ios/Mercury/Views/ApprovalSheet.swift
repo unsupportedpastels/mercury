@@ -18,6 +18,10 @@ struct ApprovalSheet: View {
     let onApprovalChoice: (String) async -> Void
     let onClarifyAnswer: (String) async -> Void
     let onDismiss: () -> Void
+    /// Batch clarify: the question to present now and its 1-based position;
+    /// nil renders the request's single question.
+    var clarifyQuestion: ClarifyQuestion? = nil
+    var clarifyPosition: (index: Int, total: Int)? = nil
 
     var body: some View {
         NavigationStack {
@@ -85,8 +89,16 @@ struct ApprovalSheet: View {
 
     @ViewBuilder
     private func clarifyBody(_ event: ChatEvent) -> some View {
-        if case .clarifyRequest(_, _, let question, let choices, let multiSelect) = event {
+        if case .clarifyRequest(_, _, let singleQuestion, let singleChoices, let singleMultiSelect, _) = event {
+        let question = clarifyQuestion?.question ?? singleQuestion
+        let choices = clarifyQuestion?.choices ?? singleChoices
+        let multiSelect = clarifyQuestion?.multiSelect ?? singleMultiSelect
         VStack(alignment: .leading, spacing: 14) {
+            if let clarifyPosition, clarifyPosition.total > 1 {
+                Text("Question \(clarifyPosition.index) of \(clarifyPosition.total)")
+                    .font(.subheadline)
+                    .foregroundStyle(Color.secondaryContent)
+            }
             Text(question)
                 .font(.headline)
                 .textSelection(.enabled)
@@ -144,6 +156,9 @@ struct ApprovalSheet: View {
             clarifyState = ClarifySheetPolicy.State(choices: choices, multiSelect: multiSelect)
         }
         .onChange(of: event) {
+            clarifyState = ClarifySheetPolicy.State(choices: choices, multiSelect: multiSelect)
+        }
+        .onChange(of: clarifyQuestion?.qid) {
             clarifyState = ClarifySheetPolicy.State(choices: choices, multiSelect: multiSelect)
         }
         }

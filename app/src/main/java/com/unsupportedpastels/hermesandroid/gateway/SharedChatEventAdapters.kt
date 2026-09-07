@@ -44,7 +44,7 @@ internal fun SharedChatEvent.toAndroidEvent(todos: List<RunTodoItem>? = null): H
         is SharedChatEvent.ToolComplete -> HermesChatEvent.ToolComplete(runtimeId, toolId, name, summary, todos)
         is SharedChatEvent.StatusUpdate -> HermesChatEvent.StatusUpdate(runtimeId, kind, text)
         is SharedChatEvent.ClarifyRequest ->
-            HermesChatEvent.ClarifyRequest(runtimeId, requestId, question, choices, multiSelect)
+            HermesChatEvent.ClarifyRequest(runtimeId, requestId, question, choices, multiSelect, questions)
         is SharedChatEvent.ClarifyExpire -> HermesChatEvent.ClarifyExpire(runtimeId, requestId)
         is SharedChatEvent.ApprovalRequest ->
             HermesChatEvent.ApprovalRequest(runtimeId, requestId, command, description, choices)
@@ -96,7 +96,7 @@ internal fun HermesChatEvent.toSharedEvent(): SharedChatEvent? = when (this) {
     is HermesChatEvent.ToolComplete -> SharedChatEvent.ToolComplete(sessionId.value, toolId, name, summary)
     is HermesChatEvent.StatusUpdate -> SharedChatEvent.StatusUpdate(sessionId.value, kind, text)
     is HermesChatEvent.ClarifyRequest ->
-        SharedChatEvent.ClarifyRequest(sessionId.value, requestId, question, choices, multiSelect)
+        SharedChatEvent.ClarifyRequest(sessionId.value, requestId, question, choices, multiSelect, questions)
     is HermesChatEvent.ClarifyExpire -> SharedChatEvent.ClarifyExpire(sessionId.value, requestId)
     is HermesChatEvent.ApprovalRequest ->
         SharedChatEvent.ApprovalRequest(sessionId.value, requestId, command, description, choices)

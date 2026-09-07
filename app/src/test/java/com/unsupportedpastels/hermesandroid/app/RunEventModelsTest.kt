@@ -373,4 +373,27 @@ class RunEventModelsTest {
         )
         assertEquals(null, terminal.status)
     }
+
+    @Test
+    fun batchClarificationPresentsOneQuestionAtATimeUntilAllAreAnswered() {
+        val questions = listOf(
+            com.unsupportedpastels.mercury.core.transcript.ClarifyQuestion("q0", "Target?", listOf("staging", "prod"), false),
+            com.unsupportedpastels.mercury.core.transcript.ClarifyQuestion("q1", "Regions?", listOf("eu", "us"), true),
+        )
+        val state = RunEventState().reduce(
+            HermesChatEvent.ClarifyRequest(RuntimeSessionId("rt"), "rid", "Target?", listOf("staging", "prod"), false, questions),
+        )
+        val clarification = checkNotNull(state.clarification)
+        assertEquals(true, clarification.isBatch)
+        assertEquals("q0", clarification.currentQuestion?.qid)
+        assertEquals("Target?", clarification.displayQuestion)
+
+        val afterFirst = state.markClarificationQuestionAnswered("rid", "q0")
+        val remaining = checkNotNull(afterFirst.clarification)
+        assertEquals("q1", remaining.currentQuestion?.qid)
+        assertEquals(listOf("eu", "us"), remaining.displayChoices)
+        assertEquals(true, remaining.displayMultiSelect)
+        assertEquals(RunInteractionLifecycle.Pending, remaining.lifecycle)
+        assertEquals(null, afterFirst.markClarificationQuestionAnswered("rid", "q1").clarification?.currentQuestion)
+    }
 }

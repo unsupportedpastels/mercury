@@ -1,5 +1,7 @@
 package com.unsupportedpastels.mercury.core.interaction
 
+import com.unsupportedpastels.mercury.core.transcript.ClarifyQuestion
+
 /**
  * Answer state for a clarify request, shared by the Android card and the iOS
  * sheet (both grounded in the desktop clarify card): choices are selectable
@@ -41,4 +43,16 @@ object ClarifyAnswerPolicy {
     const val SKIP_ANSWER = ""
 
     fun otherFieldLabel(hasChoices: Boolean): String = if (hasChoices) "Other" else "Response"
+
+    /**
+     * The next question of a batch to present: the first one not yet
+     * answered, in wire order. Null when every question has an answer (the
+     * host then resolves the request) or when the request is not a batch.
+     */
+    fun nextQuestion(questions: List<ClarifyQuestion>, answeredIds: Set<String>): ClarifyQuestion? =
+        questions.firstOrNull { it.qid !in answeredIds }
+
+    /** 1-based position of [question] for a "Question 2 of 3" label. */
+    fun positionOf(questions: List<ClarifyQuestion>, question: ClarifyQuestion): Int =
+        questions.indexOfFirst { it.qid == question.qid } + 1
 }

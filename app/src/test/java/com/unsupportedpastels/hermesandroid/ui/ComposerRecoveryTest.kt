@@ -35,7 +35,7 @@ class ComposerRecoveryTest {
                     onAddAttachments = { emptyList() }, onRemoveAttachment = {},
                     onRemoveHostReference = {}, onSend = { sends++ }, onSteer = { steers++ },
                     onReasoningSelected = {}, onFastSelected = {}, onOpenModelPicker = {},
-                    onClarificationResponse = { _, _ -> }, onApprovalResponse = { _, _ -> },
+                    onClarificationResponse = { _, _, _ -> }, onApprovalResponse = { _, _ -> },
                     onBlockingResponse = { _, _, _ -> }, showStop = controller, stopping = false,
                     onStop = {}, onLoadSessionInsights = {}, maintenanceAvailable = false,
                     maintenanceEnabled = false, onCompressSession = {}, onUndoSession = {},

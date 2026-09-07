@@ -75,7 +75,10 @@ extension ChatEvent {
                 requestID: value.requestId,
                 question: value.question,
                 choices: value.choices,
-                multiSelect: value.multiSelect
+                multiSelect: value.multiSelect,
+                questions: value.questions.map {
+                    ClarifyQuestion(qid: $0.qid, question: $0.question, choices: $0.choices, multiSelect: $0.multiSelect)
+                }
             )
         case let value as MercuryCore.ChatEventClarifyExpire:
             self = .clarifyExpire(sessionID: value.sessionId, requestID: value.requestId)

@@ -1743,7 +1743,7 @@ class HermesAppTest {
             HermesAndroidTheme {
                 HermesApp(
                     snapshot = pending,
-                    onClarificationResponse = { id, request, answer ->
+                    onClarificationResponse = { id, request, _, answer ->
                         response = Triple(id, request, answer)
                     },
                 )
@@ -1786,7 +1786,7 @@ class HermesAppTest {
             HermesAndroidTheme {
                 HermesApp(
                     snapshot = pending,
-                    onClarificationResponse = { id, request, answer ->
+                    onClarificationResponse = { id, request, _, answer ->
                         response = Triple(id, request, answer)
                     },
                 )
@@ -1852,7 +1852,7 @@ class HermesAppTest {
             HermesAndroidTheme {
                 HermesApp(
                     snapshot = snapshot,
-                    onClarificationResponse = { id, request, answer ->
+                    onClarificationResponse = { id, request, _, answer ->
                         response = Triple(id, request, answer)
                     },
                 )

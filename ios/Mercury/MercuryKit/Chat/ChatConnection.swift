@@ -184,13 +184,18 @@ final class ChatConnection: @unchecked Sendable {
         return PromptSubmission(status: status)
     }
 
-    func respondToClarification(requestID: String, answer: String) async throws -> ChatResponse {
+    func respondToClarification(requestID: String, answer: String, questionID: String? = nil) async throws -> ChatResponse {
         let boundedRequestID = try boundedRPCInput(requestID, maxChars: maxEventIDChars, label: "request ID")
         let boundedAnswer = try boundedRPCInput(answer, maxChars: maxEventTextChars, label: "answer", allowBlank: true)
-        let result = try await request("clarify.respond", [
+        var params: [String: Any] = [
             "request_id": boundedRequestID,
             "answer": boundedAnswer,
-        ])
+        ]
+        // Batch clarify answers one question at a time by its qid.
+        if let questionID {
+            params["question_id"] = try boundedRPCInput(questionID, maxChars: maxEventIDChars, label: "question ID")
+        }
+        let result = try await request("clarify.respond", params)
         return try parseInteractionResponse(result)
     }
 

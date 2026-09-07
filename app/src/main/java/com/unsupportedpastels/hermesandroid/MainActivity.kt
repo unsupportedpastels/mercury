@@ -198,8 +198,8 @@ class MainActivity : ComponentActivity() {
                     onSteerMessage = connectionViewModel::steerSession,
                     onReasoningSelected = connectionViewModel::setReasoningEffort,
                     onFastSelected = connectionViewModel::setFast,
-                    onClarificationResponse = { sessionId, requestId, answer ->
-                        connectionViewModel.respondToClarification(sessionId, requestId, answer)
+                    onClarificationResponse = { sessionId, requestId, questionId, answer ->
+                        connectionViewModel.respondToClarification(sessionId, requestId, questionId, answer)
                     },
                     onApprovalResponse = { sessionId, choice, all ->
                         connectionViewModel.respondToApproval(sessionId, choice, all)
@@ -299,7 +299,7 @@ internal fun HermesAppHost(
     onSteerMessage: (DurableSessionId, String) -> Unit = { _, _ -> },
     onReasoningSelected: (DurableSessionId, String) -> Unit = { _, _ -> },
     onFastSelected: (DurableSessionId, Boolean) -> Unit = { _, _ -> },
-    onClarificationResponse: (DurableSessionId, String, String) -> Unit = { _, _, _ -> },
+    onClarificationResponse: (DurableSessionId, String, String?, String) -> Unit = { _, _, _, _ -> },
     onApprovalResponse: (DurableSessionId, String, Boolean) -> Unit = { _, _, _ -> },
     onBlockingResponse: (DurableSessionId, UnsupportedBlockingKind, String, String) -> Unit = { _, _, _, _ -> },
     onStopSession: (DurableSessionId) -> Unit = {},

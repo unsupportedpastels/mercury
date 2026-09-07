@@ -1,4 +1,5 @@
 import SwiftUI
+import MercuryCore
 
 extension ChatView {
     /// Secret/sudo prompt awaiting user input. terminalRead/previewRead/
@@ -122,6 +123,26 @@ final class ChatSessionState {
     var durableID: String?
     var eventTask: Task<Void, Never>?
     var pendingRequest: ApprovalSheet.Request?
+    /// Batch clarify: qids already answered for the pending request.
+    var clarifyAnsweredIDs: Set<String> = []
+
+    /// The batch questions of the pending clarify request, if it is a batch.
+    var clarifyQuestions: [ClarifyQuestion] {
+        guard let pendingRequest, case .clarify(let event) = pendingRequest,
+              case .clarifyRequest(_, _, _, _, _, let questions) = event else { return [] }
+        return questions
+    }
+
+    /// The batch question to present now (shared decision), nil for a single question.
+    var currentClarifyQuestion: ClarifyQuestion? {
+        let questions = clarifyQuestions
+        guard !questions.isEmpty else { return nil }
+        let next = MercuryCore.ClarifyAnswerPolicy.shared.nextQuestion(
+            questions: questions.map { MercuryCore.ClarifyQuestion(qid: $0.qid, question: $0.question, choices: $0.choices, multiSelect: $0.multiSelect) },
+            answeredIds: clarifyAnsweredIDs
+        )
+        return next.flatMap { core in questions.first { $0.qid == core.qid } }
+    }
     var didOpen = false
 
     // MARK: Reconnect policy (Android recoverChat parity)
@@ -220,7 +241,7 @@ final class ChatSessionState {
         case .approval(let event):
             if case .approvalRequest(_, let id, _, _, _) = event { return id }
         case .clarify(let event):
-            if case .clarifyRequest(_, let id, _, _, _) = event { return id }
+            if case .clarifyRequest(_, let id, _, _, _, _) = event { return id }
         }
         return nil
     }

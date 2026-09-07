@@ -317,10 +317,13 @@ private extension ChatEvent {
             )
         case .statusUpdate(let sessionID, let kind, let text):
             return MercuryCore.ChatEventStatusUpdate(sessionId: sessionID, kind: kind, text: text)
-        case .clarifyRequest(let sessionID, let requestID, let question, let choices, let multiSelect):
+        case .clarifyRequest(let sessionID, let requestID, let question, let choices, let multiSelect, let questions):
             return MercuryCore.ChatEventClarifyRequest(
                 sessionId: sessionID, requestId: requestID, question: question,
-                choices: choices, multiSelect: multiSelect
+                choices: choices, multiSelect: multiSelect,
+                questions: questions.map {
+                    MercuryCore.ClarifyQuestion(qid: $0.qid, question: $0.question, choices: $0.choices, multiSelect: $0.multiSelect)
+                }
             )
         case .clarifyExpire(let sessionID, let requestID):
             return MercuryCore.ChatEventClarifyExpire(sessionId: sessionID, requestId: requestID)

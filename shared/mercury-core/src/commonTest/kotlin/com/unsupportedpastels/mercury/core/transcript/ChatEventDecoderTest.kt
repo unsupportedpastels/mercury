@@ -47,6 +47,35 @@ class ChatEventDecoderTest {
     }
 
     @Test
+    fun batchClarifyDecodesEveryQuestionAndMirrorsTheFirst() {
+        val event = ChatEventDecoder.decode(
+            "clarify.request",
+            "runtime-1",
+            """{"request_id":"rid","questions":[
+                {"qid":"q0","question":"Which target?","choices":["staging","prod"],"multi_select":false},
+                {"qid":"q1","question":"Which regions?","choices":["eu","us"],"multi_select":true},
+                {"qid":"q0","question":"duplicate"},{"question":"no qid"},"junk"]}""",
+        )
+        val clarify = assertIs<ChatEvent.ClarifyRequest>(event)
+        assertEquals(true, clarify.isBatch)
+        assertEquals(listOf("q0", "q1"), clarify.questions.map(ClarifyQuestion::qid))
+        assertEquals("Which target?", clarify.question)
+        assertEquals(listOf("staging", "prod"), clarify.choices)
+        assertEquals(true, clarify.questions[1].multiSelect)
+    }
+
+    @Test
+    fun singleClarifyStillDecodesAndEmptyBatchFallsBackToIt() {
+        val single = assertIs<ChatEvent.ClarifyRequest>(
+            ChatEventDecoder.decode("clarify.request", "runtime-1", """{"request_id":"rid","question":"Which?","choices":["a"]}"""),
+        )
+        assertEquals(false, single.isBatch)
+        assertEquals("Which?", single.question)
+        assertNull(ChatEventDecoder.decode("clarify.request", "runtime-1", """{"request_id":"rid","questions":[]}"""))
+        assertNull(ChatEventDecoder.decode("clarify.request", "runtime-1", """{"questions":[{"qid":"q0","question":"x"}]}"""))
+    }
+
+    @Test
     fun terminalErrorWithoutUsableMessageStillDecodesWithFallback() {
         val fallback = ChatEvent.Error("runtime-1", ChatEventDecoder.ERROR_MESSAGE_FALLBACK)
         assertEquals(fallback, ChatEventDecoder.decode("error", "runtime-1", "{}"))

@@ -125,15 +125,28 @@ object ChatEventDecoder {
                 if (kind == null || text == null) null else ChatEvent.StatusUpdate(boundedSessionId, kind, text)
             }
             "clarify.request" -> {
-                val requestId = payload.boundedRequired("request_id", MAX_EVENT_ID_CHARS)
-                val question = payload.boundedRequired("question", MAX_EVENT_TEXT_CHARS)
-                if (requestId == null || question == null) null else ChatEvent.ClarifyRequest(
-                    boundedSessionId,
-                    requestId,
-                    question,
-                    payload.boundedChoices(),
-                    payload.booleanValue("multi_select") ?: false,
-                )
+                val requestId = payload.boundedRequired("request_id", MAX_EVENT_ID_CHARS) ?: return null
+                val questions = payload.boundedQuestions()
+                if (questions.isNotEmpty()) {
+                    val first = questions.first()
+                    ChatEvent.ClarifyRequest(
+                        boundedSessionId,
+                        requestId,
+                        first.question,
+                        first.choices,
+                        first.multiSelect,
+                        questions,
+                    )
+                } else {
+                    val question = payload.boundedRequired("question", MAX_EVENT_TEXT_CHARS) ?: return null
+                    ChatEvent.ClarifyRequest(
+                        boundedSessionId,
+                        requestId,
+                        question,
+                        payload.boundedChoices(),
+                        payload.booleanValue("multi_select") ?: false,
+                    )
+                }
             }
             "clarify.expire" -> payload.boundedRequired("request_id", MAX_EVENT_ID_CHARS)
                 ?.let { ChatEvent.ClarifyExpire(boundedSessionId, it) }
@@ -176,6 +189,19 @@ object ChatEventDecoder {
     private fun JsonObject.isDispatchedBackgroundDelegation(): Boolean {
         val result = this["result"] as? JsonObject ?: return false
         return result.stringValue("status") == "dispatched" && result.stringValue("mode") == "background"
+    }
+
+    /** Batch clarify rows; malformed rows are skipped, duplicate qids keep the first. */
+    private fun JsonObject.boundedQuestions(): List<ClarifyQuestion> {
+        val rows = this["questions"] as? JsonArray ?: return emptyList()
+        val seen = HashSet<String>()
+        return rows.take(MAX_EVENT_CHOICES).mapNotNull { element ->
+            val row = element as? JsonObject ?: return@mapNotNull null
+            val qid = row.boundedRequired("qid", MAX_EVENT_ID_CHARS) ?: return@mapNotNull null
+            val question = row.boundedRequired("question", MAX_EVENT_TEXT_CHARS) ?: return@mapNotNull null
+            if (!seen.add(qid)) return@mapNotNull null
+            ClarifyQuestion(qid, question, row.boundedChoices(), row.booleanValue("multi_select") ?: false)
+        }
     }
 
     private fun JsonObject.boundedChoices(): List<String> =

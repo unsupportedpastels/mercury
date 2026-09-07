@@ -3475,12 +3475,20 @@ class HermesConnectionViewModel(
         durableSessionId: DurableSessionId,
         requestId: String,
         answer: String,
+    ): Job = respondToClarification(durableSessionId, requestId, questionId = null, answer = answer)
+
+    /** [questionId] names the batch question being answered; null for a single-question request. */
+    fun respondToClarification(
+        durableSessionId: DurableSessionId,
+        requestId: String,
+        questionId: String?,
+        answer: String,
     ): Job {
         val operation = beginClarificationResponse(durableSessionId, requestId)
             ?: return viewModelScope.launch { }
         return viewModelScope.launch {
             try {
-                val response = operation.session.respondToClarification(requestId, answer)
+                val response = operation.session.respondToClarification(requestId, questionId, answer)
                 currentCoroutineContext().ensureActive()
                 val lifecycle = when (response.status) {
                     HermesChatResponseStatus.Ok,
@@ -3491,14 +3499,14 @@ class HermesConnectionViewModel(
                     HermesChatResponseStatus.Unknown,
                     -> RunInteractionLifecycle.Failed
                 }
-                publishClarificationResponse(operation, lifecycle)
+                publishClarificationResponse(operation, lifecycle, questionId)
                 if (lifecycle == RunInteractionLifecycle.Failed) {
                     publishControllerError(operation, "Could not respond to clarification")
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                publishClarificationResponse(operation, RunInteractionLifecycle.Failed)
+                publishClarificationResponse(operation, RunInteractionLifecycle.Failed, questionId)
                 publishControllerError(operation, "Could not respond to clarification")
             }
         }
@@ -6029,6 +6037,7 @@ class HermesConnectionViewModel(
     private fun publishClarificationResponse(
         operation: ControllerOperation,
         lifecycle: RunInteractionLifecycle,
+        questionId: String? = null,
     ) {
         synchronized(controllerLock) {
             if (!isCurrentControllerOperation(operation)) return
@@ -6046,9 +6055,17 @@ class HermesConnectionViewModel(
             // responds rather than lingering until the next turn. A failed send
             // reverts to Pending so the user can retry; an expiry keeps the
             // informational settled state.
+            // A batch stays on screen until its last question is answered; the
+            // host only resolves the request then.
+            val remainingAfterAnswer = questionId != null && current.isBatch &&
+                current.questions.any { it.qid != questionId && it.qid !in current.answeredQuestionIds }
             val nextRunState = when (lifecycle) {
                 RunInteractionLifecycle.Resolved ->
-                    chat.runState.copy(clarification = null)
+                    if (remainingAfterAnswer) {
+                        chat.runState.markClarificationQuestionAnswered(checkNotNull(operation.requestId), checkNotNull(questionId))
+                    } else {
+                        chat.runState.copy(clarification = null)
+                    }
                 RunInteractionLifecycle.Failed ->
                     chat.runState.transitionClarificationLifecycle(
                         checkNotNull(operation.requestId),

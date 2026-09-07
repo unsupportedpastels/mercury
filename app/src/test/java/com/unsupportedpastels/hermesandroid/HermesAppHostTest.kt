@@ -233,7 +233,7 @@ class HermesAppHostTest {
                             sessionId to ChatSessionSnapshot(isSending = true, runState = runState),
                         ),
                     ),
-                    onClarificationResponse = { id, request, answer ->
+                    onClarificationResponse = { id, request, _, answer ->
                         clarification = Triple(id, request, answer)
                     },
                     onApprovalResponse = { id, choice, all ->
