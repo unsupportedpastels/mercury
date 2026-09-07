@@ -35,6 +35,11 @@ final class HermesHTTPClient {
 
     private let session: URLSession
 
+    /// True when `session` refuses redirects (`RedirectRefusingSessionDelegate`).
+    /// Every Hermes-origin client must be built this way so a bearer token,
+    /// cookie, or ticket scoped to the origin is never forwarded elsewhere.
+    var refusesRedirects: Bool { session.delegate is RedirectRefusingSessionDelegate }
+
     /// Single-flight guard: concurrent 401s await one shared refresh task so
     /// N simultaneous rejections trigger exactly one token refresh.
     private let retryLock = NSLock()
@@ -204,9 +209,11 @@ final class HermesHTTPClient {
     /// from the origin-scoped keychain store, and a single-flight refresh
     /// provider that consults TokenRefreshPolicy, calls the native refresh
     /// endpoint, and persists the rotated pair back under the same origin.
+    /// The default session refuses redirects like every Hermes-origin client;
+    /// inject a session only for tests.
     static func makeAuthenticated(
         origin rawOrigin: String,
-        urlSession: URLSession = .shared,
+        urlSession: URLSession = HermesURLSession.noRedirects,
         credentialStore: CredentialStoring = KeychainCredentialStore()
     ) -> HermesHTTPClient {
         let client = HermesHTTPClient(origin: rawOrigin, session: urlSession)

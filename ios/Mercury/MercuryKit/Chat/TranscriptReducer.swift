@@ -4,7 +4,7 @@ import MercuryCore
 // MARK: - Transcript state machine (facade over the shared KMP core)
 //
 // The transcript reduction rules live in the shared core's TranscriptEngine
-// (shared/mercury-core, Phase 3 of docs/plans/kmp-shared-core.md). This file
+// (shared/mercury-core, the AGENTS.md cross-platform rule). This file
 // keeps the exact pre-existing Swift value-type API — ChatView, the sheets,
 // and the 57-test TranscriptReducerTests suite are unchanged — while every
 // decision is delegated to the engine's immutable snapshots. The parity
@@ -254,7 +254,7 @@ enum TranscriptEntry: Identifiable, Equatable {
 
 func coalesceTranscriptEntries(_ rows: [TranscriptState.Row]) -> [TranscriptEntry] {
     MercuryCore.TranscriptEngineKt.coalesceTranscriptEntries(rows: rows.map(\.core))
-        .map { entry in
+        .compactMap { entry -> TranscriptEntry? in
             switch entry {
             case let message as MercuryCore.TranscriptEntryMessage:
                 return .message(TranscriptState.Row(message.row))
@@ -266,7 +266,9 @@ func coalesceTranscriptEntries(_ rows: [TranscriptState.Row]) -> [TranscriptEntr
                     tools: burst.tools.map(TranscriptState.Row.init)
                 )
             default:
-                fatalError("unknown transcript entry variant")
+                // A core variant this build does not know: skip it rather
+                // than crash on a value that crossed the KMP boundary.
+                return nil
             }
         }
 }
