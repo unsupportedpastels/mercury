@@ -6,7 +6,7 @@ set -euo pipefail
 RELAY_PLUGIN_REF="${RELAY_PLUGIN_REF:-v0.1.0}"
 BASE="https://raw.githubusercontent.com/unsupportedpastels/mercury-relay-plugin/${RELAY_PLUGIN_REF}/protocol/vectors"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOCAL_DIR="$ROOT/ios/MercuryTests/Fixtures/RelayProtocol"
+LOCAL_DIR="$ROOT/shared/mercury-core/src/commonTest/resources/relay-protocol"
 status=0
 for pair in "frames/corpus.json:frames-corpus.json" "secure-channel/corpus.json:secure-channel-corpus.json"; do
   remote="${pair%%:*}"; local_name="${pair##*:}"

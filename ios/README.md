@@ -18,7 +18,7 @@ implemented once in `shared/mercury-core`; iOS keeps Keychain, URLSession, and
 SwiftUI integration native. The host plugin, protocol contract, and canonical
 interop vectors are open source at
 <https://github.com/unsupportedpastels/mercury-relay-plugin>; the vectors are
-vendored under `MercuryTests/Fixtures/RelayProtocol/` and
+vendored once under `shared/mercury-core/src/commonTest/resources/relay-protocol/` and
 `tools/check-relay-vectors.sh` fails CI if they drift from the pinned release.
 
 Product boundary and protocol contracts are shared with the Android client and

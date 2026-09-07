@@ -7,7 +7,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 /** Same canonical synthetic file as Swift; exercise real native socket/task adapters. */
-class RelayRecoveryCorpusTest {
+class RelayRecoveryNativeSocketTest {
     private fun corpus() = checkNotNull(javaClass.classLoader!!.getResourceAsStream("adapter-parity/relay-recovery.json"))
         .bufferedReader().use { Json.parseToJsonElement(it.readText()).jsonObject }
     private class Socket(frames: List<String>) : HermesChatSocket {

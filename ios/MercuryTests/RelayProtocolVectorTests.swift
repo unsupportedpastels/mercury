@@ -12,9 +12,8 @@ final class RelayProtocolVectorTests: XCTestCase {
 
     private func fixtureJSON(named name: String) throws -> [String: Any] {
         let bundle = Bundle(for: Self.self)
-        let url = bundle.url(
-            forResource: name, withExtension: "json", subdirectory: "Fixtures/RelayProtocol"
-        ) ?? bundle.url(forResource: name, withExtension: "json")
+        // Bundled from shared/mercury-core/src/commonTest/resources/relay-protocol.
+        let url = bundle.url(forResource: name, withExtension: "json")
         let unwrapped = try XCTUnwrap(url, "missing fixture \(name).json")
         let object = try JSONSerialization.jsonObject(with: Data(contentsOf: unwrapped))
         return try XCTUnwrap(object as? [String: Any])

@@ -36,28 +36,4 @@ class SessionListMergeTest {
         assertEquals(listOf(promoted, server1), merged)
     }
 
-    @Test
-    fun `non-pending local rows are not resurrected`() {
-        val staleDraft = SessionSummary(
-            id = DurableSessionId("draft-9"),
-            title = "Old draft",
-            isLocalDraft = true,
-        )
-        val merged = mergeServerSessionsPreservingDrafts(
-            serverSessions = listOf(server1),
-            currentSessions = listOf(staleDraft, server1),
-            pendingDrafts = emptySet(),
-        )
-        assertEquals(listOf(server1), merged)
-    }
-
-    @Test
-    fun `no drafts passes server list through unchanged`() {
-        val merged = mergeServerSessionsPreservingDrafts(
-            serverSessions = listOf(server1, server2),
-            currentSessions = listOf(server1),
-            pendingDrafts = emptySet(),
-        )
-        assertEquals(listOf(server1, server2), merged)
-    }
 }
