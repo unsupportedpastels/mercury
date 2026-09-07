@@ -4,7 +4,7 @@
     android:insetBottom="21dp"
     android:insetLeft="21dp"
     android:insetRight="21dp">
-    <!-- Keep the complete official Mercury artwork within Android's 66dp adaptive-icon safe zone. -->
+    <!-- Keep the full helmet glyph (docs/design/mercury-icon.svg) within Android's 66dp adaptive-icon safe zone. -->
     <bitmap
         android:src="@drawable/mercury_launcher_art"
         android:gravity="fill"

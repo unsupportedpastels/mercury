@@ -26,3 +26,11 @@ This image is the locked visual north star for both native clients: Jetpack Comp
 - Reasoning is shown only when Hermes emits it.
 - Interruption is labeled **Stop**, never Pause.
 - Preserve Material 3 accessibility, touch targets, adaptive layout, edge-to-edge behavior, and large-text support on Android; preserve Dynamic Type, safe areas, and system appearance on iOS. Do not make one platform imitate the other's controls.
+
+## App icon
+
+`mercury-icon.svg` is the source of record for the app icon on both platforms: the winged Mercury helmet glyph on a `#18191e` tile (`mercury-helmet-mockup.jpg` is the reference it was traced from). Every raster is rendered from it, never hand-edited:
+
+- Android: `app/src/main/res/drawable-nodpi/mercury_launcher_art.png` (the glyph alone on transparency, inset inside the adaptive-icon safe zone by `drawable/ic_launcher_foreground.xml`), the `#18191e` background layer, the Android 13+ monochrome silhouette, and the legacy `mipmap-*` rasters.
+- iOS: `ios/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon1024.png`, the single 1024 universal icon Xcode scales.
+- Play Store: `playstore/ic_launcher-playstore-512.png`, the same render downscaled (see `playstore/README.md` for the regeneration recipe).
