@@ -126,6 +126,7 @@ struct CloudSignInView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     CloudSignInView(
         userCode: "ABCD-1234",
@@ -133,3 +134,4 @@ struct CloudSignInView: View {
         onStartPolling: { nil }
     )
 }
+#endif

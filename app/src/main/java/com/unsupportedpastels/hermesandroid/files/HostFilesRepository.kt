@@ -1,6 +1,5 @@
 package com.unsupportedpastels.hermesandroid.files
 
-import com.unsupportedpastels.hermesandroid.connection.HermesConnectionClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -11,21 +10,6 @@ interface HostFilesTransport {
     suspend fun list(scope: HostFileScope, path: String?): HostFileListing
     suspend fun read(scope: HostFileScope, entry: HostFileEntry): HostFileContent
     suspend fun download(scope: HostFileScope, entry: HostFileEntry): HostFileContent
-}
-
-/** Bridges the official REST client to the repository without persisting credentials or bytes. */
-class HermesConnectionHostFilesTransport(
-    private val client: HermesConnectionClient,
-    private val accessTokenProvider: suspend (HostFileScope) -> String?,
-) : HostFilesTransport {
-    override suspend fun list(scope: HostFileScope, path: String?): HostFileListing =
-        client.loadHostFiles(scope.origin, accessTokenProvider(scope), path)
-
-    override suspend fun read(scope: HostFileScope, entry: HostFileEntry): HostFileContent =
-        client.readManagedFile(scope.origin, accessTokenProvider(scope), entry.path)
-
-    override suspend fun download(scope: HostFileScope, entry: HostFileEntry): HostFileContent =
-        client.downloadManagedFile(scope.origin, accessTokenProvider(scope), entry.path)
 }
 
 /**

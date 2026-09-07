@@ -20,7 +20,7 @@ interface RelayCrypto {
     fun randomBytes(count: Int): ByteArray
 }
 
-enum class RelaySecureChannelFailure(val wireReason: String) {
+internal enum class RelaySecureChannelFailure(val wireReason: String) {
     AuthenticationFailed("authentication_failed"),
     ChannelClosed("channel_closed"),
     HandshakeNotFinished("handshake_not_finished"),
@@ -29,7 +29,7 @@ enum class RelaySecureChannelFailure(val wireReason: String) {
     TransportFailed("transport_failed"),
 }
 
-class RelaySecureChannelException(
+internal class RelaySecureChannelException(
     val failure: RelaySecureChannelFailure,
 ) : Exception("Mercury Relay secure channel failed")
 

@@ -140,5 +140,3 @@ class EncryptedNativeTokenStore(
         }
     }
 }
-
-typealias AndroidNativeTokenStore = EncryptedNativeTokenStore

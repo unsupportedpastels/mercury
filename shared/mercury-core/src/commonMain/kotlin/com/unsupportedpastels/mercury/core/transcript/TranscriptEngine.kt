@@ -2,7 +2,7 @@ package com.unsupportedpastels.mercury.core.transcript
 
 /**
  * Pure transcript state machine shared by both clients (Phase 3 of
- * docs/plans/kmp-shared-core.md), ported from the iOS TranscriptReducer —
+ * AGENTS.md cross-platform rule), ported from the iOS TranscriptReducer —
  * the hermetically tested implementation — with immutable snapshots so
  * platforms keep value semantics.
  *

@@ -1,6 +1,6 @@
 package com.unsupportedpastels.hermesandroid.relay
 
-import com.unsupportedpastels.mercury.core.relay.AndroidRelayCrypto
+import com.unsupportedpastels.mercury.core.relay.RelayPlatformCrypto
 import com.unsupportedpastels.mercury.core.relay.RelayBase64
 import com.unsupportedpastels.mercury.core.relay.RelayFraming
 import com.unsupportedpastels.mercury.core.relay.RelayFrameReassembler
@@ -31,7 +31,7 @@ class RelayTransportTest {
         )
 
         val host = RelaySecureChannel(
-            crypto = AndroidRelayCrypto,
+            crypto = RelayPlatformCrypto,
             isInitiator = false,
             staticPrivateKey = HOST_PRIVATE,
             installationId = INSTALLATION,
@@ -53,7 +53,7 @@ class RelayTransportTest {
             target = target,
             profile = "default",
             socketFactory = factory,
-            crypto = AndroidRelayCrypto,
+            crypto = RelayPlatformCrypto,
             deterministicEphemeralPrivateKey = DEVICE_EPHEMERAL,
             diagnostics = diagnostics,
         )
@@ -129,7 +129,7 @@ class RelayTransportTest {
         val pair = binarySocketPair()
         val target = target()
         val host = RelaySecureChannel(
-            crypto = AndroidRelayCrypto,
+            crypto = RelayPlatformCrypto,
             isInitiator = false,
             staticPrivateKey = HOST_PRIVATE,
             installationId = INSTALLATION,
@@ -163,7 +163,7 @@ class RelayTransportTest {
         label = "study",
         relayOrigin = "https://relay.example.com",
         installationId = INSTALLATION,
-        hostPublicKey = AndroidRelayCrypto.x25519PublicKey(HOST_PRIVATE),
+        hostPublicKey = RelayPlatformCrypto.x25519PublicKey(HOST_PRIVATE),
         deviceId = RelayBase64.urlSafeEncode(ByteArray(16) { (it + 3).toByte() }),
         deviceStaticPrivateKey = DEVICE_PRIVATE,
         fingerprint = "0123456789abcdef",

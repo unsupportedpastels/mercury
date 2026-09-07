@@ -10,7 +10,7 @@ import kotlin.test.assertTrue
  * Merged from the Android HermesNotificationPolicyTest and iOS
  * NotificationPolicyTests text/visibility sections. All strings are asserted
  * verbatim — user-visible contract on both platforms. Divergences resolved
- * during migration (documented in docs/plans/kmp-shared-core.md): interrupt
+ * during migration (documented in AGENTS.md): interrupt
  * sentinel suppression and cap-then-trim input previews (both from iOS),
  * secure-input fallback wording (from Android's "…is required to continue"
  * family).

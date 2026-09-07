@@ -5,7 +5,7 @@ import com.unsupportedpastels.mercury.core.origin.ServerOriginPolicy
 
 /**
  * Canonical server origin. Parsing and canonicalization decide in the shared
- * KMP core (docs/plans/kmp-shared-core.md, Phase 2 origin slice): bare hosts
+ * KMP core (AGENTS.md cross-platform rule): bare hosts
  * are accepted and [useTls] (the "Use HTTPS" checkbox, default on) picks the
  * scheme when the input carries none; an explicit scheme always wins.
  */

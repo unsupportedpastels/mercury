@@ -61,6 +61,7 @@ struct RootView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     RootView()
         .environment(AppModel())
@@ -72,3 +73,4 @@ struct RootView: View {
         .environment(AppModel())
         .preferredColorScheme(.light)
 }
+#endif

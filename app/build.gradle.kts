@@ -82,6 +82,12 @@ android {
         excludes += "/META-INF/{AL2.0,LGPL2.1}"
       }
     }
+
+    sourceSets {
+        // The adapter-parity corpora are owned by the shared core's common
+        // tests; Android and iOS both read that single copy.
+        getByName("test").resources.srcDir("../shared/mercury-core/src/commonTest/resources")
+    }
 }
 
 kotlin {
@@ -89,7 +95,7 @@ kotlin {
 }
 
 dependencies {
-  // Shared KMP contract core (Phase 0 spike; see docs/plans/kmp-shared-core.md)
+  // Shared KMP contract core (see AGENTS.md, cross-platform rule)
   implementation(project(":shared:mercury-core"))
 
   val composeBom = platform(libs.androidx.compose.bom)
@@ -104,12 +110,13 @@ dependencies {
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.serialization.json)
   implementation(libs.androidx.datastore.preferences)
+  // No Fragment code in Mercury, but the dependency pins the transitive
+  // Fragment version: lint's InvalidFragmentVersionForActivityResult fails
+  // the build against the older one activity-compose would otherwise pull.
   implementation(libs.androidx.fragment.ktx)
   implementation(libs.ktor.client.core)
   implementation(libs.ktor.client.cio)
-  implementation(libs.ktor.client.content.negotiation)
   implementation(libs.ktor.client.websockets)
-  implementation(libs.ktor.serialization.kotlinx.json)
   implementation(libs.play.services.code.scanner)
   implementation(libs.tink.android)
 
@@ -147,7 +154,6 @@ dependencies {
   androidTestImplementation(libs.androidx.test.core)
   androidTestImplementation(libs.androidx.test.ext.junit)
   androidTestImplementation(libs.androidx.test.runner)
-  androidTestImplementation(libs.androidx.test.espresso.core)
 
   // Navigation
   implementation(libs.androidx.navigation3.ui)

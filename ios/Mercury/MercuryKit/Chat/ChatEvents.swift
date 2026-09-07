@@ -4,7 +4,8 @@ import Foundation
 //
 // Direct port of Android's `HermesChatEvent` sealed hierarchy
 // (gateway/HermesChatGateway.kt). Field names camelCase; wire decoding lives
-// in ChatConnection.handleEvent — this file is the typed surface only.
+// in the shared core (`MercuryCore.ChatEventDecoder`, bridged by
+// TranscriptReducer) — this file is the typed surface only.
 
 enum UnsupportedBlockingKind: Sendable, Equatable {
     case secret

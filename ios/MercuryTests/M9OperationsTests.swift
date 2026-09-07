@@ -163,30 +163,6 @@ final class M9OperationsTests: XCTestCase {
         XCTAssertTrue(state.isRunning)
     }
 
-    func testOperationalStatusParsesOnlyBoundedPublicSubset() {
-        let components = Dictionary(uniqueKeysWithValues: (0..<40).map { index in
-            ("component-\(index)", ["status": index == 0 ? "healthy" : "future", "state": "ready", "secret": "ignored"])
-        })
-        let status = OperationalStatusParser.parse(
-            [
-                "version": "0.20.5",
-                "overall": "degraded",
-                "components": components,
-                "memory": ["pressure": "elevated"],
-                "disk_pressure": "critical",
-                "unknown_family": ["must": "stay hidden"],
-            ],
-            profile: String(repeating: "p", count: 100)
-        )
-
-        XCTAssertEqual(status.profile.count, OperationsBounds.maxProfileCharacters)
-        XCTAssertEqual(status.version, "0.20.5")
-        XCTAssertEqual(status.overall, .degraded)
-        XCTAssertEqual(status.components.count, OperationsBounds.maxOperationalComponents)
-        XCTAssertEqual(status.components.first(where: { $0.name == "component-0" })?.health, .ok)
-        XCTAssertEqual(status.memoryPressure, .warning)
-        XCTAssertEqual(status.diskPressure, .critical)
-    }
 }
 
 private actor M9RPCRecorder {

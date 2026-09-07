@@ -62,6 +62,7 @@ struct ToolActivityRow: View {
     }
 }
 
+#if DEBUG
 #Preview("States") {
     List {
         ToolActivityRow(toolRow: TranscriptState.ToolRow(
@@ -73,3 +74,4 @@ struct ToolActivityRow: View {
         ))
     }
 }
+#endif

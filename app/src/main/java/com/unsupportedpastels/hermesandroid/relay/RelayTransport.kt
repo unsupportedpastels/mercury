@@ -3,7 +3,7 @@ package com.unsupportedpastels.hermesandroid.relay
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatProtocolException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatSocket
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatTransportException
-import com.unsupportedpastels.mercury.core.relay.AndroidRelayCrypto
+import com.unsupportedpastels.mercury.core.relay.RelayPlatformCrypto
 import com.unsupportedpastels.mercury.core.relay.RelayAdmissionEnvelope
 import com.unsupportedpastels.mercury.core.relay.RelayCrypto
 import com.unsupportedpastels.mercury.core.relay.RelayFraming
@@ -65,7 +65,7 @@ object RelayConnector {
         target: RelayPairedTarget,
         profile: String,
         socketFactory: RelayBinarySocketFactory,
-        crypto: RelayCrypto = AndroidRelayCrypto,
+        crypto: RelayCrypto = RelayPlatformCrypto,
         resumeCursor: Long? = null,
         recoveryVersion: Int? = null,
         deterministicEphemeralPrivateKey: ByteArray? = null,
@@ -163,7 +163,7 @@ internal suspend fun closeRelayResources(
 class RelayHermesChatSocket(
     connected: RelayConnectedChannel,
     private val randomMessageId: () -> ByteArray = {
-        AndroidRelayCrypto.randomBytes(RelayFraming.messageIdSize)
+        RelayPlatformCrypto.randomBytes(RelayFraming.messageIdSize)
     },
 ) : HermesChatSocket {
     private val socket = connected.socket

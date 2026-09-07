@@ -10,7 +10,6 @@ enum OperationsBounds {
     static let maxCommandCharacters = 4_096
     static let maxOutputCharacters = 4_000
     static let maxStatusCharacters = 64
-    static let maxOperationalComponents = 32
 }
 
 enum OperationsProtocolError: Error, Equatable, LocalizedError {
@@ -59,107 +58,6 @@ struct CronTriggerResult: Equatable, Sendable {
         if refreshedJob != nil { return "Run requested; status refreshed from the server." }
         guard accepted else { return "Run was not accepted." }
         return background ? "Run accepted in the background." : "Run accepted."
-    }
-}
-
-enum OperationalHealth: Equatable, Sendable {
-    case ok
-    case degraded
-    case unknown
-}
-
-enum OperationalPressure: Equatable, Sendable {
-    case ok
-    case warning
-    case critical
-    case unknown
-}
-
-struct OperationalComponentStatus: Identifiable, Equatable, Sendable {
-    let name: String
-    let health: OperationalHealth
-    let state: String?
-    var id: String { name }
-}
-
-struct OperationalStatus: Equatable, Sendable {
-    let profile: String
-    let version: String?
-    let overall: OperationalHealth
-    let components: [OperationalComponentStatus]
-    let memoryPressure: OperationalPressure
-    let diskPressure: OperationalPressure
-}
-
-enum OperationalStatusParser {
-    static func parse(_ result: [String: Any], profile: String) -> OperationalStatus {
-        let profile = String(profile.trimmingCharacters(in: .whitespacesAndNewlines)
-            .prefix(OperationsBounds.maxProfileCharacters))
-        return OperationalStatus(
-            profile: profile.isEmpty ? "default" : profile,
-            version: operationalText(result["version"]),
-            overall: operationalHealth(result["overall"]),
-            components: components(result["components"]),
-            memoryPressure: operationalPressure(result["memory"] ?? result["memory_pressure"]),
-            diskPressure: operationalPressure(result["disk"] ?? result["disk_pressure"])
-        )
-    }
-
-    private static func components(_ value: Any?) -> [OperationalComponentStatus] {
-        if let object = value as? [String: Any] {
-            return object.sorted { $0.key < $1.key }
-                .prefix(OperationsBounds.maxOperationalComponents)
-                .compactMap { name, value in
-                let name = String(name.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .prefix(OperationsBounds.maxFieldCharacters))
-                guard !name.isEmpty else { return nil }
-                let row = value as? [String: Any]
-                return OperationalComponentStatus(
-                    name: name,
-                    health: operationalHealth(row?["status"] ?? value),
-                    state: operationalText(row?["state"])
-                )
-            }
-        }
-        if let array = value as? [Any] {
-            return array.prefix(OperationsBounds.maxOperationalComponents).compactMap { value in
-                guard let row = value as? [String: Any], let name = operationalText(row["name"]) else { return nil }
-                return OperationalComponentStatus(
-                    name: name,
-                    health: operationalHealth(row["status"]),
-                    state: operationalText(row["state"])
-                )
-            }
-        }
-        return []
-    }
-
-    private static func operationalHealth(_ value: Any?) -> OperationalHealth {
-        return switch operationalText(value)?.lowercased() {
-        case "ok", "healthy", "ready", "running": .ok
-        case "degraded", "warning", "critical", "error", "failed", "unhealthy": .degraded
-        default: .unknown
-        }
-    }
-
-    private static func operationalPressure(_ value: Any?) -> OperationalPressure {
-        let scalar: Any?
-        if let object = value as? [String: Any] {
-            scalar = object["pressure"] ?? object["status"]
-        } else {
-            scalar = value
-        }
-        return switch operationalText(scalar)?.lowercased() {
-        case "ok", "healthy": .ok
-        case "warning", "elevated", "degraded": .warning
-        case "critical", "full": .critical
-        default: .unknown
-        }
-    }
-
-    private static func operationalText(_ value: Any?) -> String? {
-        guard let string = value as? String, !string.isEmpty else { return nil }
-        return String(string.prefix(OperationsBounds.maxFieldCharacters))
     }
 }
 

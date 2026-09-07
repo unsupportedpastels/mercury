@@ -166,6 +166,7 @@ struct SignInView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     SignInView()
         .environment(AppModel())
@@ -177,3 +178,4 @@ struct SignInView: View {
         .environment(AppModel())
         .preferredColorScheme(.light)
 }
+#endif

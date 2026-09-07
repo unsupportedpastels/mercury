@@ -52,11 +52,3 @@ enum AttachmentAddResult: Equatable, Sendable {
     case accepted
     case rejected(String)
 }
-
-// MARK: - Staging outcome
-
-/// Result of staging the composer's attachments ahead of `prompt.submit`.
-struct StagedAttachments: Equatable, Sendable {
-    var refTexts: [String]
-    var names: [String]
-}

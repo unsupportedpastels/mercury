@@ -19,7 +19,7 @@ struct AttachmentTooLargeError: Error, Equatable, Sendable {
 // MARK: - Attachment policy
 
 /// Facade over the shared KMP core's `AttachmentPolicy`
-/// (shared/mercury-core, docs/plans/kmp-shared-core.md): naming hygiene,
+/// (shared/mercury-core, AGENTS.md cross-platform rule): naming hygiene,
 /// image-vs-file routing, byte/count caps, and prompt-text assembly are
 /// decided once for both clients. This type keeps Mercury's existing
 /// Swift-native API — call sites and tests are unchanged — and converts
