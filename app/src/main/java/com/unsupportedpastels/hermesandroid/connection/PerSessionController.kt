@@ -59,6 +59,7 @@ internal class PerSessionControllerRegistry {
     val lock = Any()
     val controllers = mutableMapOf<DurableSessionId, PerSessionController>()
     val chatJobs = mutableMapOf<DurableSessionId, Job>()
+    private val promptSubmissionLifecycles = mutableMapOf<DurableSessionId, PromptSubmissionLifecycle>()
     // Recovery can outlive removal of its failed controller and event-job slot.
     private val recoveryJobs = mutableMapOf<DurableSessionId, Job>()
 
@@ -102,6 +103,32 @@ internal class PerSessionControllerRegistry {
 
     fun setOperationJob(durableSessionId: DurableSessionId, job: Job) {
         chatJobs[durableSessionId] = job
+    }
+
+    fun beginPromptSubmission(
+        durableSessionId: DurableSessionId,
+        draft: String,
+        attachmentIds: List<String>,
+    ): PromptSubmissionLifecycle.Attempt? = promptSubmissionLifecycles
+        .getOrPut(durableSessionId, ::PromptSubmissionLifecycle)
+        .begin(draft, attachmentIds)
+
+    fun observePromptTerminal(durableSessionId: DurableSessionId): PromptSubmissionLifecycle.TerminalEffect =
+        promptSubmissionLifecycles[durableSessionId]?.observeTerminal()
+            ?: PromptSubmissionLifecycle.TerminalEffect.Ignored
+
+    fun resolvePromptSubmission(
+        durableSessionId: DurableSessionId,
+        attempt: PromptSubmissionLifecycle.Attempt,
+        accepted: Boolean,
+    ): PromptSubmissionLifecycle.Resolution {
+        val lifecycle = promptSubmissionLifecycles[durableSessionId]
+            ?: return PromptSubmissionLifecycle.Resolution.Stale
+        val resolution = lifecycle.resolve(attempt, accepted)
+        if (resolution !is PromptSubmissionLifecycle.Resolution.Stale) {
+            promptSubmissionLifecycles.remove(durableSessionId)
+        }
+        return resolution
     }
 
     fun controller(durableSessionId: DurableSessionId): PerSessionController? =
@@ -194,6 +221,7 @@ internal class PerSessionControllerRegistry {
         chatJobs.values.forEach(Job::cancel)
         chatJobs.clear()
         chatOperationGenerations.clear()
+        promptSubmissionLifecycles.clear()
     }
 
     /** Cancels operation work while leaving close/adoption to [detachAll]. */
@@ -203,6 +231,7 @@ internal class PerSessionControllerRegistry {
         chatJobs.values.forEach(Job::cancel)
         chatJobs.clear()
         chatOperationGenerations.clear()
+        promptSubmissionLifecycles.clear()
         sessionInsightsJobs.values.forEach(Job::cancel)
         sessionInsightsJobs.clear()
         sessionInsightsGenerations.clear()
@@ -238,6 +267,7 @@ internal class PerSessionControllerRegistry {
         val detached = controllers.values.toList()
         controllers.clear()
         chatOperationGenerations.clear()
+        promptSubmissionLifecycles.clear()
         cancelRecoveryJobs()
         chatJobs.values.forEach(Job::cancel)
         chatJobs.clear()

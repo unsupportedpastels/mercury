@@ -13,6 +13,7 @@ import com.unsupportedpastels.hermesandroid.attachment.AttachmentReadException
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
 import com.unsupportedpastels.hermesandroid.gateway.ActiveRuntimeSession
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessageRole
+import com.unsupportedpastels.hermesandroid.gateway.ChatConnectionPhase
 import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
 import com.unsupportedpastels.hermesandroid.gateway.DelegationPauseResult
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnector
@@ -581,6 +582,93 @@ class HermesChatIntegrationTest {
         assertFalse(chat.isSending)
         assertFalse(chat.messages.last().isStreaming)
         assertEquals("temporary failure", chat.error)
+    }
+
+    @Test
+    fun terminalCompletionBeforeSubmitAckReleasesAdmissionAndCommitsAcceptance() = runTest(dispatcher) {
+        val session = DeferredAckChatSession()
+        val viewModel = chatViewModel(
+            session,
+            attachmentReader = AttachmentByteReader { "attachment".toByteArray() },
+        )
+        advanceUntilIdle()
+        viewModel.addAttachments(
+            durableId,
+            listOf(ComposerAttachment("first-attachment", "content://provider/first", "first.txt", "text/plain", 10)),
+        )
+
+        val send = viewModel.sendMessage(durableId, "first")
+        runCurrent()
+        session.firstSubmitStarted.await()
+        runCurrent()
+        val terminal = viewModel.snapshots.value.chatSessions.getValue(durableId)
+
+        // Release the deferred so a RED assertion cannot strand the fake's
+        // non-cooperative submit task when the expected lifecycle is missing.
+        session.firstAck.complete(DeferredSubmitOutcome.Accepted)
+        runCurrent()
+        send.join()
+        advanceUntilIdle()
+
+        assertFalse(terminal.isSending)
+        assertEquals(ChatConnectionPhase.Idle, terminal.connectionPhase)
+        assertEquals(1L, terminal.acceptedSubmissionCount)
+        assertEquals("first", terminal.acceptedSubmissionText)
+        assertTrue(viewModel.attachments.value[durableId].orEmpty().isEmpty())
+        assertEquals(1L, viewModel.snapshots.value.chatSessions.getValue(durableId).acceptedSubmissionCount)
+    }
+
+    @Test
+    fun lateOldSubmitFailureCannotRejectReplacementOrTouchAnotherSession() = runTest(dispatcher) {
+        val first = DeferredAckChatSession(runtimeId = "runtime-first")
+        val other = StreamingChatSession()
+        val sessions = ArrayDeque<HermesChatSession>().apply {
+            add(first)
+            add(other)
+        }
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(ServerSettingsState.Ready(origin)),
+            client = ChatConnectionClient(),
+            tokenStore = MemoryTokenStore(tokens),
+            chatConnector = HermesChatConnector { _, _ -> sessions.removeFirst() },
+            nowEpochSeconds = { 1_900_000_000 },
+        )
+        advanceUntilIdle()
+
+        val firstSend = viewModel.sendMessage(durableId, "first")
+        runCurrent()
+        first.firstSubmitStarted.await()
+        runCurrent()
+
+        val otherId = DurableSessionId("durable-other")
+        val otherSend = viewModel.sendMessage(otherId, "other")
+        runCurrent()
+        val replacement = viewModel.sendMessage(durableId, "second")
+        runCurrent()
+        val replacementWasSubmitted = first.secondSubmitStarted.isCompleted
+        val replacementAcceptedBeforeOldAck = viewModel.snapshots.value.chatSessions
+            .getValue(durableId)
+            .let { it.acceptedSubmissionCount == 2L && it.acceptedSubmissionText == "second" }
+
+        // The old task remains in its ACK barrier even after replacement has
+        // cancelled its per-session job. Its failure is delivered last.
+        first.firstAck.complete(DeferredSubmitOutcome.Failed)
+        firstSend.join()
+        replacement.join()
+        otherSend.join()
+        advanceUntilIdle()
+
+        val replacementChat = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        val otherChat = viewModel.snapshots.value.chatSessions.getValue(otherId)
+        assertTrue(replacementWasSubmitted)
+        assertTrue(replacementAcceptedBeforeOldAck)
+        assertEquals(2L, replacementChat.acceptedSubmissionCount)
+        assertEquals("second", replacementChat.acceptedSubmissionText)
+        assertEquals(0L, replacementChat.rejectedSubmissionCount)
+        assertFalse(replacementChat.error == "late submit failure")
+        assertEquals(1L, otherChat.acceptedSubmissionCount)
+        assertEquals("other", otherChat.acceptedSubmissionText)
+        assertFalse(otherChat.error == "late submit failure")
     }
 
     @Test
@@ -3047,6 +3135,67 @@ private class TerminalEventChatSession(
     }
 
     override suspend fun close() = Unit
+}
+
+private enum class DeferredSubmitOutcome {
+    Accepted,
+    Failed,
+}
+
+/** Delivers a terminal event before the first submit acknowledgement. */
+private class DeferredAckChatSession(
+    private val runtimeId: String = "runtime-deferred-ack",
+) : HermesChatSession {
+    private val runtimeSessionId = RuntimeSessionId(runtimeId)
+    private val channel = Channel<HermesChatEvent>(Channel.UNLIMITED)
+    override val events: Flow<HermesChatEvent> = channel.receiveAsFlow()
+    val firstSubmitStarted = CompletableDeferred<Unit>()
+    val secondSubmitStarted = CompletableDeferred<Unit>()
+    val firstAck = CompletableDeferred<DeferredSubmitOutcome>()
+    var submitCalls = 0
+        private set
+
+    override suspend fun resume(
+        durableSessionId: DurableSessionId,
+        profile: String?,
+    ) = ResumedChatSession(
+        runtimeSessionId = runtimeSessionId,
+        durableSessionId = durableSessionId,
+        resumed = true,
+        messages = emptyList(),
+        running = false,
+        inflight = null,
+    )
+
+    override suspend fun submitPrompt(
+        runtimeSessionId: RuntimeSessionId,
+        text: String,
+    ): PromptSubmission {
+        submitCalls += 1
+        channel.send(HermesChatEvent.MessageStart(runtimeSessionId, null))
+        if (submitCalls == 1) {
+            channel.send(HermesChatEvent.MessageComplete(runtimeSessionId, "first response", "complete"))
+            firstSubmitStarted.complete(Unit)
+            return when (withContext(NonCancellable) { firstAck.await() }) {
+                DeferredSubmitOutcome.Accepted -> PromptSubmission("accepted")
+                DeferredSubmitOutcome.Failed -> throw HermesChatProtocolException("late submit failure")
+            }
+        }
+        secondSubmitStarted.complete(Unit)
+        channel.send(HermesChatEvent.MessageComplete(runtimeSessionId, "second response", "complete"))
+        return PromptSubmission("accepted")
+    }
+
+    override suspend fun attachFile(
+        runtimeSessionId: RuntimeSessionId,
+        filename: String,
+        mimeType: String,
+        base64Content: String,
+    ): String = "@file:$filename"
+
+    override suspend fun close() {
+        channel.close()
+    }
 }
 
 private class CompletableSlashChatSession(
