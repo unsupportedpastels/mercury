@@ -201,7 +201,8 @@ final class ProfileDiscoveryTests: XCTestCase {
     func testStalePreviousHostProfileResponseCannotOverwriteCurrentCatalog() async {
         let oldHost = "https://old-profiles.test"
         let newHost = "https://new-profiles.test"
-        let oldClient = DeferredProfilesListing()
+        let oldRequestStarted = expectation(description: "Old host profile request started")
+        let oldClient = DeferredProfilesListing(onRequest: { oldRequestStarted.fulfill() })
         let newClient = FakeProfilesListing(names: ["default", "new-host"])
         let model = makeModel(
             session: makeSession(),
@@ -221,12 +222,7 @@ final class ProfileDiscoveryTests: XCTestCase {
         let oldProbe = Task { @MainActor in
             await model.controller.probeSelfHosted(origin: oldHost)
         }
-        var oldRequested = false
-        for _ in 0..<100 where !oldRequested {
-            oldRequested = await oldClient.requested
-            if !oldRequested { await Task.yield() }
-        }
-        XCTAssertTrue(oldRequested)
+        await fulfillment(of: [oldRequestStarted], timeout: 5)
 
         await model.controller.probeSelfHosted(origin: newHost)
         XCTAssertEqual(model.profiles, ["default", "new-host"])
@@ -239,7 +235,12 @@ final class ProfileDiscoveryTests: XCTestCase {
     }
 
     func testStaleProfileSessionRefreshCannotMixRowsAfterProfileSwitch() async {
-        let pages = DeferredSessionPages()
+        let defaultRequestStarted = expectation(description: "Default profile page requested")
+        let workRequestStarted = expectation(description: "Work profile page requested")
+        let pages = DeferredSessionPages(onRequest: { profile in
+            if profile == "default" { defaultRequestStarted.fulfill() }
+            if profile == "work" { workRequestStarted.fulfill() }
+        })
         let model = makeModel(
             session: makeSession(),
             sessionPageLoader: { _, profile, _, _ in
@@ -252,15 +253,13 @@ final class ProfileDiscoveryTests: XCTestCase {
         let oldRefresh = Task { @MainActor in
             await model.controller.refreshSessions()
         }
-        let defaultRequested = await pages.waitUntilRequested("default")
-        XCTAssertTrue(defaultRequested)
+        await fulfillment(of: [defaultRequestStarted], timeout: 5)
 
         model.setActiveProfile("work")
         let newRefresh = Task { @MainActor in
             await model.controller.refreshSessions()
         }
-        let workRequested = await pages.waitUntilRequested("work")
-        XCTAssertTrue(workRequested)
+        await fulfillment(of: [workRequestStarted], timeout: 5)
 
         await pages.release(
             "work",
@@ -353,13 +352,17 @@ private final class FakeProfilesListing: ProfilesListing {
 }
 
 private actor DeferredProfilesListing: ProfilesListing {
-    private(set) var requested = false
+    private let onRequest: @Sendable () -> Void
     private var continuation: CheckedContinuation<[String], Error>?
 
+    init(onRequest: @escaping @Sendable () -> Void) {
+        self.onRequest = onRequest
+    }
+
     func list() async throws -> [String] {
-        requested = true
         return try await withCheckedThrowingContinuation { continuation in
             self.continuation = continuation
+            onRequest()
         }
     }
 
@@ -371,21 +374,17 @@ private actor DeferredProfilesListing: ProfilesListing {
 
 private actor DeferredSessionPages {
     private var continuations: [String: CheckedContinuation<SessionPage, Error>] = [:]
-    private(set) var requests: [String] = []
+    private let onRequest: @Sendable (String) -> Void
 
-    func load(profile: String) async throws -> SessionPage {
-        requests.append(profile)
-        return try await withCheckedThrowingContinuation { continuation in
-            continuations[profile] = continuation
-        }
+    init(onRequest: @escaping @Sendable (String) -> Void) {
+        self.onRequest = onRequest
     }
 
-    func waitUntilRequested(_ profile: String) async -> Bool {
-        for _ in 0..<100 {
-            if requests.contains(profile) { return true }
-            await Task.yield()
+    func load(profile: String) async throws -> SessionPage {
+        return try await withCheckedThrowingContinuation { continuation in
+            continuations[profile] = continuation
+            onRequest(profile)
         }
-        return false
     }
 
     func release(_ profile: String, page: SessionPage) {
