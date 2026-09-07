@@ -1,10 +1,12 @@
 package com.unsupportedpastels.hermesandroid.connection
 
-/** Maximum number of server origins retained in the local catalog. */
-const val MAX_SERVER_CATALOG_ENTRIES = 8
+import com.unsupportedpastels.mercury.core.origin.ServerCatalogPolicy
 
-/** Maximum number of user-controlled display-label characters retained locally. */
-const val MAX_SERVER_LABEL_CHARS = 80
+/** Maximum number of server origins retained in the local catalog (shared decision). */
+const val MAX_SERVER_CATALOG_ENTRIES = ServerCatalogPolicy.MAX_ENTRIES
+
+/** Maximum number of user-controlled display-label characters retained locally (shared decision). */
+const val MAX_SERVER_LABEL_CHARS = ServerCatalogPolicy.MAX_LABEL_CHARS
 
 /**
  * Local metadata for one server origin.
@@ -71,23 +73,15 @@ data class ServerCatalog(
             entries.forEach { entry ->
                 deduplicated[entry.origin] = entry.normalized()
             }
-            val bounded = deduplicated.values.toMutableList()
+            val all = deduplicated.values.toList()
             val resolvedActive = activeOrigin?.takeIf { origin ->
-                bounded.any { it.origin == origin }
-            } ?: bounded.firstOrNull()?.origin
-            while (bounded.size > MAX_SERVER_CATALOG_ENTRIES) {
-                val removable = bounded
-                    .withIndex()
-                    .filter { (_, entry) -> entry.origin != resolvedActive }
-                    .minWithOrNull(
-                        compareBy<IndexedValue<ServerCatalogEntry>>(
-                            { it.value.lastUsedEpochSeconds ?: Long.MIN_VALUE },
-                            { it.index },
-                        ),
-                    )
-                    ?: IndexedValue(bounded.lastIndex, bounded.last())
-                bounded.removeAt(removable.index)
-            }
+                all.any { it.origin == origin }
+            } ?: all.firstOrNull()?.origin
+            val retained = ServerCatalogPolicy.retainedIndices(
+                lastUsedEpochSeconds = all.map(ServerCatalogEntry::lastUsedEpochSeconds),
+                activeIndex = all.indexOfFirst { it.origin == resolvedActive }.takeIf { it >= 0 },
+            )
+            val bounded = retained.map(all::get)
             val finalActive = resolvedActive?.takeIf { origin ->
                 bounded.any { it.origin == origin }
             } ?: bounded.firstOrNull()?.origin

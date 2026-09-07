@@ -3,11 +3,13 @@ package com.unsupportedpastels.hermesandroid.session
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.mercury.core.sessions.SessionListFilterPolicy
+import com.unsupportedpastels.mercury.core.sessions.SessionListFilterSpec
 
 const val MAX_SAVED_FILTERS_PER_SCOPE = 20
 const val MAX_SAVED_FILTER_SCOPES = 64
 const val MAX_SAVED_FILTER_NAME_CHARS = 64
-const val MAX_SAVED_FILTER_QUERY_CHARS = 128
+const val MAX_SAVED_FILTER_QUERY_CHARS = SessionListFilterPolicy.MAX_QUERY_CHARS
 const val MAX_BULK_SELECTION = 500
 
 /** The only predicates currently understood by the Home session list. */
@@ -22,24 +24,14 @@ data class SessionListFilter(
         }
     }
 
-    fun toSearchQuery(): String = buildList {
-        query.trim().takeIf(String::isNotEmpty)?.let(::add)
-        if (pinnedOnly) add("is:pinned")
-        if (archivedOnly) add("is:archived")
-    }.joinToString(" ")
+    fun toSearchQuery(): String =
+        SessionListFilterPolicy.format(SessionListFilterSpec(query, pinnedOnly, archivedOnly))
 
     companion object {
-        private val predicatePattern = Regex("(?i)\\bis:(pinned|archived)\\b")
-
+        /** The predicate grammar is a shared decision; iOS parses the same box the same way. */
         fun fromSearchQuery(value: String): SessionListFilter {
-            val bounded = value.trim().take(MAX_SAVED_FILTER_QUERY_CHARS)
-            val pinned = Regex("(?i)\\bis:pinned\\b").containsMatchIn(bounded)
-            val archived = Regex("(?i)\\bis:archived\\b").containsMatchIn(bounded)
-            val query = predicatePattern.replace(bounded, " ")
-                .replace(Regex("\\s+"), " ")
-                .trim()
-                .take(MAX_SAVED_FILTER_QUERY_CHARS)
-            return SessionListFilter(query, pinned, archived)
+            val spec = SessionListFilterPolicy.parse(value)
+            return SessionListFilter(spec.query, spec.pinnedOnly, spec.archivedOnly)
         }
     }
 }

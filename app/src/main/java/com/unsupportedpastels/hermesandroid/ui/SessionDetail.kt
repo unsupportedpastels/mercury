@@ -183,6 +183,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
+import com.unsupportedpastels.mercury.core.composer.ComposerAction
+import com.unsupportedpastels.mercury.core.composer.ComposerRejection
+import com.unsupportedpastels.mercury.core.composer.ComposerRoutingPolicy
+import com.unsupportedpastels.mercury.core.interaction.ClarifyAnswerPolicy
+import com.unsupportedpastels.mercury.core.interaction.ClarifyAnswerState
+import com.unsupportedpastels.mercury.core.transcript.TranscriptPresentationPolicy
 
 private data class PendingComposerSend(
     val draft: String,
@@ -437,6 +443,7 @@ internal fun SessionDetailScreen(
     onRemoveAttachment: (String) -> Unit,
     onRemoveHostReference: (String) -> Unit,
     onSend: (String) -> Unit,
+    onSteer: (String) -> Unit,
     onReasoningSelected: (String) -> Unit,
     onFastSelected: (Boolean) -> Unit,
     onOpenModelPicker: () -> Unit,
@@ -997,8 +1004,17 @@ internal fun SessionDetailScreen(
             val composerEnabled = true
             val submissionEnabled = canSend && !chat.isLoading && !connectionBusy && pendingSend == null
             val attachmentsEnabled = submissionEnabled && !chat.isSending
-            val canSubmitDuringActiveTurn = !chat.isSending ||
-                (controlledTurn && attachments.isEmpty() && isSteerCommand(draft))
+            // Text typed during a controlled turn steers it (shared routing decision);
+            // an empty composer, or one holding attachments, shows Stop instead.
+            val canSubmitDuringActiveTurn = !chat.isSending || (controlledTurn && attachments.isEmpty())
+            val showStopControl = controlledTurn && (
+                attachments.isNotEmpty() ||
+                    ComposerRoutingPolicy.shouldShowStopButton(
+                        isSending = chat.isSending,
+                        turnActive = controlledTurn,
+                        draft = draft,
+                    )
+                )
             val voiceHost = rememberVoiceConversationHost(
                 conversation = voiceConversation,
                 sessionId = session.id.value,
@@ -1181,7 +1197,7 @@ internal fun SessionDetailScreen(
                             )
                         }
                     }
-                    if (controlledTurn && !canSubmitDuringActiveTurn) {
+                    if (showStopControl) {
                         FilledIconButton(
                             enabled = !stopping,
                             colors = IconButtonDefaults.filledIconButtonColors(
@@ -1204,22 +1220,41 @@ internal fun SessionDetailScreen(
                         FilledIconButton(
                         onClick = {
                             deviceSpeechController.finish()
-                            val message = draft.trim()
-                            val reasoningEffort = reasoningEffortCommand(message)
                             keyboardController?.hide()
                             focusManager.clearFocus()
-                            when {
-                                isModelPickerCommand(message) -> {
+                            val action = ComposerRoutingPolicy.route(
+                                draft = draft,
+                                turnActive = chat.isSending && controlledTurn,
+                                hasAttachments = attachments.isNotEmpty() || hostReferences.isNotEmpty(),
+                            )
+                            when (action) {
+                                ComposerAction.OpenModelPicker -> {
                                     pendingSend = null
                                     onDraftChanged("")
                                     onOpenModelPicker()
                                 }
-                                reasoningEffort != null -> {
+                                is ComposerAction.SetReasoning -> {
                                     pendingSend = null
                                     onDraftChanged("")
-                                    onReasoningSelected(reasoningEffort)
+                                    onReasoningSelected(action.effort)
                                 }
-                                else -> {
+                                is ComposerAction.Steer -> {
+                                    pendingSend = null
+                                    onDraftChanged("")
+                                    onSteer(action.text)
+                                }
+                                is ComposerAction.Reject -> {
+                                    // Same wording as iOS: the reason is shown, never swallowed.
+                                    attachmentError = when (action.reason) {
+                                        ComposerRejection.BlankPrompt -> null
+                                        ComposerRejection.BlankSteer -> "Enter guidance after /steer."
+                                        ComposerRejection.NoActiveTurnToSteer -> "There is no active turn to steer."
+                                        ComposerRejection.AttachmentsUnavailableWhileSteering ->
+                                            "Attachments are unavailable while steering an active turn."
+                                    }
+                                }
+                                is ComposerAction.Submit -> {
+                                    val message = action.text
                                     // Match the host's reference-prefixed prompt, but
                                     // only clear the unchanged local text draft.
                                     val submittedText = (hostReferences + message.takeIf(String::isNotBlank))
@@ -2460,73 +2495,6 @@ internal fun transcriptToolName(text: String): String =
     text.substringBefore(" · ").trim().ifEmpty { text.trim() }
 
 /**
- * Verb bucket for a gateway tool name, or null for tools this client does not
- * recognize. Buckets merge related names ("write_file" and "patch" are both
- * edits) so the summary can read "edited 2 files" instead of listing each.
- */
-private fun toolVerbBucket(name: String): String? = when (name.lowercase()) {
-    "read_file", "read", "cat" -> "read"
-    "write_file", "patch", "edit_file", "apply_patch", "edit", "write" -> "edit"
-    "shell", "terminal", "bash", "exec", "run_command" -> "command"
-    "web_search", "search_web" -> "web_search"
-    "web_fetch", "fetch", "http_get" -> "fetch"
-    "skill_view", "skill" -> "skill"
-    "list_files", "ls", "glob" -> "list"
-    "grep", "search_files", "search" -> "grep"
-    else -> null
-}
-
-private fun toolVerbPhrase(bucket: String, count: Int): String = when (bucket) {
-    "read" -> if (count == 1) "read a file" else "read $count files"
-    "edit" -> if (count == 1) "edited a file" else "edited $count files"
-    "command" -> if (count == 1) "ran a command" else "ran $count commands"
-    "web_search" -> if (count == 1) "searched the web" else "searched the web ×$count"
-    "fetch" -> if (count == 1) "fetched a page" else "fetched $count pages"
-    "skill" -> if (count == 1) "loaded a skill" else "loaded $count skills"
-    "list" -> if (count == 1) "listed files" else "listed files ×$count"
-    else -> if (count == 1) "searched files" else "searched files ×$count"
-}
-
-/**
- * Claude-app style activity summary: known tools compress into verb phrases
- * ("edited 2 files, ran a command"), unknown tool names fall back to counted
- * raw names so a server-side rename degrades to less prose, never a lie.
- * Running tools lead with "running <name>" so in-flight work stays visible.
- */
-internal fun toolActivitySummary(
-    completedNames: List<String>,
-    runningNames: List<String> = emptyList(),
-): String {
-    val buckets = linkedMapOf<String, Int>()
-    val unknown = linkedMapOf<String, Int>()
-    completedNames.forEach { name ->
-        val bucket = toolVerbBucket(name)
-        if (bucket != null) {
-            buckets.merge(bucket, 1, Int::plus)
-        } else {
-            unknown.merge(name, 1, Int::plus)
-        }
-    }
-    val phrases = buildList {
-        runningNames.distinct().takeIf(List<String>::isNotEmpty)?.let { running ->
-            add("running ${running.joinToString(", ")}")
-        }
-        buckets.entries
-            .sortedByDescending(Map.Entry<String, Int>::value)
-            .forEach { add(toolVerbPhrase(it.key, it.value)) }
-        unknown.entries.forEach { (name, count) ->
-            add(if (count > 1) "$name ×$count" else name)
-        }
-    }
-    val visible = phrases.take(3)
-    val overflow = phrases.size - visible.size
-    return buildString {
-        append(visible.joinToString(", "))
-        if (overflow > 0) append(", +$overflow more")
-    }.replaceFirstChar { it.uppercase() }
-}
-
-/**
  * One collapsible card wrapping all tool activity for the current run, in the
  * style of Hermex's tool activity group: state icon, action count, a summary of
  * unique tool names, and the per-tool rows only when expanded.
@@ -2541,7 +2509,7 @@ private fun ToolActivityGroup(
     val anyRunning = tools.any { it.state == RunToolState.Running }
     val noun = if (tools.size == 1) "action" else "actions"
     val stateText = if (anyRunning) "running" else "completed"
-    val summary = toolActivitySummary(
+    val summary = TranscriptPresentationPolicy.toolActivitySummary(
         completedNames = tools.filter { it.state == RunToolState.Completed }.map(RunToolRow::name),
         runningNames = tools.filter { it.state == RunToolState.Running }.map(RunToolRow::name),
     )
@@ -2700,7 +2668,7 @@ private fun TranscriptToolRunGroup(
     val semanticColors = LocalHermesSemanticColors.current
     val noun = if (tools.size == 1) "action" else "actions"
     val summary = remember(tools) {
-        toolActivitySummary(
+        TranscriptPresentationPolicy.toolActivitySummary(
             completedNames = tools.map { transcriptToolName(it.message.text) },
         )
     }
@@ -2869,7 +2837,7 @@ private fun ThinkingBlock(
     onToggle: () -> Unit,
 ) {
     val preview = remember(reasoning) {
-        reasoning.replace('\n', ' ').trim().take(80)
+        TranscriptPresentationPolicy.reasoningPreview(reasoning)
     }
     Surface(
         onClick = onToggle,
@@ -2936,8 +2904,10 @@ private fun ClarificationCard(
     interaction: ClarificationInteraction,
     onResponse: (String, String) -> Unit,
 ) {
-    var answer by remember(interaction.requestId) { mutableStateOf("") }
-    var selectedChoices by remember(interaction.requestId) { mutableStateOf(emptySet<String>()) }
+    // Answer semantics are the shared clarify decision (same on iOS).
+    var clarifyState by remember(interaction.requestId) {
+        mutableStateOf(ClarifyAnswerState(interaction.choices, interaction.multiSelect))
+    }
     val pending = interaction.lifecycle == RunInteractionLifecycle.Pending
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -2960,15 +2930,8 @@ private fun ClarificationCard(
                         ) {
                             interaction.choices.forEach { choice ->
                                 FilterChip(
-                                    selected = choice in selectedChoices,
-                                    onClick = {
-                                        answer = ""
-                                        selectedChoices = if (choice in selectedChoices) {
-                                            selectedChoices - choice
-                                        } else {
-                                            selectedChoices + choice
-                                        }
-                                    },
+                                    selected = choice in clarifyState.selectedChoices,
+                                    onClick = { clarifyState = clarifyState.select(choice) },
                                     label = { Text(choice) },
                                 )
                             }
@@ -2979,12 +2942,9 @@ private fun ClarificationCard(
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             interaction.choices.forEach { choice ->
-                                val chosen = choice in selectedChoices
+                                val chosen = choice in clarifyState.selectedChoices
                                 Surface(
-                                    onClick = {
-                                        answer = ""
-                                        selectedChoices = setOf(choice)
-                                    },
+                                    onClick = { clarifyState = clarifyState.select(choice) },
                                     shape = RoundedCornerShape(12.dp),
                                     color = if (chosen) {
                                         MaterialTheme.colorScheme.primary
@@ -3009,27 +2969,15 @@ private fun ClarificationCard(
                     }
                 }
                 OutlinedTextField(
-                    value = answer,
-                    onValueChange = {
-                        answer = it
-                        // Typing is its own answer — clear any picked choice so the
-                        // two inputs can't both look selected (desktop parity).
-                        if (it.isNotBlank()) selectedChoices = emptySet()
-                    },
+                    value = clarifyState.answer,
+                    onValueChange = { clarifyState = clarifyState.typeAnswer(it) },
                     label = {
-                        Text(if (interaction.choices.isEmpty()) "Response" else "Other")
+                        Text(ClarifyAnswerPolicy.otherFieldLabel(hasChoices = interaction.choices.isNotEmpty()))
                     },
                     modifier = Modifier.fillMaxWidth(),
                     enabled = true,
                 )
-                val pendingAnswer: String? = when {
-                    interaction.multiSelect && selectedChoices.isNotEmpty() ->
-                        interaction.choices.filter { it in selectedChoices }.joinToString(", ")
-                    !interaction.multiSelect && selectedChoices.isNotEmpty() ->
-                        selectedChoices.first()
-                    answer.isNotBlank() -> answer.trim()
-                    else -> null
-                }
+                val pendingAnswer = clarifyState.pendingAnswer
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
@@ -3039,7 +2987,7 @@ private fun ClarificationCard(
                     // treats it as "no preference / proceed".
                     TextButton(
                         onClick = {
-                            onResponse(interaction.requestId, "")
+                            onResponse(interaction.requestId, ClarifyAnswerPolicy.SKIP_ANSWER)
                         },
                     ) {
                         Text("Skip")

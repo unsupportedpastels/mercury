@@ -1,12 +1,13 @@
 import Foundation
+import MercuryCore
 import Security
 
 /// Hard limits for the local server picker. Catalog rows contain UI metadata
 /// only; credentials remain in `KeychainCredentialStore` under their normalized
 /// origin and are never read or copied by this module.
 enum ServerCatalogPolicy {
-    static let maxEntries = 8
-    static let maxLabelCharacters = 80
+    static let maxEntries = Int(MercuryCore.ServerCatalogPolicy.shared.MAX_ENTRIES)
+    static let maxLabelCharacters = Int(MercuryCore.ServerCatalogPolicy.shared.MAX_LABEL_CHARS)
     static let maxPersistedBytes = 64 * 1024
     static let maxDecodedEntries = maxEntries * 2
 }
@@ -303,17 +304,15 @@ actor ServerCatalogStore {
         return ServerCatalog(entries: entries, activeID: catalog.activeID)
     }
 
+    /// Eviction order is the shared decision (`MercuryCore.ServerCatalogPolicy`).
     private static func bounded(_ input: ServerCatalog) -> ServerCatalog {
-        var entries = input.entries
-        while entries.count > ServerCatalogPolicy.maxEntries {
-            let candidates = entries.indices.filter { entries[$0].id != input.activeID }
-            let removal = candidates.min { lhs, rhs in
-                let left = entries[lhs].lastUsedEpochSeconds ?? Int64.min
-                let right = entries[rhs].lastUsedEpochSeconds ?? Int64.min
-                return left == right ? lhs < rhs : left < right
-            } ?? entries.indices.last!
-            entries.remove(at: removal)
-        }
+        let activeIndex = input.activeID.flatMap { id in input.entries.firstIndex(where: { $0.id == id }) }
+        let retained = MercuryCore.ServerCatalogPolicy.shared.retainedIndices(
+            lastUsedEpochSeconds: input.entries.map { $0.lastUsedEpochSeconds.map { KotlinLong(value: $0) } },
+            activeIndex: activeIndex.map { KotlinInt(value: Int32($0)) },
+            maxEntries: Int32(ServerCatalogPolicy.maxEntries)
+        )
+        let entries = retained.map { input.entries[Int(truncating: $0)] }
         let active = input.activeID.flatMap { id in entries.contains(where: { $0.id == id }) ? id : nil }
             ?? entries.first?.id
         return ServerCatalog(entries: entries, activeID: active)

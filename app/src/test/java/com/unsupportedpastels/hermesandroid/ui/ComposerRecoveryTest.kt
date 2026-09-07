@@ -21,6 +21,7 @@ class ComposerRecoveryTest {
     private val chat = mutableStateOf(ChatSessionSnapshot())
     private val draft = mutableStateOf("  Keep my draft  ")
     private var sends = 0
+    private var steers = 0
     private val scopeKey = mutableStateOf("origin/default/composer")
 
     private fun render(controller: Boolean = false, references: List<String> = emptyList()) {
@@ -32,7 +33,7 @@ class ComposerRecoveryTest {
                     onDraftChanged = { draft.value = it }, canSend = true,
                     attachments = emptyList(), hostReferences = references,
                     onAddAttachments = { emptyList() }, onRemoveAttachment = {},
-                    onRemoveHostReference = {}, onSend = { sends++ },
+                    onRemoveHostReference = {}, onSend = { sends++ }, onSteer = { steers++ },
                     onReasoningSelected = {}, onFastSelected = {}, onOpenModelPicker = {},
                     onClarificationResponse = { _, _ -> }, onApprovalResponse = { _, _ -> },
                     onBlockingResponse = { _, _, _ -> }, showStop = controller, stopping = false,
@@ -172,10 +173,22 @@ class ComposerRecoveryTest {
 
     @Test fun controlledActiveTurnKeepsSteerAndStopBehavior() {
         chat.value = ChatSessionSnapshot(isSending = true)
+        // An empty composer during a controlled turn shows Stop; any text steers.
+        draft.value = ""
         render(controller = true)
         rule.onNodeWithContentDescription("Stop Hermes response").assertIsEnabled()
         rule.onNode(hasSetTextAction()).performTextReplacement("/steer focus")
         rule.onNodeWithContentDescription("Send message").assertIsEnabled().performClick()
-        rule.runOnIdle { assertEquals(1, sends); assertEquals("/steer focus", draft.value) }
+        // Guidance goes to the steer RPC (shared routing) and the draft clears at once.
+        rule.runOnIdle { assertEquals(0, sends); assertEquals(1, steers); assertEquals("", draft.value) }
+    }
+
+    @Test fun steerWithoutAnActiveTurnShowsTheSharedRejectionReason() {
+        chat.value = ChatSessionSnapshot()
+        draft.value = "/steer go"
+        render(controller = false)
+        rule.onNodeWithContentDescription("Send message").assertIsEnabled().performClick()
+        rule.onNodeWithText("There is no active turn to steer.").assertIsDisplayed()
+        rule.runOnIdle { assertEquals(0, sends); assertEquals(0, steers) }
     }
 }

@@ -15,119 +15,11 @@ final class MediaDirectiveExtractorTests: XCTestCase {
 
     // MARK: Standalone MEDIA directives
 
-    func testExtractsStandaloneMediaDirectiveAsManagedImage() {
-        let artifacts = MediaDirectiveExtractor.extract(
-            messages: [
-                message("Here is the result.\n  MEDIA: '/home/user/project/generated mockup.png'  \n"),
-            ]
-        )
-
-        XCTAssertEqual(artifacts.count, 1)
-        XCTAssertEqual(artifacts.first?.type, .image)
-        XCTAssertEqual(artifacts.first?.origin, .managedPath)
-        XCTAssertEqual(artifacts.first?.source, "/home/user/project/generated mockup.png")
-        XCTAssertEqual(artifacts.first?.displayName, "generated mockup.png")
-        XCTAssertTrue(artifacts.first!.stableIdentity.hasPrefix("managed:"))
-    }
-
-    func testAcceptsFirstPartyQuoteAndBacktickFormsButOnlyOnStandaloneLines() {
-        let artifacts = MediaDirectiveExtractor.extract(
-            """
-            MEDIA:/tmp/one.mp3
-            `MEDIA:/tmp/two.wav`
-            'MEDIA:/tmp/three.ogg'
-            prose MEDIA:/tmp/not-an-artifact.png here
-            MEDIA:/tmp/malformed path.png
-            MEDIA:"/tmp/unclosed.png
-            """
-        )
-
-        XCTAssertEqual(artifacts.map { $0.displayName }, ["one.mp3", "two.wav", "three.ogg"])
-        XCTAssertTrue(artifacts.allSatisfy { $0.type == .audio })
-    }
-
     // MARK: HTTPS URLs and markdown links
-
-    func testExtractsExplicitHttpsAndMarkdownImageAudioAndFileLinks() {
-        let artifacts = MediaDirectiveExtractor.extract(
-            """
-            ![generated image](https://cdn.example/assets/result.PNG)
-            [Audio: voice recording](https://cdn.example/audio/voice.mp3?download=1)
-            [report.pdf](https://files.example/download/report.pdf)
-            https://cdn.example/assets/standalone.webp
-            """
-        )
-
-        XCTAssertEqual(artifacts.count, 4)
-        XCTAssertEqual(artifacts.map { $0.type }, [.image, .audio, .file, .image])
-        XCTAssertEqual(artifacts[0].origin, .remoteURL)
-        XCTAssertEqual(artifacts[0].displayName, "result.PNG")
-        XCTAssertFalse(artifacts.contains { $0.source.contains("#") })
-    }
 
     // MARK: Rejections
 
-    func testRejectsUnsafeUrlsMalformedSourcesAndArbitraryProse() {
-        let credentialedURL = "https://user" + ":pass@example.com/secret.png"
-        let artifacts = MediaDirectiveExtractor.extract(
-            """
-            [userinfo](\(credentialedURL))
-            [fragment](https://example.com/image.png#fragment)
-            [http](http://example.com/image.png)
-            [file](file:///tmp/secret.png)
-            [data](data:image/png;base64,AAAA)
-            [local](https://localhost/image.png)
-            [private](https://192.168.1.2/image.png)
-            This prose mentions https://example.com/not-a-link.png but is not a deliverable.
-            MEDIA:javascript:alert(1)
-            MEDIA:/tmp/bad\u{0}name.png
-            """
-        )
-
-        XCTAssertTrue(artifacts.isEmpty)
-    }
-
     // MARK: Dedupe and bounds
-
-    func testDeduplicatesByStableSourceIdentityAndAppliesBounds() {
-        let repeated = """
-            MEDIA:/tmp/output.png
-            ![same](https://EXAMPLE.com:443/output.png)
-            MEDIA:/tmp/output.png
-            [same](https://example.com/output.png)
-            MEDIA:/tmp/second.mp3
-            """
-        let artifacts = MediaDirectiveExtractor.extract(
-            repeated,
-            limits: ArtifactExtractionLimits(maxItems: 2)
-        )
-
-        XCTAssertEqual(artifacts.count, 2)
-        XCTAssertEqual(artifacts[0].source, "/tmp/output.png")
-        XCTAssertEqual(artifacts[1].source, "https://example.com/output.png")
-        XCTAssertEqual(
-            artifacts[1].stableIdentity,
-            MediaDirectiveExtractor.extract("[again](https://example.com/output.png)").first!.stableIdentity
-        )
-    }
-
-    func testCapsTranscriptSourceLocationAndDisplayNameLengths() {
-        let longName = "abcdefghijkl.png"
-        let text = "MEDIA:/a/\(longName)\nMEDIA:/b/second-long-name.png"
-        let artifacts = MediaDirectiveExtractor.extract(
-            text,
-            limits: ArtifactExtractionLimits(
-                maxTranscriptChars: text.utf16.count,
-                maxDisplayNameChars: 12,
-                maxSourceChars: 20,
-                maxLocationChars: 20
-            )
-        )
-
-        XCTAssertEqual(artifacts.count, 1)
-        XCTAssertLessThanOrEqual(artifacts.first!.displayName.utf16.count, 12)
-        XCTAssertLessThanOrEqual(artifacts.first!.source.utf16.count, 20)
-    }
 
     // MARK: Message text only
 

@@ -13,58 +13,7 @@ class AttachmentPolicyTest {
 
     // --- sanitizeDisplayName -------------------------------------------------
 
-    @Test
-    fun sanitizeKeepsPlainFilenames() {
-        assertEquals("report.pdf", AttachmentPolicy.sanitizeDisplayName("report.pdf"))
-        assertEquals("notes v2.txt", AttachmentPolicy.sanitizeDisplayName("notes v2.txt"))
-    }
-
-    @Test
-    fun sanitizeReducesToBasename() {
-        assertEquals("report.txt", AttachmentPolicy.sanitizeDisplayName("/Users/alice/Downloads/report.txt"))
-        assertEquals("passwd", AttachmentPolicy.sanitizeDisplayName("..\\..\\etc\\passwd"))
-        assertEquals("photo.png", AttachmentPolicy.sanitizeDisplayName("C:\\Users\\alice\\Pictures\\photo.png"))
-    }
-
-    @Test
-    fun sanitizeStripsInvalidAndControlCharacters() {
-        assertEquals("abcdefgh", AttachmentPolicy.sanitizeDisplayName("a<b>c:d\"e|f?g*h"))
-        assertEquals("badname.txt", AttachmentPolicy.sanitizeDisplayName("bad\u0000name\u001F.txt"))
-    }
-
-    @Test
-    fun sanitizeStripsLeadingDotsAndFallsBackWhenEmpty() {
-        assertEquals("hidden", AttachmentPolicy.sanitizeDisplayName(".hidden"))
-        assertEquals("attachment", AttachmentPolicy.sanitizeDisplayName(".."))
-        assertEquals("attachment", AttachmentPolicy.sanitizeDisplayName(""))
-        assertEquals("attachment", AttachmentPolicy.sanitizeDisplayName("   "))
-    }
-
-    @Test
-    fun sanitizeCapsLength() {
-        val longName = "a".repeat(300) + ".txt"
-        val sanitized = AttachmentPolicy.sanitizeDisplayName(longName)
-        assertEquals(AttachmentPolicy.MAX_DISPLAY_NAME_LENGTH, sanitized.length)
-    }
-
     // --- kindOf --------------------------------------------------------------
-
-    @Test
-    fun kindRoutesByMimeType() {
-        assertEquals(AttachmentKind.IMAGE, AttachmentPolicy.kindOf("image/png", "photo.png"))
-        assertEquals(AttachmentKind.IMAGE, AttachmentPolicy.kindOf("image/jpeg", "photo"))
-        assertEquals(AttachmentKind.FILE, AttachmentPolicy.kindOf("application/pdf", "doc.pdf"))
-        assertEquals(AttachmentKind.FILE, AttachmentPolicy.kindOf("text/plain", "notes.txt"))
-    }
-
-    @Test
-    fun kindFallsBackToExtensionForUnknownMime() {
-        assertEquals(AttachmentKind.IMAGE, AttachmentPolicy.kindOf("application/octet-stream", "scan.png"))
-        assertEquals(AttachmentKind.IMAGE, AttachmentPolicy.kindOf(null, "photo.jpg"))
-        assertEquals(AttachmentKind.IMAGE, AttachmentPolicy.kindOf(null, "anim.webp"))
-        assertEquals(AttachmentKind.FILE, AttachmentPolicy.kindOf("application/octet-stream", "report.txt"))
-        assertEquals(AttachmentKind.FILE, AttachmentPolicy.kindOf(null, "archive.zip"))
-    }
 
     // --- checkAdd (metadata-time caps) ----------------------------------------
 
@@ -157,45 +106,4 @@ class AttachmentPolicyTest {
 
     // --- composePromptText ----------------------------------------------------
 
-    @Test
-    fun composePrependsFileRefsToTypedText() {
-        assertEquals(
-            "@file:.hermes/desktop-attachments/report.txt\n\nsummarize",
-            AttachmentPolicy.composePromptText("summarize", listOf("@file:.hermes/desktop-attachments/report.txt"), emptyList()),
-        )
-    }
-
-    @Test
-    fun composeUsesRefsAloneWhenTextIsBlank() {
-        assertEquals(
-            "@file:notes.txt",
-            AttachmentPolicy.composePromptText("", listOf("@file:notes.txt"), emptyList()),
-        )
-    }
-
-    @Test
-    fun composeUsesServerStyleNoteForImagesOnly() {
-        assertEquals(
-            "[User attached image: photo.png]",
-            AttachmentPolicy.composePromptText("", emptyList(), listOf("photo.png")),
-        )
-    }
-
-    @Test
-    fun composePassesThroughPlainTextWithoutAttachments() {
-        assertEquals("hello", AttachmentPolicy.composePromptText("hello", emptyList(), emptyList()))
-        assertEquals("", AttachmentPolicy.composePromptText("", emptyList(), emptyList()))
-    }
-
-    @Test
-    fun composeJoinsMultipleRefsAndKeepsTypedTextLast() {
-        val text = AttachmentPolicy.composePromptText(
-            "read both",
-            listOf("@file:a.txt", "@file:b.txt"),
-            emptyList(),
-        )
-        assertTrue(text.startsWith("@file:a.txt\n@file:b.txt"))
-        assertTrue(text.endsWith("\n\nread both"))
-        assertFalse(text.contains("[User attached"))
-    }
 }

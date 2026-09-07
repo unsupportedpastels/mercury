@@ -131,6 +131,12 @@ targets:
         buildPhase: resources
       - path: ../shared/mercury-core/src/commonTest/resources/adapter-parity/relay-recovery.json
         buildPhase: resources
+      # Relay protocol vectors are vendored once, beside the shared core's
+      # own corpus test; tools/check-relay-vectors.sh pins them to the plugin.
+      - path: ../shared/mercury-core/src/commonTest/resources/relay-protocol/frames-corpus.json
+        buildPhase: resources
+      - path: ../shared/mercury-core/src/commonTest/resources/relay-protocol/secure-channel-corpus.json
+        buildPhase: resources
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

@@ -3,6 +3,8 @@ package com.unsupportedpastels.hermesandroid.gateway
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import com.unsupportedpastels.mercury.core.rpc.RpcResultDecoder
+import com.unsupportedpastels.mercury.core.rpc.SessionUsageResult
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -229,71 +231,49 @@ fun parseCronJobRuns(
     }.distinctBy(CronJobRun::id)
 }
 
-internal fun parseSessionUsage(result: JsonObject): SessionUsage = SessionUsage(
-    inputTokens = result.long("input_tokens", "input", "prompt_tokens"),
-    outputTokens = result.long("output_tokens", "output", "completion_tokens"),
-    totalTokens = result.long("total_tokens", "total"),
-    contextUsedTokens = result.long("context_used_tokens", "context_used", "used_tokens"),
-    contextMaxTokens = result.long("context_max_tokens", "context_max", "max_tokens"),
-    contextPercent = result.number("context_percent", "context_percentage", "percent"),
-    calls = result.long("calls", "request_count", "requests"),
-    creditsLines = (result["credits_lines"] as? JsonArray).orEmpty()
-        .mapNotNull { (it as? JsonPrimitive)
-            ?.takeIf { primitive -> primitive.isString }
-            ?.contentOrNull
-            ?.take(MAX_HAM_FIELD) }
-        .take(MAX_HAM_ROWS),
-    rawInfo = result.text("info", MAX_HAM_FIELD),
+internal fun parseSessionUsage(result: JsonObject): SessionUsage =
+    RpcResultDecoder.sessionUsage(result.toString()).toAndroid()
+
+private fun SessionUsageResult.toAndroid(): SessionUsage = SessionUsage(
+    inputTokens = inputTokens,
+    outputTokens = outputTokens,
+    totalTokens = totalTokens,
+    contextUsedTokens = contextUsedTokens,
+    contextMaxTokens = contextMaxTokens,
+    contextPercent = contextPercent,
+    calls = calls,
+    creditsLines = creditsLines,
+    rawInfo = rawInfo,
 )
 
 internal fun parseContextBreakdown(result: JsonObject): SessionContextBreakdown {
-    val rows = (result["categories"] as? JsonArray)
-        ?: (result["breakdown"] as? JsonArray)
-        ?: JsonArray(emptyList())
-    val categories = rows.take(MAX_HAM_CATEGORIES).mapNotNull { element ->
-        val row = element as? JsonObject ?: return@mapNotNull null
-        val name = row.text("name", MAX_HAM_FIELD)
-            ?: row.text("category", MAX_HAM_FIELD)
-            ?: row.text("label", MAX_HAM_FIELD)
-            ?: return@mapNotNull null
-        ContextBreakdownCategory(
-            name = name,
-            tokens = row.long("tokens", "token_count", "count"),
-            percent = row.number("percent", "percentage"),
-        )
-    }.distinctBy(ContextBreakdownCategory::name)
+    val decoded = RpcResultDecoder.contextBreakdown(result.toString())
     return SessionContextBreakdown(
-        categories = categories,
-        usedTokens = result.long("used_tokens", "context_used_tokens", "context_used"),
-        maxTokens = result.long("max_tokens", "context_max_tokens", "context_max"),
-        percent = result.number("percent", "context_percent"),
+        categories = decoded.categories.map { ContextBreakdownCategory(it.name, it.tokens, it.percent) },
+        usedTokens = decoded.usedTokens,
+        maxTokens = decoded.maxTokens,
+        percent = decoded.percent,
     )
 }
 
 internal fun parseCompressResult(result: JsonObject): SessionCompressResult {
-    val messages = (result["messages"] as? JsonArray)
-        .orEmpty().take(MAX_HAM_ROWS).mapNotNull { it as? JsonObject }
+    val decoded = RpcResultDecoder.compress(result.toString())
     return SessionCompressResult(
-        status = result.text("status", MAX_HAM_FIELD),
-        aborted = result["aborted"].asBoolean() == true ||
-            result.text("status", MAX_HAM_FIELD)?.lowercase() in setOf("aborted", "cancelled", "canceled"),
-        messages = messages,
-        info = result.text("info", MAX_HAM_FIELD),
-        usage = (result["usage"] as? JsonObject)?.let(::parseSessionUsage),
+        status = decoded.status,
+        aborted = decoded.aborted,
+        messages = decoded.messagesJson.toJsonObjects(),
+        info = decoded.info,
+        usage = decoded.usage?.toAndroid(),
     )
 }
 
 internal fun parseBranchResult(result: JsonObject): SessionBranchResult {
-    val durable = result.text("stored_session_id", MAX_HAM_FIELD)
-        ?: result.text("durable_session_id", MAX_HAM_FIELD)
-        ?: throw HermesChatProtocolException("Branch response was incomplete")
+    val decoded = decodeShared { RpcResultDecoder.branch(result.toString()) }
     return SessionBranchResult(
-        runtimeSessionId = result.text("session_id", MAX_HAM_FIELD)?.let { value ->
-            runCatching { RuntimeSessionId(value) }.getOrNull()
-        },
-        durableSessionId = DurableSessionId(durable),
-        title = result.text("title", MAX_HAM_FIELD),
-        messages = (result["messages"] as? JsonArray).orEmpty().take(MAX_HAM_ROWS).mapNotNull { it as? JsonObject },
+        runtimeSessionId = decoded.runtimeSessionId?.let { value -> runCatching { RuntimeSessionId(value) }.getOrNull() },
+        durableSessionId = DurableSessionId(decoded.durableSessionId),
+        title = decoded.title,
+        messages = decoded.messagesJson.toJsonObjects(),
     )
 }
 

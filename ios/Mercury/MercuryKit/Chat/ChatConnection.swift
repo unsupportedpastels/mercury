@@ -865,14 +865,8 @@ final class ChatConnection: @unchecked Sendable {
                 sessionId: sessionID,
                 payloadJson: payloadJSON
               ),
-              var event = ChatEvent(shared: shared)
+              let event = ChatEvent(shared: shared)
         else { return }
-
-        if case .toolComplete(let session, let toolID, let name, _) = event, name == "delegate_task",
-           let result = payload["result"] as? [String: Any],
-           result["status"] as? String == "dispatched", result["mode"] as? String == "background" {
-            event = .toolComplete(sessionID: session, toolID: toolID, name: name, summary: "Started background tasks")
-        }
 
         switch event {
         case .approvalRequest(_, let requestID, let command, let description, let choices):
@@ -914,53 +908,45 @@ final class ChatConnection: @unchecked Sendable {
         )
     }
 
-    // MARK: - Result parsing
+    // MARK: - Result parsing (shared decoder)
+    //
+    // Result decoding is a shared decision (`MercuryCore.RpcResultDecoder`).
+    // The dictionary the transport produced is re-serialised once and handed
+    // to the core; these functions only map its typed result onto Swift models.
+
+    private func resultJSON(_ result: [String: Any]) throws -> String {
+        guard JSONSerialization.isValidJSONObject(result),
+              let data = try? JSONSerialization.data(withJSONObject: result),
+              let text = String(data: data, encoding: .utf8) else {
+            throw ChatError.protocolError("Hermes response could not be decoded")
+        }
+        return text
+    }
+
+    /// A Kotlin `RpcResultException` arrives as NSError; keep its safe message.
+    private func sharedProtocolError(_ error: Error) -> Error {
+        if let kotlin = (error as NSError).userInfo["KotlinException"] as? MercuryCore.RpcResultException {
+            return ChatError.protocolError(kotlin.message ?? "Hermes response was incomplete")
+        }
+        return error
+    }
 
     private func parseModelOptions(_ result: [String: Any]) -> ModelOptions {
-        let rawProviders = (result["providers"] as? [Any]) ?? []
-        var seenProviders = Set<String>()
-        var providers: [ModelProviderOption] = []
-
-        for element in rawProviders.prefix(maxModelProviders) {
-            guard let row = element as? [String: Any] else { continue }
-            // Only an explicit JSON false means unauthenticated. Missing and
-            // future/mistyped additive fields do not hide an otherwise valid row.
-            if let authenticated = strictJSONBool(row["authenticated"]), !authenticated { continue }
-            guard let slug = validModelField("slug", in: row, maxChars: maxModelProviderChars),
-                  seenProviders.insert(slug).inserted else { continue }
-            let name = boundedOptionalField("name", in: row, maxChars: maxModelProviderChars) ?? slug
-
-            var seenModels = Set<String>()
-            var models: [String] = []
-            for rawModel in ((row["models"] as? [Any]) ?? []).prefix(maxModelsPerProvider) {
-                guard let value = rawModel as? String,
-                      let model = validModelValue(value, maxChars: maxModelIDChars),
-                      seenModels.insert(model).inserted else { continue }
-                models.append(model)
+        guard let json = try? resultJSON(result) else { return ModelOptions(current: nil, providers: []) }
+        let decoded = MercuryCore.RpcResultDecoder.shared.modelOptions(resultJson: json)
+        return ModelOptions(
+            current: decoded.current.map { ModelSelection(provider: $0.provider, model: $0.model) },
+            providers: decoded.providers.map { provider in
+                ModelProviderOption(
+                    slug: provider.slug,
+                    name: provider.name,
+                    models: provider.models,
+                    capabilities: provider.capabilities.mapValues {
+                        ModelCapabilities(fast: $0.fast?.boolValue, reasoning: $0.reasoning?.boolValue)
+                    }
+                )
             }
-            guard !models.isEmpty else { continue }
-
-            var capabilities: [String: ModelCapabilities] = [:]
-            if let rawCapabilities = row["capabilities"] as? [String: Any] {
-                for (rawModel, rawValue) in rawCapabilities.prefix(maxModelsPerProvider) {
-                    guard let model = validModelValue(rawModel, maxChars: maxModelIDChars),
-                          let object = rawValue as? [String: Any] else { continue }
-                    let fast = strictJSONBool(object["fast"])
-                    let reasoning = strictJSONBool(object["reasoning"])
-                    capabilities[model] = ModelCapabilities(fast: fast, reasoning: reasoning)
-                }
-            }
-            providers.append(ModelProviderOption(slug: slug, name: name, models: models, capabilities: capabilities))
-        }
-
-        let current: ModelSelection?
-        if let provider = validModelField("provider", in: result, maxChars: maxModelProviderChars),
-           let model = validModelField("model", in: result, maxChars: maxModelIDChars) {
-            current = ModelSelection(provider: provider, model: model)
-        } else {
-            current = nil
-        }
-        return ModelOptions(current: current, providers: providers)
+        )
     }
 
     private func validateConfigResult(
@@ -980,150 +966,123 @@ final class ChatConnection: @unchecked Sendable {
         }
     }
 
-    private func parseSessionUsage(_ result: [String: Any]) -> SessionUsage {
+    private func sessionUsage(_ decoded: MercuryCore.SessionUsageResult) -> SessionUsage {
         SessionUsage(
-            inputTokens: nonnegativeInteger(in: result, aliases: ["input_tokens", "input", "prompt_tokens"]),
-            outputTokens: nonnegativeInteger(in: result, aliases: ["output_tokens", "output", "completion_tokens"]),
-            totalTokens: nonnegativeInteger(in: result, aliases: ["total_tokens", "total"]),
-            contextUsedTokens: nonnegativeInteger(
-                in: result, aliases: ["context_used_tokens", "context_used", "used_tokens"]
-            ),
-            contextMaxTokens: nonnegativeInteger(
-                in: result, aliases: ["context_max_tokens", "context_max", "max_tokens"]
-            ),
-            contextPercent: boundedPercent(
-                in: result, aliases: ["context_percent", "context_percentage", "percent"]
-            ),
-            calls: nonnegativeInteger(in: result, aliases: ["calls", "request_count", "requests"]),
-            creditsLines: boundedStringArray(result["credits_lines"], maxRows: maxSessionResultRows),
-            rawInfo: boundedOptionalField("info", in: result, maxChars: maxSessionFieldChars)
+            inputTokens: decoded.inputTokens?.int64Value,
+            outputTokens: decoded.outputTokens?.int64Value,
+            totalTokens: decoded.totalTokens?.int64Value,
+            contextUsedTokens: decoded.contextUsedTokens?.int64Value,
+            contextMaxTokens: decoded.contextMaxTokens?.int64Value,
+            contextPercent: decoded.contextPercent?.doubleValue,
+            calls: decoded.calls?.int64Value,
+            creditsLines: decoded.creditsLines,
+            rawInfo: decoded.rawInfo
         )
+    }
+
+    private func parseSessionUsage(_ result: [String: Any]) -> SessionUsage {
+        // An unserialisable result decodes like an empty object.
+        let json = (try? resultJSON(result)) ?? "{}"
+        return sessionUsage(MercuryCore.RpcResultDecoder.shared.sessionUsage(resultJson: json))
     }
 
     private func parseContextBreakdown(_ result: [String: Any]) -> SessionContextBreakdown {
-        let rawRows = (result["categories"] as? [Any]) ?? (result["breakdown"] as? [Any]) ?? []
-        var seen = Set<String>()
-        var categories: [ContextBreakdownCategory] = []
-        for element in rawRows.prefix(maxContextCategories) {
-            guard let row = element as? [String: Any],
-                  let name = firstBoundedText(in: row, aliases: ["name", "category", "label"]),
-                  seen.insert(name).inserted else { continue }
-            categories.append(ContextBreakdownCategory(
-                name: name,
-                tokens: nonnegativeInteger(in: row, aliases: ["tokens", "token_count", "count"]),
-                percent: boundedPercent(in: row, aliases: ["percent", "percentage"])
-            ))
+        guard let json = try? resultJSON(result) else {
+            return SessionContextBreakdown(categories: [], usedTokens: nil, maxTokens: nil, percent: nil)
         }
+        let decoded = MercuryCore.RpcResultDecoder.shared.contextBreakdown(resultJson: json)
         return SessionContextBreakdown(
-            categories: categories,
-            usedTokens: nonnegativeInteger(
-                in: result, aliases: ["used_tokens", "context_used_tokens", "context_used"]
-            ),
-            maxTokens: nonnegativeInteger(
-                in: result, aliases: ["max_tokens", "context_max_tokens", "context_max"]
-            ),
-            percent: boundedPercent(in: result, aliases: ["percent", "context_percent"])
+            categories: decoded.categories.map {
+                ContextBreakdownCategory(name: $0.name, tokens: $0.tokens?.int64Value, percent: $0.percent?.doubleValue)
+            },
+            usedTokens: decoded.usedTokens?.int64Value,
+            maxTokens: decoded.maxTokens?.int64Value,
+            percent: decoded.percent?.doubleValue
         )
+    }
+
+    private func messageRows(_ rows: [String]) -> [[String: Any]] {
+        rows.compactMap { row in
+            (try? JSONSerialization.jsonObject(with: Data(row.utf8))) as? [String: Any]
+        }
     }
 
     private func parseCompressResult(_ result: [String: Any]) -> SessionCompressResult {
-        let status = boundedOptionalField("status", in: result, maxChars: maxSessionFieldChars)
-        let normalizedStatus = status?.lowercased()
-        let aborted = (result["aborted"] as? Bool) == true ||
-            ["aborted", "cancelled", "canceled"].contains(normalizedStatus ?? "")
-        let messages = ((result["messages"] as? [Any]) ?? [])
-            .prefix(maxSessionResultRows)
-            .compactMap { $0 as? [String: Any] }
-        let usage = (result["usage"] as? [String: Any]).map(parseSessionUsage)
-        return SessionCompressResult(status: status, aborted: aborted, messages: messages, usage: usage)
+        guard let json = try? resultJSON(result) else {
+            return SessionCompressResult(status: nil, aborted: false, messages: [], usage: nil)
+        }
+        let decoded = MercuryCore.RpcResultDecoder.shared.compress(resultJson: json)
+        return SessionCompressResult(
+            status: decoded.status,
+            aborted: decoded.aborted,
+            messages: messageRows(decoded.messagesJson),
+            usage: decoded.usage.map(sessionUsage)
+        )
     }
 
     private func parseBranchResult(_ result: [String: Any]) throws -> SessionBranchResult {
-        guard let durable = boundedRequiredField("stored_session_id", in: result, maxChars: maxSessionFieldChars)
-            ?? boundedRequiredField("durable_session_id", in: result, maxChars: maxSessionFieldChars) else {
-            throw ChatError.protocolError("Branch response was incomplete")
+        do {
+            let decoded = try MercuryCore.RpcResultDecoder.shared.branch(resultJson: resultJSON(result))
+            return SessionBranchResult(
+                runtimeSessionID: decoded.runtimeSessionId,
+                durableSessionID: decoded.durableSessionId,
+                title: decoded.title,
+                messages: messageRows(decoded.messagesJson)
+            )
+        } catch {
+            throw sharedProtocolError(error)
         }
-        let runtime = boundedOptionalField("session_id", in: result, maxChars: maxEventIDChars)
-        let title = boundedOptionalField("title", in: result, maxChars: maxSessionFieldChars)
-        let messages = ((result["messages"] as? [Any]) ?? [])
-            .prefix(maxSessionResultRows)
-            .compactMap { $0 as? [String: Any] }
-        return SessionBranchResult(
-            runtimeSessionID: runtime,
-            durableSessionID: durable,
-            title: title,
-            messages: messages
-        )
     }
 
     private func parseSlashCompletion(_ result: [String: Any], inputLength: Int) throws -> SlashCompletionResult {
-        var items: [SlashCompletionItem] = []
-        for element in ((result["items"] as? [Any]) ?? []).prefix(maxSessionResultRows) {
-            guard let row = element as? [String: Any],
-                  let text = boundedRequiredField("text", in: row, maxChars: maxSessionFieldChars) else { continue }
-            let display = boundedOptionalField("display", in: row, maxChars: maxSessionFieldChars)
-            let meta = boundedOptionalField("meta", in: row, maxChars: maxSessionFieldChars)
-            items.append(SlashCompletionItem(text: text, display: display, meta: meta))
+        do {
+            let decoded = try MercuryCore.RpcResultDecoder.shared.slashCompletion(
+                resultJson: resultJSON(result), inputLength: Int32(inputLength)
+            )
+            return SlashCompletionResult(
+                items: decoded.items.map { SlashCompletionItem(text: $0.text, display: $0.display, meta: $0.meta) },
+                replaceFrom: Int(decoded.replaceFrom)
+            )
+        } catch {
+            throw sharedProtocolError(error)
         }
-        let replaceFrom: Int
-        if result["replace_from"] == nil {
-            replaceFrom = 0
-        } else if let raw = strictInt64Field("replace_from", in: result), raw >= 0, raw <= Int64(Int.max) {
-            replaceFrom = min(Int(raw), inputLength)
-        } else {
-            throw ChatError.protocolError("Slash completion response was incomplete")
-        }
-        return SlashCompletionResult(items: items, replaceFrom: replaceFrom)
     }
 
     private func parseResumeResult(_ result: [String: Any], requestedDurableSessionID: String) throws -> ResumedChatSession {
-        guard let runtimeSessionID = stringField("session_id", in: result),
-              !runtimeSessionID.trimmingCharacters(in: .whitespaces).isEmpty else {
-            throw ChatError.protocolError("Resume response was incomplete")
-        }
-        let durableSessionID = stringField("session_key", in: result)
-            .flatMap { $0.isEmpty ? nil : $0 }
-        if let durableSessionID, durableSessionID != requestedDurableSessionID {
-            throw ChatError.protocolError("Resume response referenced a different durable session")
-        }
-        let messages = (result["messages"] as? [[String: Any]]) ?? []
-        let inflight = (result["inflight"] as? [String: Any]).map { value in
-            InflightPrompt(
-                user: value["user"] as? String,
-                assistant: value["assistant"] as? String,
-                streaming: value["streaming"] as? Bool ?? false
+        do {
+            let decoded = try MercuryCore.RpcResultDecoder.shared.resume(
+                resultJson: resultJSON(result), requestedDurableSessionId: requestedDurableSessionID
             )
+            return ResumedChatSession(
+                runtimeSessionID: decoded.runtimeSessionId,
+                durableSessionID: decoded.durableSessionId,
+                resumed: decoded.resumed,
+                messages: messageRows(decoded.messagesJson),
+                running: decoded.running,
+                inflight: decoded.hasInflight
+                    ? InflightPrompt(
+                        user: decoded.inflightUser,
+                        assistant: decoded.inflightAssistant,
+                        streaming: decoded.inflightStreaming
+                    )
+                    : nil,
+                model: decoded.model,
+                provider: decoded.provider,
+                reasoningEffort: decoded.reasoningEffort,
+                fastMode: decoded.fastMode?.boolValue
+            )
+        } catch {
+            throw sharedProtocolError(error)
         }
-        let info = result["info"] as? [String: Any]
-        return ResumedChatSession(
-            runtimeSessionID: runtimeSessionID,
-            durableSessionID: durableSessionID,
-            resumed: (result["resumed"] as? Bool) ?? false,
-            messages: messages,
-            running: (result["running"] as? Bool) ?? false,
-            inflight: inflight,
-            model: info.flatMap { boundedOptionalField("model", in: $0, maxChars: maxEventNameChars) },
-            provider: info.flatMap { boundedOptionalField("provider", in: $0, maxChars: maxEventNameChars) },
-            reasoningEffort: info.flatMap { boundedOptionalField("reasoning_effort", in: $0, maxChars: maxEventNameChars) },
-            fastMode: info.flatMap { boolField("fast", in: $0) }
-        )
     }
 
     private func parseInteractionResponse(_ result: [String: Any]) throws -> ChatResponse {
-        let wireStatus: String?
-        if let status = stringField("status", in: result) {
-            wireStatus = status
-        } else if let resolved = boolField("resolved", in: result) {
-            wireStatus = resolved ? "ok" : "expired"
-        } else if let resolved = int64Field("resolved", in: result) {
-            wireStatus = resolved > 0 ? "ok" : "expired"
-        } else {
-            wireStatus = nil
+        do {
+            let status = try MercuryCore.RpcResultDecoder.shared.interactionResponse(resultJson: resultJSON(result))
+            return ChatResponse(status: ChatResponse.Status.fromWire(status.name), nextApproval: nil)
+        } catch {
+            throw sharedProtocolError(error)
         }
-        guard let wireStatus else {
-            throw ChatError.protocolError("Hermes interaction response was incomplete")
-        }
-        return ChatResponse(status: ChatResponse.Status.fromWire(wireStatus), nextApproval: nil)
     }
 
     // MARK: - Field access helpers (JSONSerialization-tolerant)
@@ -1210,36 +1169,6 @@ final class ChatConnection: @unchecked Sendable {
             if let value = strictInt64Field(alias, in: object) { return max(0, value) }
         }
         return nil
-    }
-
-    private func boundedPercent(in object: [String: Any], aliases: [String]) -> Double? {
-        for alias in aliases {
-            if let value = finiteNumberField(alias, in: object) { return min(100, max(0, value)) }
-        }
-        return nil
-    }
-
-    private func boundedStringArray(_ raw: Any?, maxRows: Int) -> [String] {
-        guard let rows = raw as? [Any] else { return [] }
-        return rows.prefix(maxRows).compactMap { element in
-            guard let value = element as? String else { return nil }
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : String(trimmed.prefix(maxSessionFieldChars))
-        }
-    }
-
-    private func firstBoundedText(in object: [String: Any], aliases: [String]) -> String? {
-        for alias in aliases {
-            if let value = boundedOptionalField(alias, in: object, maxChars: maxSessionFieldChars) {
-                return value
-            }
-        }
-        return nil
-    }
-
-    private func validModelField(_ name: String, in object: [String: Any], maxChars: Int) -> String? {
-        guard let value = object[name] as? String else { return nil }
-        return validModelValue(value, maxChars: maxChars)
     }
 
     private func validModelValue(_ value: String, maxChars: Int) -> String? {

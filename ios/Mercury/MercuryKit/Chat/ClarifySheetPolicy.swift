@@ -1,60 +1,46 @@
 import Foundation
+import MercuryCore
 
-/// Pure presentation policy for the clarify blocking sheet, ported from
-/// Android's `ClarificationCard`:
-///
-/// - choices are selectable rows (single- or multi-select);
-/// - an "Other" free-text field is always offered alongside them;
-/// - typing and picking are mutually exclusive;
-/// - Skip sends an empty answer ("no preference / proceed");
-/// - multi-select answers join the picked choices with ", ".
+/// Clarify answer semantics are a shared decision (`MercuryCore.ClarifyAnswerState`,
+/// grounded in the desktop clarify card and Android's `ClarificationCard`):
+/// selectable choice rows, an always-present "Other" field, mutual exclusivity
+/// between typing and picking, Skip as an empty answer, multi-select joined
+/// with ", ". This value type wraps the immutable core state for SwiftUI.
 enum ClarifySheetPolicy {
-    static let skipAnswer = ""
+    static let skipAnswer = MercuryCore.ClarifyAnswerPolicy.shared.SKIP_ANSWER
 
     struct State: Equatable {
-        let choices: [String]
-        let multiSelect: Bool
+        private var core: MercuryCore.ClarifyAnswerState
 
-        var answer: String = ""
-        var selectedChoices: Set<String> = []
+        init(choices: [String], multiSelect: Bool) {
+            core = MercuryCore.ClarifyAnswerState(
+                choices: choices, multiSelect: multiSelect, answer: "", selectedChoices: []
+            )
+        }
+
+        var choices: [String] { core.choices }
+        var multiSelect: Bool { core.multiSelect }
+        var answer: String { core.answer }
+        var selectedChoices: Set<String> { core.selectedChoices }
 
         mutating func select(_ choice: String) {
-            answer = ""
-            if multiSelect {
-                if selectedChoices.contains(choice) {
-                    selectedChoices.remove(choice)
-                } else {
-                    selectedChoices.insert(choice)
-                }
-            } else {
-                selectedChoices = [choice]
-            }
+            core = core.select(choice: choice)
         }
 
         mutating func typeAnswer(_ text: String) {
-            answer = text
-            // Typing is its own answer — clear any picked choice so the two
-            // inputs can't both look selected.
-            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                selectedChoices.removeAll()
-            }
+            core = core.typeAnswer(text: text)
         }
 
-        var pendingAnswer: String? {
-            if multiSelect && !selectedChoices.isEmpty {
-                return choices.filter { selectedChoices.contains($0) }.joined(separator: ", ")
-            }
-            if !multiSelect && !selectedChoices.isEmpty {
-                return selectedChoices.first
-            }
-            let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
-        }
+        var pendingAnswer: String? { core.pendingAnswer }
 
-        var canContinue: Bool { pendingAnswer != nil }
+        var canContinue: Bool { core.canContinue }
+
+        static func == (lhs: State, rhs: State) -> Bool {
+            lhs.core.isEqual(rhs.core)
+        }
     }
 
     static func otherFieldLabel(hasChoices: Bool) -> String {
-        hasChoices ? "Other" : "Response"
+        MercuryCore.ClarifyAnswerPolicy.shared.otherFieldLabel(hasChoices: hasChoices)
     }
 }

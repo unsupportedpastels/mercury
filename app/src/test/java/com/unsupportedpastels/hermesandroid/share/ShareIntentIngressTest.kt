@@ -18,7 +18,7 @@ import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
-class ShareReceiverActivityTest {
+class ShareIntentIngressTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
 
     @Test

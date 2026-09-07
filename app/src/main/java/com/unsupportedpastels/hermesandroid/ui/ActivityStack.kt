@@ -35,6 +35,7 @@ import androidx.compose.ui.platform.testTag
 import com.unsupportedpastels.hermesandroid.app.ProcessRow
 import com.unsupportedpastels.hermesandroid.app.RunEventState
 import com.unsupportedpastels.hermesandroid.app.RunTodoItem
+import com.unsupportedpastels.mercury.core.transcript.TranscriptPresentationPolicy
 import com.unsupportedpastels.hermesandroid.app.RunTodoStatus
 import com.unsupportedpastels.hermesandroid.app.RunToolRow
 import com.unsupportedpastels.hermesandroid.app.RunToolState
@@ -119,7 +120,7 @@ internal fun ActivityStack(
                     )
                 }
                 Text(
-                    activitySummary(toolCount, completedTodos, countedTodos.size, processCount),
+                    TranscriptPresentationPolicy.activitySummary(toolCount, completedTodos, countedTodos.size, processCount = processCount),
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelMedium,
                     maxLines = 1,
@@ -162,28 +163,6 @@ internal fun ActivityStack(
                 }
             }
         }
-    }
-}
-
-private fun activitySummary(
-    toolCount: Int,
-    completedTodos: Int,
-    todoCount: Int,
-    processCount: Int,
-): String = buildString {
-    append("Activity")
-    append(" · ")
-    append(toolCount)
-    append(if (toolCount == 1) " tool" else " tools")
-    append(" · ")
-    append(completedTodos)
-    append('/')
-    append(todoCount)
-    append(" tasks")
-    if (processCount > 0) {
-        append(" · ")
-        append(processCount)
-        append(if (processCount == 1) " process-local process" else " process-local processes")
     }
 }
 
