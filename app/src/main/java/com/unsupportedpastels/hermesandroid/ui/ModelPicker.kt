@@ -1,5 +1,47 @@
 package com.unsupportedpastels.hermesandroid.ui
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
 import com.unsupportedpastels.hermesandroid.gateway.ModelCapabilities
 import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
 import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
@@ -127,4 +169,272 @@ internal fun recentModelOptions(
 internal fun modelCapabilityLabels(capabilities: ModelCapabilities): List<String> = buildList {
     if (capabilities.reasoning == true) add("Reasoning")
     if (capabilities.fast == true) add("Fast")
+}
+
+/**
+ * A searchable, provider-grouped model picker in a modal bottom sheet. Recently
+ * used models pin to the top for one-tap re-selection; the rest are grouped by
+ * provider. Tapping a row expands it inline to reveal per-model controls —
+ * Thinking on/off and a reasoning-effort scale for reasoning-capable models,
+ * plus a Fast toggle where supported — mirroring the desktop's model edit menu.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ModelPickerSheet(
+    options: ModelOptions?,
+    current: ModelSelection?,
+    recents: List<ModelSelection>,
+    reasoningOverrides: Map<ModelSelection, String>,
+    profileDefaultEffort: String?,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSetReasoning: (ModelSelection, String) -> Unit,
+    onSelect: (ModelSelection) -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var filters by rememberSaveable(
+        stateSaver = listSaver(
+            save = { it.map(ModelCapabilityFilter::name) },
+            restore = { it.map(ModelCapabilityFilter::valueOf).toSet() },
+        ),
+    ) { mutableStateOf(emptySet<ModelCapabilityFilter>()) }
+    var expandedRow by rememberSaveable { mutableStateOf<String?>(null) }
+    val groups = remember(options, query, filters) { modelProviderGroups(options, query, filters) }
+    val recentOptions = remember(recents, options, query, filters) {
+        if (query.isNotBlank() || filters.isNotEmpty()) {
+            emptyList()
+        } else {
+            recentModelOptions(recents, options)
+        }
+    }
+    fun rowKey(selection: ModelSelection) = "${selection.provider}/${selection.model}"
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("Choose a model", style = MaterialTheme.typography.titleLarge)
+            OutlinedTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                label = { Text("Search models") },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentDescription = "Search models" },
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ModelCapabilityFilter.entries.forEach { filter ->
+                    val active = filter in filters
+                    val label = when (filter) {
+                        ModelCapabilityFilter.Reasoning -> "Reasoning"
+                        ModelCapabilityFilter.Fast -> "Fast"
+                    }
+                    FilterChip(
+                        selected = active,
+                        onClick = {
+                            filters = if (active) filters - filter else filters + filter
+                        },
+                        label = { Text(label) },
+                        leadingIcon = if (active) {
+                            { Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                        } else {
+                            null
+                        },
+                        modifier = Modifier.semantics {
+                            selected = active
+                            contentDescription = "Filter by $label capability"
+                        },
+                    )
+                }
+            }
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (recentOptions.isNotEmpty()) {
+                    item(key = "recent-header") {
+                        Text(
+                            "Recently used",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(vertical = 4.dp),
+                        )
+                    }
+                    items(recentOptions, key = { "recent:${rowKey(it.selection)}" }) { option ->
+                        val key = rowKey(option.selection)
+                        ModelPickerRow(
+                            option = option,
+                            selected = option.selection == current,
+                            expanded = expandedRow == key,
+                            effortOverride = reasoningOverrides[option.selection],
+                            profileDefaultEffort = profileDefaultEffort,
+                            onToggleExpand = { expandedRow = if (expandedRow == key) null else key },
+                            onSelect = { onSelect(option.selection) },
+                            onSetReasoning = { effort -> onSetReasoning(option.selection, effort) },
+                        )
+                    }
+                }
+                if (groups.isEmpty()) {
+                    item(key = "empty") {
+                        Text(
+                            "No models match your search.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 8.dp),
+                        )
+                    }
+                }
+                groups.forEach { group ->
+                    item(key = "provider:${group.slug}") {
+                        Text(
+                            group.name,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+                        )
+                    }
+                    items(group.models, key = { rowKey(it.selection) }) { option ->
+                        val key = rowKey(option.selection)
+                        ModelPickerRow(
+                            option = option,
+                            selected = option.selection == current,
+                            expanded = expandedRow == key,
+                            effortOverride = reasoningOverrides[option.selection],
+                            profileDefaultEffort = profileDefaultEffort,
+                            onToggleExpand = { expandedRow = if (expandedRow == key) null else key },
+                            onSelect = { onSelect(option.selection) },
+                            onSetReasoning = { effort -> onSetReasoning(option.selection, effort) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelPickerRow(
+    option: ModelOption,
+    selected: Boolean,
+    expanded: Boolean,
+    effortOverride: String?,
+    profileDefaultEffort: String?,
+    onToggleExpand: () -> Unit,
+    onSelect: () -> Unit,
+    onSetReasoning: (String) -> Unit,
+) {
+    val labels = remember(option.capabilities) { modelCapabilityLabels(option.capabilities) }
+    val reasoningCapable = option.capabilities.reasoning == true
+    Column(modifier = Modifier.fillMaxWidth()) {
+        ListItem(
+            headlineContent = { Text(option.selection.model) },
+            supportingContent = if (labels.isEmpty()) {
+                null
+            } else {
+                { Text(labels.joinToString(" · ")) }
+            },
+            trailingContent = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (selected) {
+                        Icon(Icons.Outlined.Check, contentDescription = "Current model")
+                    }
+                    if (reasoningCapable) {
+                        Icon(
+                            if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                            contentDescription = if (expanded) {
+                                "Hide options for ${option.selection.model}"
+                            } else {
+                                "Show options for ${option.selection.model}"
+                            },
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clickable(onClick = onToggleExpand),
+                        )
+                    }
+                }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onSelect)
+                .semantics {
+                    this.selected = selected
+                    contentDescription = "Select ${option.providerName} ${option.selection.model}"
+                },
+        )
+        if (expanded && reasoningCapable) {
+            val thinkingOn = isThinkingEnabled(effortOverride)
+            val effortValue = resolveReasoningEffort(effortOverride, profileDefaultEffort)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Thinking", style = MaterialTheme.typography.bodyMedium)
+                    Switch(
+                        checked = thinkingOn,
+                        onCheckedChange = { checked ->
+                            onSetReasoning(if (checked) effortValue else "none")
+                        },
+                        modifier = Modifier.semantics {
+                            contentDescription = "Thinking for ${option.selection.model}"
+                        },
+                    )
+                }
+                if (thinkingOn) {
+                    Text(
+                        "Reasoning effort",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ReasoningEffortLevels.forEach { level ->
+                            val active = level == effortValue
+                            FilterChip(
+                                selected = active,
+                                onClick = { onSetReasoning(level) },
+                                label = { Text(reasoningEffortShortLabel(level)) },
+                                modifier = Modifier.semantics {
+                                    this.selected = active
+                                    contentDescription =
+                                        "Set ${option.selection.model} reasoning to $level"
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A non-interactive capability label (e.g. "Reasoning") shown on the current
+ * model card. Deliberately not a chip, so it does not imply a tap target.
+ */
+@Composable
+internal fun CapabilityBadge(label: String) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+        )
+    }
 }
