@@ -1,7 +1,7 @@
 # Release checklist
 
 Mercury releases the same version on Android and iOS. The current version is
-`0.2.4`: `versionName` in `app/build.gradle.kts` and `MARKETING_VERSION` in
+`0.2.5`: `versionName` in `app/build.gradle.kts` and `MARKETING_VERSION` in
 `ios/project.yml` must always agree. Nothing here changes the Hermes server;
 every step is client-side.
 
