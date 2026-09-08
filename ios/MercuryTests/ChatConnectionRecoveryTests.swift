@@ -74,9 +74,8 @@ final class ChatConnectionRecoveryTests: XCTestCase {
         do {
             _ = try await request.value
             XCTFail("cancelling the RPC must throw")
-        } catch is CancellationError {
-            // Expected: the checked continuation is resumed exactly once by the
-            // request cancellation handler.
+        } catch {
+            XCTAssertTrue(error is CancellationError, "cancellation must propagate as CancellationError, got \(error)")
         }
 
         XCTAssertEqual(connection.pendingRequestCount, 0)
