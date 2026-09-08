@@ -1602,7 +1602,7 @@ class HttpHermesConnectionClient(
             response.readBodyTextBounded(MAX_TRANSCRIPT_BODY_BYTES),
         )
         val rows = decoded.messages.ifEmpty { decoded.data }.takeLast(pageLimit)
-        val progress = com.unsupportedpastels.hermesandroid.app.DurableProgressParser.parse(rows)
+        val progress = com.unsupportedpastels.mercury.core.progress.DurableProgressParser.parse(rows)
         val messages = rows.mapNotNull { row ->
             val role = when (row["role"]?.jsonPrimitive?.contentOrNull?.lowercase()) {
                 "user" -> ChatMessageRole.User

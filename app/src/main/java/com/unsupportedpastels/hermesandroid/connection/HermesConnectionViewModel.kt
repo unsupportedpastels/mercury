@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.unsupportedpastels.hermesandroid.app.ComposerAttachment
+import com.unsupportedpastels.hermesandroid.app.DurableProgress
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.ProjectId
 import com.unsupportedpastels.hermesandroid.app.ProjectLoadState
@@ -17,6 +18,7 @@ import com.unsupportedpastels.hermesandroid.app.ProcessRowsState
 import com.unsupportedpastels.hermesandroid.app.RunEventState
 import com.unsupportedpastels.hermesandroid.app.RunInteractionLifecycle
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
+import com.unsupportedpastels.hermesandroid.app.observe
 import com.unsupportedpastels.hermesandroid.app.reconcileProjectSession
 import com.unsupportedpastels.hermesandroid.app.isNoProjectBucket
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
@@ -3592,10 +3594,25 @@ class HermesConnectionViewModel(
         sessionControllerRegistry.cancelOperationJob(durableSessionId)
         automaticChatReconnects.remove(durableSessionId)
         clearSendingState(durableSessionId)
+        // The turn reset is speculative until the host accepts the prompt. Keep the
+        // pre-send progress so a rejected send restores recovered milestones and
+        // evidence instead of leaving Activity empty until the next refresh.
+        val progressBeforeTurn = mutableSnapshots.value.chatSessions[durableSessionId]?.progress ?: DurableProgress()
+        val speculativeProgress = progressBeforeTurn.beginTurn(System.currentTimeMillis())
+        fun restoreUnstartedTurnProgress() {
+            updateChat(durableSessionId) {
+                it.copy(
+                    progress = it.progress.restoreUnstartedTurn(
+                        previous = progressBeforeTurn,
+                        resetVersion = speculativeProgress.observationVersion,
+                    ),
+                )
+            }
+        }
         updateChat(durableSessionId) {
             it.copy(
                 runState = RunEventState(),
-                progress = it.progress.beginTurn(System.currentTimeMillis()),
+                progress = speculativeProgress,
                 connectionPhase = ChatConnectionPhase.Connecting,
                 connectionRecoveryAvailable = false,
             )
@@ -3604,6 +3621,7 @@ class HermesConnectionViewModel(
             val origin = activeOrigin ?: run {
                 sessionControllerRegistry.resolvePromptSubmission(durableSessionId, attempt, accepted = false)
                 updateChat(durableSessionId) { it.copy(connectionPhase = ChatConnectionPhase.Idle, error = "Not connected") }
+                restoreUnstartedTurnProgress()
                 rejectSubmission(durableSessionId, text, "Not connected")
                 return@launch
             }
@@ -3836,6 +3854,9 @@ class HermesConnectionViewModel(
                 ) {
                     updateChat(durableSessionId) { it.copy(connectionPhase = ChatConnectionPhase.Idle) }
                     if (!accepted) {
+                        // No turn was created, so the speculative reset has to give the
+                        // recovered progress back unless newer evidence arrived since.
+                        restoreUnstartedTurnProgress()
                         rejectSubmission(durableSessionId, text,
                             mutableSnapshots.value.chatSessions[durableSessionId]?.error
                                 ?: "Submission was not confirmed. Check the transcript before retrying.")

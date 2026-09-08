@@ -1,8 +1,8 @@
 package com.unsupportedpastels.hermesandroid.connection
 
 import com.unsupportedpastels.hermesandroid.app.DurableProgress
-import com.unsupportedpastels.hermesandroid.app.DurableProgressParser
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
+import com.unsupportedpastels.mercury.core.progress.DurableProgressParser
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 

@@ -860,7 +860,7 @@ class HermesChatConnection internal constructor(
         val historical = params.booleanValue("relay_replay") == true
         val event = when (decodedEvent) {
             is HermesChatEvent.ToolComplete -> decodedEvent.copy(
-                progressSnapshot = payload?.let(com.unsupportedpastels.hermesandroid.app.DurableProgressParser::liveSnapshot),
+                progressSnapshot = payload?.let(com.unsupportedpastels.mercury.core.progress.DurableProgressParser::liveSnapshot),
                 historical = historical,
             )
             is HermesChatEvent.ToolStart -> decodedEvent.copy(historical = historical)

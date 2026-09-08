@@ -2,6 +2,7 @@ package com.unsupportedpastels.hermesandroid.connection
 
 import com.unsupportedpastels.hermesandroid.app.*
 import com.unsupportedpastels.hermesandroid.gateway.*
+import com.unsupportedpastels.mercury.core.progress.DurableProgressParser
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -152,6 +153,29 @@ class SessionProgressRecoveryTest {
             assertEquals(envelope.progress, parseRelayTranscriptEnvelope(Json.parseToJsonElement(body).jsonObject).progress)
             assertEquals(1, requests)
         } finally { http.close() }
+    }
+
+    @Test fun sendRejectedBeforeSubmissionKeepsRecoveredProgressVisible() = runTest(dispatcher) {
+        val client = ProgressClient()
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val vm = HermesConnectionViewModel(
+            settings, client,
+            chatConnector = HermesChatConnector { _, _ -> throw HermesConnectionException("Cannot reach host") },
+        )
+        runCurrent()
+        vm.openSession(id).join()
+        val before = vm.snapshots.value.chatSessions[id]!!.progress
+        assertTrue(before.hasMilestoneSnapshot)
+        assertTrue(before.evidence.isNotEmpty())
+
+        // Transport failure before the host accepts the prompt.
+        vm.sendMessage(id, "Try again").join()
+        val afterTransportFailure = vm.snapshots.value.chatSessions[id]!!
+        assertEquals(0, afterTransportFailure.acceptedSubmissionCount)
+        assertEquals(before.milestones, afterTransportFailure.progress.milestones)
+        assertEquals(before.evidence, afterTransportFailure.progress.evidence)
+        assertEquals(before.hasMilestoneSnapshot, afterTransportFailure.progress.hasMilestoneSnapshot)
+        assertTrue(afterTransportFailure.rejectedSubmissionCount > 0)
     }
 
     private inner class ProgressClient : HermesConnectionClient {
