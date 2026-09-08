@@ -95,12 +95,75 @@ class BackgroundTaskStripTest {
         compose.onAllNodesWithTag("Background task strip").assertCountEquals(0)
     }
 
-    @Test fun unavailableHasNoRunningClaim() {
-        val rows = BackgroundTasks(listOf(BackgroundTaskRow(RuntimeSessionId("runtime"), "child", "Review tests", null, BackgroundTaskStatus.Active, 1000, false)))
+    @Test
+    fun unavailableHasNoRunningClaim() {
+        val rows = BackgroundTasks(listOf(
+            BackgroundTaskRow(
+                RuntimeSessionId("runtime"),
+                "child",
+                "Review tests",
+                null,
+                BackgroundTaskStatus.Active,
+                1000,
+                false,
+            ),
+        ))
         compose.setContent { MaterialTheme { BackgroundTaskStrip(rows, nowOverride = 2000) } }
         compose.onNodeWithText("Background tasks · status unavailable").assertIsDisplayed()
         compose.onAllNodesWithText("Background tasks · 0 active").assertCountEquals(0)
         compose.onNodeWithText("Details").performClick()
         compose.onNodeWithText("Last known · updates unavailable").assertIsDisplayed()
+    }
+
+    @Test
+    fun historicalUnknownRowsAreDismissibleWithoutInventingCompletion() {
+        val rows = BackgroundTasks(listOf(
+            BackgroundTaskRow(
+                runtimeId = RuntimeSessionId("runtime"),
+                id = "identity-unavailable",
+                goal = "Historical child",
+                action = null,
+                status = BackgroundTaskStatus.Unknown,
+                observedAtMillis = 0,
+                available = false,
+                identityKnown = false,
+            ),
+        ))
+        compose.setContent { MaterialTheme { BackgroundTaskStrip(rows, nowOverride = 2_000) } }
+        compose.onNodeWithText("Background tasks · status unavailable").assertIsDisplayed()
+        compose.onNodeWithText("Details").performClick()
+        compose.onNodeWithText("Historical · status unavailable").assertIsDisplayed()
+        compose.onNodeWithText("Dismiss unavailable").performScrollTo().performClick()
+        compose.onAllNodesWithTag("Background task strip").assertCountEquals(0)
+    }
+
+    @Test
+    fun newUnknownEvidenceReappearsAfterAnOlderRowWasDismissed() {
+        val old = BackgroundTaskRow(
+            runtimeId = RuntimeSessionId("runtime"),
+            id = "identity-unavailable",
+            goal = "Historical child",
+            action = null,
+            status = BackgroundTaskStatus.Unknown,
+            observedAtMillis = 0,
+            available = false,
+            identityKnown = false,
+        )
+        val tasks = androidx.compose.runtime.mutableStateOf(BackgroundTasks(listOf(old)))
+        compose.setContent { MaterialTheme { BackgroundTaskStrip(tasks.value, nowOverride = 2_000) } }
+        compose.onNodeWithText("Details").performClick()
+        compose.onNodeWithText("Dismiss unavailable").performScrollTo().performClick()
+        compose.onAllNodesWithTag("Background task strip").assertCountEquals(0)
+
+        compose.runOnIdle {
+            tasks.value = BackgroundTasks(listOf(old.copy(
+                action = "New observed evidence",
+                observedAtMillis = 1_000,
+                available = true,
+            )))
+        }
+        compose.onNodeWithTag("Background task strip").assertIsDisplayed()
+        compose.onNodeWithText("Details").performClick()
+        compose.onNodeWithText("Status unavailable").assertIsDisplayed()
     }
 }

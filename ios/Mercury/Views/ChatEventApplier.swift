@@ -96,7 +96,7 @@ extension ChatView {
 
         case .sessionInfo(let infoRuntimeID, let storedID, let model, let provider, let reasoningEffort, let fastMode, let title, _):
             if let model, let provider {
-                state.currentModelSelection = ModelSelection(provider: provider, model: model)
+                state.applyModelSelection(ModelSelection(provider: provider, model: model))
             }
             if let reasoningEffort { state.currentReasoningEffort = reasoningEffort }
             if let fastMode { state.currentFastMode = fastMode }

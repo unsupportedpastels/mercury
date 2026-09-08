@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 
 extension ChatView {
     // MARK: Transcript
@@ -75,6 +76,22 @@ extension ChatView {
                             tools: state.transcript.tools,
                             turnActive: state.isSending
                         )
+                    }
+                    if backgroundTasks.rows.contains(where: { !$0.terminal }) {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            if let notice = missingFinalResponseNotice(
+                                state.transcript.rows,
+                                activeChildCount: backgroundTasks.activeCount(
+                                    now: Int64(context.date.timeIntervalSince1970 * 1000)
+                                ),
+                                parentTurnSending: state.isSending
+                            ) {
+                                Text(notice)
+                                    .font(.caption)
+                                    .foregroundStyle(Color.secondary)
+                                    .accessibilityLabel(notice)
+                            }
+                        }
                     }
                     if let generating = state.transcript.generatingStatusText {
                         Label(generating, systemImage: "gearshape")

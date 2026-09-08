@@ -15,21 +15,27 @@ struct ActivityStackView: View {
     @State private var isExpanded = false
 
     var body: some View {
-        if !state.isEmpty || !tools.isEmpty {
+        if presentation.activityPresent {
             VStack(alignment: .leading, spacing: 8) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.18)) { isExpanded.toggle() }
                 } label: {
                     HStack(spacing: 8) {
-                        if isRunning {
-                            ProgressView().controlSize(.small)
+                        if presentation.assistantActive {
+                            ProgressView()
+                                .controlSize(.small)
+                                .accessibilityLabel("Active work indicator")
+                        } else if presentation.processOnly {
+                            Image(systemName: "terminal")
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel("Processes observed")
                         } else {
                             Image(systemName: "checkmark.circle")
                                 .foregroundStyle(Color.statusHealthy)
                         }
-                        Text(summary)
+                        Text(presentation.summary)
                             .font(.caption.weight(.semibold))
-                            .lineLimit(1)
+                            .lineLimit(presentation.processOnly ? 2 : 1)
                         Spacer(minLength: 4)
                         Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                             .font(.caption)
@@ -38,7 +44,10 @@ struct ActivityStackView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(summary + ", " + (isExpanded ? "expanded" : "collapsed"))
+                .accessibilityLabel(presentation.summary + ", " + (isExpanded ? "expanded" : "collapsed"))
+                .accessibilityIdentifier(
+                    presentation.assistantActive ? "Active work indicator" : "Activity stack"
+                )
 
                 if isExpanded {
                     ScrollView {
@@ -70,18 +79,23 @@ struct ActivityStackView: View {
         }
     }
 
-    private var isRunning: Bool {
-        turnActive || state.isRunning || tools.contains { $0.state == .running }
-    }
-
-    private var summary: String {
+    private var presentation: ActivityPresentationDecision {
         let countedTodos = state.todos.filter { $0.status != .cancelled }
-        return TranscriptPresentationPolicy.activitySummary(
+        return SharedActivityPresentationPolicy.decide(
+            assistantActivityPresent: !state.todos.isEmpty || !state.loops.isEmpty || !tools.isEmpty,
+            turnActive: turnActive,
             toolCount: tools.count,
-            completedTodos: countedTodos.filter { $0.status == .completed }.count,
+            runningToolCount: tools.filter { $0.state == .running }.count,
+            completedTodoCount: countedTodos.filter { $0.status == .completed }.count,
             todoCount: countedTodos.count,
+            activeTodoCount: countedTodos.filter {
+                $0.status == .pending || $0.status == .inProgress
+            }.count,
             loopCount: state.loops.count,
-            processCount: state.processes.count
+            activeLoopCount: state.loops.filter {
+                $0.status == .pending || $0.status == .running
+            }.count,
+            processStatuses: state.processes.map(\.status)
         )
     }
 

@@ -192,6 +192,7 @@ fun HermesApp(
     onApprovalResponse: (DurableSessionId, String, Boolean) -> Unit = { _, _, _ -> },
     onBlockingResponse: (DurableSessionId, UnsupportedBlockingKind, String, String) -> Unit = { _, _, _, _ -> },
     onStopSession: (DurableSessionId) -> Unit = {},
+    onRetrySessionConnection: (DurableSessionId) -> Unit = {},
     onCreateSession: () -> DurableSessionId? = { null },
     onCreateProjectSession: (ProjectId) -> DurableSessionId? = { null },
     onLoadHostDirectories: suspend (String?) -> Result<HostDirectoryListing> = {
@@ -864,6 +865,7 @@ fun HermesApp(
                         showStop = chat.isSending && hasControllerRuntime,
                         stopping = chat.isStopping,
                         onStop = { onStopSession(session.id) },
+                        onRetryConnection = { onRetrySessionConnection(session.id) },
                         slashCompletion = slashCompletions[session.id]?.takeIf {
                             it.composerText == drafts[draftKey].orEmpty()
                         },

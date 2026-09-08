@@ -15,6 +15,7 @@ internal const val SLASH_COMPLETION_DEBOUNCE_MS = 60L
 internal const val OPERATIONAL_STATUS_POLL_INTERVAL_MILLIS = 60_000L
 internal const val RECENT_SESSIONS_PAGE_SIZE = 20
 internal const val MAX_RELAY_SESSIONS = 100
+internal const val CHAT_CONNECTION_LOST_ERROR = "Connection lost while receiving response"
 // Consecutive HTTP-503 auth-provider-unavailable connect failures tolerated
 // (with a silent reconnect) before the client stops looping and surfaces a
 // recoverable sign-in prompt. Small enough that the user isn't stuck for long,

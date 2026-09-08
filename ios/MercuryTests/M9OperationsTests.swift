@@ -159,7 +159,7 @@ final class M9OperationsTests: XCTestCase {
         )
 
         XCTAssertEqual(state.visibleFamilies, [.todos, .loops, .processes])
-        XCTAssertEqual(state.summary, "Activity · 0/1 tasks · 1 loop · 1 process-local process")
+        XCTAssertEqual(state.summary, "Activity · 0 tools · 0/1 tasks · 1 loop · Processes · last reported: 1 running")
         XCTAssertTrue(state.isRunning)
     }
 

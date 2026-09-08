@@ -37,11 +37,127 @@ data class BackgroundTaskRow(
             BackgroundTaskStatus.Failed -> "Failed"
             else -> "Stopped"
         }
+        // A recovered snapshot without a child identity or timestamp is
+        // historical evidence, not a live task whose status merely happens to
+        // be unknown. Keep that distinction visible without inventing a
+        // terminal status.
+        status == BackgroundTaskStatus.Unknown && !available && observedAtMillis <= 0L -> "Historical · status unavailable"
         !available -> "Last known · updates unavailable"
         status == BackgroundTaskStatus.Unknown -> "Status unavailable"
         !recentlyActive(now) -> "Last known active · no recent activity"
         else -> "Active · observed activity"
     }
+
+    fun isDismissible(now: Long): Boolean = BackgroundTaskPresentationPolicy.isDismissible(this, now)
+
+    /** Opaque, evidence-scoped key for a native UI's in-memory dismissal set. */
+    fun dismissalKey(): String = BackgroundTaskPresentationPolicy.dismissalKey(this)
+
+    fun timeLabel(now: Long): String = BackgroundTaskPresentationPolicy.timeLabel(this, now)
+}
+
+/** Shared summary and dismissal policy for unresolved child-task evidence. */
+data class BackgroundTaskPresentation(
+    val activeCount: Int,
+    val unresolvedCount: Int,
+    val terminalCount: Int,
+    val unavailableCount: Int,
+    val unknownCount: Int,
+    val terminalOnly: Boolean,
+    val statusUnavailable: Boolean,
+    val headline: String,
+)
+
+/**
+ * Child-task evidence is deliberately not completed by parent completion,
+ * process-registry absence, or silence. This policy only decides what can be
+ * said about rows already reduced by the shared relay state machine.
+ */
+object BackgroundTaskPresentationPolicy {
+    private const val FNV_OFFSET_BASIS = -3750763034362895579L
+    private const val FNV_PRIME = 1099511628211L
+
+    fun summarize(rows: List<BackgroundTaskRow>, now: Long): BackgroundTaskPresentation {
+        val active = rows.count { it.recentlyActive(now) }
+        val unresolved = rows.count { !it.terminal }
+        val terminal = rows.size - unresolved
+        val unavailable = rows.count { !it.terminal && isStatusUnavailable(it, now) }
+        val unknown = rows.count {
+            !it.terminal && (it.status == BackgroundTaskStatus.Unknown || !it.identityKnown)
+        }
+        val terminalOnly = rows.isNotEmpty() && unresolved == 0
+        val statusUnavailable = unavailable > 0
+        val headline = when {
+            rows.isEmpty() -> ""
+            terminalOnly -> "Background tasks · completed details"
+            statusUnavailable && active == 0 -> "Background tasks · status unavailable"
+            statusUnavailable -> "Background tasks · $active active · other status unavailable"
+            else -> "Background tasks · $active active"
+        }
+        return BackgroundTaskPresentation(
+            activeCount = active,
+            unresolvedCount = unresolved,
+            terminalCount = terminal,
+            unavailableCount = unavailable,
+            unknownCount = unknown,
+            terminalOnly = terminalOnly,
+            statusUnavailable = statusUnavailable,
+            headline = headline,
+        )
+    }
+
+    fun isDismissible(row: BackgroundTaskRow, now: Long): Boolean =
+        row.terminal || (!row.terminal && isStatusUnavailable(row, now))
+
+    /**
+     * Dismissal is scoped to the complete observed row, rather than only the
+     * child ID. A later event that changes its evidence (or runtime binding)
+     * therefore becomes visible again. The key is never rendered.
+     */
+    fun dismissalKey(row: BackgroundTaskRow): String {
+        val evidence = listOf(
+            row.runtimeId,
+            row.id,
+            row.goal,
+            row.action.orEmpty(),
+            row.status.name,
+            row.observedAtMillis.toString(),
+            row.available.toString(),
+            row.identityKnown.toString(),
+        ).joinToString("\u0000")
+        var hash = FNV_OFFSET_BASIS
+        evidence.encodeToByteArray().forEach { byte ->
+            hash = (hash xor (byte.toLong() and 0xffL)) * FNV_PRIME
+        }
+        // Do not put goals, actions, IDs, or other task text into native
+        // saved-state keys. The fingerprint is only a local dismissal token.
+        return "background-task:$hash"
+    }
+
+    fun timeLabel(row: BackgroundTaskRow, now: Long): String {
+        if (row.observedAtMillis <= 0L) return "${row.label(now)} · time unavailable"
+        val age = (now - row.observedAtMillis).coerceAtLeast(0L) / 1000L
+        return when {
+            row.terminal -> "${row.label(now)} ${age}s ago"
+            !row.recentlyActive(now) -> "${row.label(now)} · last observed ${age}s ago"
+            else -> "Last observed activity ${age}s ago"
+        }
+    }
+
+    fun secondaryLabel(rows: List<BackgroundTaskRow>, now: Long): String {
+        if (rows.isEmpty()) return ""
+        val unresolved = rows.filterNot(BackgroundTaskRow::terminal)
+        if (unresolved.isNotEmpty()) {
+            if (unresolved.any { isStatusUnavailable(it, now) }) {
+                return "Some background task status is unavailable"
+            }
+            return timeLabel(unresolved.maxBy { it.observedAtMillis }, now)
+        }
+        return timeLabel(rows.maxBy { it.observedAtMillis }, now)
+    }
+
+    private fun isStatusUnavailable(row: BackgroundTaskRow, now: Long): Boolean =
+        !row.available || !row.identityKnown || row.status == BackgroundTaskStatus.Unknown || !row.recentlyActive(now)
 }
 
 data class BackgroundTasks(

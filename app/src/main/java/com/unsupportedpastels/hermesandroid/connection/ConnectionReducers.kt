@@ -12,6 +12,8 @@ import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
 import com.unsupportedpastels.hermesandroid.relay.RelayConnectionException
 import com.unsupportedpastels.hermesandroid.relay.RelayConnectionFailure
 import com.unsupportedpastels.hermesandroid.session.BulkDeleteSelectionDecision
+import com.unsupportedpastels.mercury.core.rpc.ModelCapabilitiesSpec
+import com.unsupportedpastels.mercury.core.rpc.ModelCapabilityPolicy
 import com.unsupportedpastels.mercury.core.transcript.InterruptSentinel
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -44,25 +46,14 @@ internal fun resolveModelCapabilities(
     if (currentCapabilities != null) return currentCapabilities
 
     val provider = options?.providers?.firstOrNull { it.slug == selection.provider } ?: return null
-    provider.capabilities[selection.model]
-        ?.takeIf(ModelCapabilities::hasExplicitCapability)
-        ?.let { return it }
-    val matchingCapabilities = provider.capabilities
-        .filterKeys { modelIdentifiersMatch(it, selection.model) }
-        .values
-        .filter(ModelCapabilities::hasExplicitCapability)
-        .distinct()
-    return matchingCapabilities.singleOrNull()
+    return ModelCapabilityPolicy.fromCatalog(
+        selection.model,
+        provider.capabilities.mapValues { (_, value) -> ModelCapabilitiesSpec(value.fast, value.reasoning) },
+    )?.let { ModelCapabilities(fast = it.fast, reasoning = it.reasoning) }
 }
 
-internal fun modelIdentifiersMatch(first: String?, second: String?): Boolean {
-    if (first == null || second == null) return false
-    if (first == second) return true
-    val firstQualified = '/' in first
-    val secondQualified = '/' in second
-    return firstQualified != secondQualified &&
-        first.substringAfterLast('/') == second.substringAfterLast('/')
-}
+internal fun modelIdentifiersMatch(first: String?, second: String?): Boolean =
+    ModelCapabilityPolicy.identifiersMatch(first, second)
 
 internal fun chatMessageFromJson(row: JsonObject): ChatMessage? {
     val role = when (row["role"]?.jsonPrimitive?.contentOrNull?.lowercase()) {

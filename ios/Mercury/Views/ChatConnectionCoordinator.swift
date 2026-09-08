@@ -1,5 +1,33 @@
 import SwiftUI
 
+/// The user-action boundary for a chat connection attempt. Retries that are
+/// part of opening a session, or of tapping Retry, remain explicit even when
+/// they use the bounded retry ladder. Foreground recovery is a separate,
+/// implicit intent.
+enum ChatConnectionRecoveryIntent: Equatable {
+    case explicitUserAction
+    case automatic
+}
+
+enum ChatConnectionRecoveryPolicy {
+    static let explicitRetryRequiredMessage = "This session needs an explicit retry to reconnect."
+
+    /// Direct Hermes has no authoritative same-client ownership binding. Relay
+    /// may attempt an implicit resume, but its transport performs the actual
+    /// retained-binding proof before sending `session.resume`.
+    static func allowsResume(
+        for intent: ChatConnectionRecoveryIntent,
+        isRelay: Bool
+    ) -> Bool {
+        switch intent {
+        case .explicitUserAction:
+            return true
+        case .automatic:
+            return isRelay
+        }
+    }
+}
+
 extension ChatView {
     // MARK: Live connection
 
@@ -12,7 +40,10 @@ extension ChatView {
     /// false means the caller should try again or give up.
     @discardableResult
     @MainActor
-    private func establishConnection(attempt: Int) async -> Bool {
+    private func establishConnection(
+        attempt: Int,
+        intent: ChatConnectionRecoveryIntent = .explicitUserAction
+    ) async -> Bool {
         // Task re-entry safety: for the new-chat flow, once the runtime exists
         // (createSession already ran) never run this again.
         if state.connection != nil { return true }
@@ -25,6 +56,16 @@ extension ChatView {
         let requestedOrigin = appModel.serverOrigin
         let requestedSelection = appModel.relaySelectionGeneration
         guard appModel.activeRelayTarget != nil || appModel.serverOrigin != nil else {
+            return false
+        }
+        let isRelay = requestedTargetID != nil
+        let resumesExistingSession = !isNewSession || state.durableID != nil
+        guard !resumesExistingSession || ChatConnectionRecoveryPolicy.allowsResume(
+            for: intent,
+            isRelay: isRelay
+        ) else {
+            state.connectionState = .offline
+            state.connectionNote = ChatConnectionRecoveryPolicy.explicitRetryRequiredMessage
             return false
         }
 
@@ -57,10 +98,10 @@ extension ChatView {
             }
             candidateConnection = candidate
             guard !Task.isCancelled, !state.closedByUs, backgroundTaskScope == requestedScope else {
-                await RelayConnectionPool.release(candidate)
+                await RelayConnectionPool.shared.discard(candidate)
                 return false
             }
-            if attempt > 0, let relay = candidate.relaySocket,
+            if intent == .automatic, attempt > 0, let relay = candidate.relaySocket,
                let snapshot = await relay.recoverySnapshot(),
                !snapshot.hasLiveBinding(durableId: state.durableID ?? sessionID, profile: requestedProfile) {
                 var tasks = await relay.retainedTasks(durable: state.durableID ?? sessionID, runtime: nil) ?? backgroundTasks
@@ -98,14 +139,14 @@ extension ChatView {
                 }
             } else {
                 let resumed = try await candidate.resume(durableSessionID: state.durableID ?? sessionID, profile: requestedProfile,
-                                                         automaticRecovery: attempt > 0)
+                                                         automaticRecovery: intent == .automatic)
                 guard !Task.isCancelled, !state.closedByUs, backgroundTaskScope == requestedScope else {
                     throw CancellationError()
                 }
                 state.runtimeSessionID = resumed.runtimeSessionID
                 state.transcript.ownSessionIDs.insert(resumed.runtimeSessionID)
                 if let provider = resumed.provider, let model = resumed.model {
-                    state.currentModelSelection = ModelSelection(provider: provider, model: model)
+                    state.applyModelSelection(ModelSelection(provider: provider, model: model))
                 }
                 state.currentReasoningEffort = resumed.reasoningEffort
                 state.currentFastMode = resumed.fastMode
@@ -152,7 +193,7 @@ extension ChatView {
                     && appModel.serverOrigin == requestedOrigin
                     && appModel.relaySelectionGeneration == requestedSelection
             ) else {
-                await RelayConnectionPool.release(candidate)
+                await RelayConnectionPool.shared.discard(candidate)
                 return false
             }
             state.connection = candidate
@@ -160,7 +201,10 @@ extension ChatView {
             if let relay = candidate.relaySocket,
                let tasks = await relay.retainedTasks(durable: state.durableID ?? sessionID, runtime: state.runtimeSessionID) {
                 guard state.connectionOwnership.isCurrent(ownershipToken), state.connection === candidate,
-                      backgroundTaskScope == childScope else { return false }
+                      backgroundTaskScope == childScope else {
+                    await RelayConnectionPool.shared.discard(candidate)
+                    return false
+                }
                 appModel.backgroundTasksBySession[childScope] = tasks
             }
             state.eventTask?.cancel()
@@ -212,12 +256,33 @@ extension ChatView {
                     // Unexpected stream end (peer drop / transport death) —
                     // deliberate close() never reaches here with closedByUs false.
                     guard !state.closedByUs else { return }
-                    scheduleReconnect()
+                    scheduleReconnect(intent: .automatic)
                 }
             }
 
             if let durableID = state.durableID {
                 state.transcript.ownSessionIDs.insert(durableID)
+            }
+            // Hydrate the session catalog before exposing the live composer.
+            // This uses the candidate that already completed resume/create;
+            // Relay never acquires a second channel or resumes another runtime
+            // merely to discover capability flags.
+            if let runtimeSessionID = state.runtimeSessionID {
+                _ = try await hydrateModelOptions(
+                    using: candidate,
+                    runtimeSessionID: runtimeSessionID
+                )
+            }
+            guard !Task.isCancelled,
+                  state.connectionOwnership.isCurrent(ownershipToken),
+                  state.connection === candidate,
+                  backgroundTaskScope == requestedScope,
+                  appModel.activeProfile == requestedProfile,
+                  appModel.activeRelayTarget?.id == requestedTargetID,
+                  appModel.serverOrigin == requestedOrigin,
+                  appModel.relaySelectionGeneration == requestedSelection else {
+                await RelayConnectionPool.shared.discard(candidate)
+                return false
             }
             // Live notifications are keyed on the durable id; keep the visible
             // session in sync so suppression matches while on screen.
@@ -225,13 +290,18 @@ extension ChatView {
             state.connectionNote = nil
             state.connectionState = .live
             scheduleSlashCompletion(for: state.draft)
-            loadModelOptions()
             loadContext()
             await loadProcessRows()
             return true
         } catch {
             if let candidateConnection {
-                await RelayConnectionPool.release(candidateConnection)
+                if state.connection === candidateConnection {
+                    state.connectionOwnership.invalidate()
+                    state.eventTask?.cancel()
+                    state.eventTask = nil
+                    state.connection = nil
+                }
+                await RelayConnectionPool.shared.discard(candidateConnection)
             }
             return false
         }
@@ -243,7 +313,7 @@ extension ChatView {
         state.closedByUs = false
         let ok = await establishConnection(attempt: 0)
         if !ok {
-            scheduleReconnect()
+            scheduleReconnect(intent: .explicitUserAction)
         }
     }
 
@@ -251,7 +321,20 @@ extension ChatView {
     /// (500ms/1s/2s), cancel-safe between sleeps, offline banner at the end
     /// with a manual-retry tap target.
     @MainActor
-    private func scheduleReconnect() {
+    private func scheduleReconnect(intent: ChatConnectionRecoveryIntent) {
+        // Never let an unsolicited foreground callback replace an explicit
+        // retry that is already working through the bounded ladder.
+        if intent == .automatic, state.reconnectTask != nil { return }
+        let isRelay = appModel.activeRelayTarget != nil
+        let resumesExistingSession = !isNewSession || state.durableID != nil
+        guard !resumesExistingSession || ChatConnectionRecoveryPolicy.allowsResume(
+            for: intent,
+            isRelay: isRelay
+        ) else {
+            state.connectionState = .offline
+            state.connectionNote = ChatConnectionRecoveryPolicy.explicitRetryRequiredMessage
+            return
+        }
         guard state.reconnectTask == nil, !state.closedByUs else { return }
         state.reconnectID = UUID()
         let token = state.reconnectID
@@ -276,7 +359,7 @@ extension ChatView {
                     try? await Task.sleep(for: .milliseconds(250))
                 }
                 guard current() else { break }
-                if await establishConnection(attempt: attempt) {
+                if await establishConnection(attempt: attempt, intent: intent) {
                     if state.reconnectID == token { state.reconnectTask = nil }
                     return
                 }
@@ -288,6 +371,23 @@ extension ChatView {
 
     @MainActor
     func retryConnectionNow(automatic: Bool = false) {
+        let intent: ChatConnectionRecoveryIntent = automatic ? .automatic : .explicitUserAction
+        if automatic, state.reconnectTask != nil { return }
+        let isRelay = appModel.activeRelayTarget != nil
+        let resumesExistingSession = !isNewSession || state.durableID != nil
+        guard !resumesExistingSession || ChatConnectionRecoveryPolicy.allowsResume(
+            for: intent,
+            isRelay: isRelay
+        ) else {
+            // A foreground notification is not user consent to take over a
+            // direct runtime. Leave the visible Retry affordance intact and
+            // do not cancel an explicit retry already in progress.
+            if state.reconnectTask == nil {
+                state.connectionState = .offline
+                state.connectionNote = ChatConnectionRecoveryPolicy.explicitRetryRequiredMessage
+            }
+            return
+        }
         state.reconnectTask?.cancel()
         state.reconnectTask = nil
         state.reconnectID = UUID()
@@ -296,11 +396,13 @@ extension ChatView {
         guard state.connection == nil, !state.closedByUs else { return }
         state.reconnectTask = Task {
             state.connectionState = .reconnecting(attempt: 1)
-            // Foreground recovery is not consent to resume a historical binding.
-            let connected = await establishConnection(attempt: automatic ? 1 : 0)
+            let connected = await establishConnection(
+                attempt: automatic ? 1 : 0,
+                intent: intent
+            )
             guard state.reconnectID == token, !Task.isCancelled, backgroundTaskScope == scope else { return }
             state.reconnectTask = nil
-            if !connected { scheduleReconnect() }
+            if !connected { scheduleReconnect(intent: intent) }
         }
     }
 }

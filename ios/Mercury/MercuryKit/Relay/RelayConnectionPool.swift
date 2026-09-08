@@ -172,4 +172,20 @@ actor RelayConnectionPool {
     static func release(_ connection: ChatConnection) async {
         if connection.relaySocket == nil { await connection.close() }
     }
+
+    /// Discards a candidate that never became the published chat owner. A
+    /// failed resume/create must not leave a live-looking connection in the
+    /// channel slot: the next retry would otherwise borrow the same dead
+    /// reader and require a process restart to recover.
+    func discard(_ connection: ChatConnection) async {
+        for slot in slots.values where slot.connection === connection {
+            slot.generation = UUID()
+            slot.opening?.cancel()
+            slot.opening = nil
+            slot.connection = nil
+            await connection.close()
+            return
+        }
+        await connection.close()
+    }
 }

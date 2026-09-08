@@ -492,6 +492,11 @@ sealed interface TranscriptEntry {
 }
 
 fun coalesceTranscriptEntries(rows: List<TranscriptRow>): List<TranscriptEntry> {
+    // Live structured tool activity is rendered separately by each native shell.
+    // REST/relay ChatMessage DTOs currently discard tool_id. Never turn
+    // "some live tools exist" into deletion of persisted transcript rows.
+    // Native shells render these rows through their historical tool-result
+    // presentation instead.
     val entries = mutableListOf<TranscriptEntry>()
     val toolRun = mutableListOf<TranscriptRow>()
     val burstReasoning = mutableListOf<TranscriptRow>()

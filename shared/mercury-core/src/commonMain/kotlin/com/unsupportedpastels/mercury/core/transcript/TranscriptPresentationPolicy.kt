@@ -8,6 +8,27 @@ package com.unsupportedpastels.mercury.core.transcript
 object TranscriptPresentationPolicy {
     const val MAX_SUMMARY_PHRASES = 3
     const val REASONING_PREVIEW_CHARS = 120
+    const val MISSING_FINAL_RESPONSE_NOTICE =
+        "Background work continues. The final response is not available yet."
+
+    /**
+     * Explain a missing final response only when the current turn is identifiable,
+     * has no assistant prose, and a live child was recently observed. This is a
+     * presentation notice, not an assistant transcript row or a completion claim.
+     */
+    fun missingFinalResponseNotice(
+        rows: List<TranscriptRow>,
+        activeChildCount: Int,
+        parentTurnSending: Boolean,
+    ): String? {
+        if (parentTurnSending || activeChildCount <= 0) return null
+        val latestUserIndex = rows.indexOfLast { it.role.lowercase() == "user" }
+        if (latestUserIndex < 0) return null
+        val hasAssistantProse = rows.drop(latestUserIndex + 1).any { row ->
+            row.role.lowercase() == "assistant" && row.text.hasVisibleText()
+        }
+        return MISSING_FINAL_RESPONSE_NOTICE.takeUnless { hasAssistantProse }
+    }
 
     /**
      * Claude-app style activity summary: known tools compress into verb
@@ -112,4 +133,8 @@ object TranscriptPresentationPolicy {
     private fun normalizedToolName(value: String): String = value.trim().lowercase()
 
     private fun displayToolName(value: String): String = value.replace('_', ' ').replace('-', ' ')
+
+    private fun String.hasVisibleText(): Boolean = any {
+        !it.isWhitespace() && it != '\u00A0' && it != '\u2007' && it != '\u202F'
+    }
 }

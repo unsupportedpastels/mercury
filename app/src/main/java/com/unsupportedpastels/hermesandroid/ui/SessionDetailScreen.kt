@@ -54,6 +54,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -200,6 +201,7 @@ internal fun SessionDetailScreen(
     showStop: Boolean,
     stopping: Boolean,
     onStop: () -> Unit,
+    onRetryConnection: () -> Unit = {},
     slashCompletion: SlashCompletionState? = null,
     onSlashCompletionSelected: (SlashCompletionState, SlashCompletionItem) -> Unit = { _, _ -> },
     onLoadSessionInsights: () -> Unit,
@@ -281,6 +283,7 @@ internal fun SessionDetailScreen(
     }
     val hasRunStateContent = chat.runState.hasVisibleContent() ||
         chat.processRows.isNotEmpty()
+
     val timelineLastIndex = (
         chat.messages.size + if (hasRunStateContent) 1 else 0
     ).minus(1).coerceAtLeast(0)
@@ -678,6 +681,16 @@ internal fun SessionDetailScreen(
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodyMedium,
                     )
+                    if (chat.connectionRecoveryAvailable && !chat.isSending && !connectionBusy) {
+                        TextButton(
+                            onClick = dropUnlessResumed { onRetryConnection() },
+                            modifier = Modifier.semantics {
+                                contentDescription = "Retry session connection"
+                            },
+                        ) {
+                            Text("Retry connection")
+                        }
+                    }
                 }
             chat.notice?.let { notice ->
                 Text(
@@ -745,6 +758,7 @@ internal fun SessionDetailScreen(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
+            BackgroundResponseNotice(chat.messages, chat.backgroundTasks, chat.isSending)
             BackgroundTaskStrip(chat.backgroundTasks)
             // Keep the composer available during a controlled turn so the user can
             // issue the server's /steer command through the normal send path.

@@ -1,4 +1,5 @@
 import Foundation
+import MercuryCore
 
 enum OperationsBounds {
     static let maxCronRows = 128
@@ -176,19 +177,86 @@ struct ActivityStackState: Equatable, Sendable {
     var isEmpty: Bool { visibleFamilies.isEmpty }
 
     var isRunning: Bool {
-        todos.contains { $0.status == .pending || $0.status == .inProgress } ||
-        loops.contains { $0.status == .pending || $0.status == .running } ||
-        processes.contains { $0.status.lowercased() == "running" }
+        let countedTodos = todos.filter { $0.status != .cancelled }
+        return SharedActivityPresentationPolicy.decide(
+            assistantActivityPresent: !todos.isEmpty || !loops.isEmpty,
+            turnActive: false,
+            toolCount: 0,
+            runningToolCount: 0,
+            completedTodoCount: countedTodos.filter { $0.status == .completed }.count,
+            todoCount: countedTodos.count,
+            activeTodoCount: countedTodos.filter {
+                $0.status == .pending || $0.status == .inProgress
+            }.count,
+            loopCount: loops.count,
+            activeLoopCount: loops.filter {
+                $0.status == .pending || $0.status == .running
+            }.count,
+            processStatuses: processes.map(\.status)
+        ).assistantActive
     }
 
     var summary: String {
         let countedTodos = todos.filter { $0.status != .cancelled }
-        let completedTodos = countedTodos.filter { $0.status == .completed }.count
-        var parts = ["Activity", "\(completedTodos)/\(countedTodos.count) tasks"]
-        if !loops.isEmpty { parts.append("\(loops.count) \(loops.count == 1 ? "loop" : "loops")") }
-        if !processes.isEmpty {
-            parts.append("\(processes.count) process-local \(processes.count == 1 ? "process" : "processes")")
-        }
-        return parts.joined(separator: " · ")
+        return SharedActivityPresentationPolicy.decide(
+            assistantActivityPresent: !todos.isEmpty || !loops.isEmpty,
+            turnActive: false,
+            toolCount: 0,
+            runningToolCount: 0,
+            completedTodoCount: countedTodos.filter { $0.status == .completed }.count,
+            todoCount: countedTodos.count,
+            activeTodoCount: countedTodos.filter {
+                $0.status == .pending || $0.status == .inProgress
+            }.count,
+            loopCount: loops.count,
+            activeLoopCount: loops.filter {
+                $0.status == .pending || $0.status == .running
+            }.count,
+            processStatuses: processes.map(\.status)
+        ).summary
+    }
+}
+
+/// Swift-facing DTO for the shared activity decision. The decision itself is
+/// made by MercuryCore so Android and iOS cannot disagree about whether a
+/// process-only surface is active assistant work.
+struct ActivityPresentationDecision: Equatable, Sendable {
+    let activityPresent: Bool
+    let assistantActive: Bool
+    let processOnly: Bool
+    let summary: String
+}
+
+enum SharedActivityPresentationPolicy {
+    static func decide(
+        assistantActivityPresent: Bool,
+        turnActive: Bool,
+        toolCount: Int,
+        runningToolCount: Int,
+        completedTodoCount: Int,
+        todoCount: Int,
+        activeTodoCount: Int,
+        loopCount: Int,
+        activeLoopCount: Int,
+        processStatuses: [String]
+    ) -> ActivityPresentationDecision {
+        let core = MercuryCore.ActivityPresentationPolicy.shared.decide(
+            assistantActivityPresent: assistantActivityPresent,
+            turnActive: turnActive,
+            toolCount: Int32(toolCount),
+            runningToolCount: Int32(runningToolCount),
+            completedTodoCount: Int32(completedTodoCount),
+            todoCount: Int32(todoCount),
+            activeTodoCount: Int32(activeTodoCount),
+            loopCount: Int32(loopCount),
+            activeLoopCount: Int32(activeLoopCount),
+            processStatuses: processStatuses
+        )
+        return ActivityPresentationDecision(
+            activityPresent: core.activityPresent,
+            assistantActive: core.assistantActive,
+            processOnly: core.processOnly,
+            summary: core.summary
+        )
     }
 }

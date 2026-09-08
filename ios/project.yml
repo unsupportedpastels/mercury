@@ -15,7 +15,7 @@ settings:
     # extensions always carry the same CFBundleShortVersionString and build
     # number, which App Store validation requires. Bump MARKETING_VERSION with
     # each release alongside versionName.
-    MARKETING_VERSION: "0.2.3"
+    MARKETING_VERSION: "0.2.4"
     CURRENT_PROJECT_VERSION: 1
 
 targets:

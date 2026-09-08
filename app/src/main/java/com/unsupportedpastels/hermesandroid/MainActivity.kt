@@ -208,6 +208,9 @@ class MainActivity : ComponentActivity() {
                         connectionViewModel.respondToBlockingPrompt(sessionId, kind, requestId, value)
                     },
                     onStopSession = connectionViewModel::stopSession,
+                    onRetrySessionConnection = { sessionId ->
+                        connectionViewModel.retrySessionConnection(sessionId)
+                    },
                 )
             }
         }
@@ -303,6 +306,7 @@ internal fun HermesAppHost(
     onApprovalResponse: (DurableSessionId, String, Boolean) -> Unit = { _, _, _ -> },
     onBlockingResponse: (DurableSessionId, UnsupportedBlockingKind, String, String) -> Unit = { _, _, _, _ -> },
     onStopSession: (DurableSessionId) -> Unit = {},
+    onRetrySessionConnection: (DurableSessionId) -> Unit = {},
 ) {
     val serverSettingsState by viewModel.states.collectAsStateWithLifecycle()
     val cloudConnectStateFlow = cloudViewModel?.state
@@ -508,6 +512,7 @@ internal fun HermesAppHost(
         onSignIn = onSignIn,
         onPasswordSignIn = onPasswordSignIn,
         onRetryConnection = { connectionViewModel?.retryConnection() },
+        onRetrySessionConnection = onRetrySessionConnection,
         onOpenProject = onOpenProject,
         onCreateProjectSession = onCreateProjectSession,
         onOpenSession = onOpenSession,

@@ -2721,6 +2721,40 @@ class HermesAppTest {
     }
 
     @Test
+    fun exhaustedSessionShowsRetryWithoutOfferingPromptReplay() {
+        val session = sessions.first()
+        var retried: DurableSessionId? = null
+        var sent: String? = null
+        val snapshot = connectedSnapshot.copy(
+            authenticationState = AuthenticationState.Authenticated,
+            chatSessions = mapOf(
+                session.id to ChatSessionSnapshot(
+                    error = "Connection lost while receiving response",
+                    connectionRecoveryAvailable = true,
+                ),
+            ),
+        )
+
+        composeRule.setContent {
+            HermesAndroidTheme {
+                HermesApp(
+                    snapshot = snapshot,
+                    initialRoute = SessionDetailRoute(session.id),
+                    onRetrySessionConnection = { retried = it },
+                    onSendMessage = { _, text -> sent = text },
+                )
+            }
+        }
+
+        composeRule.onNodeWithContentDescription("Retry session connection")
+            .assertIsDisplayed()
+            .performClick()
+
+        assertEquals(session.id, retried)
+        assertEquals(null, sent)
+    }
+
+    @Test
     fun connectionFailureIsVisibleInsteadOfOnlyShowingSavedOrigin() {
         composeRule.setContent {
             HermesAndroidTheme {

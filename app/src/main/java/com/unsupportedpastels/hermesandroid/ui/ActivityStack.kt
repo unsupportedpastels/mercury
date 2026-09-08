@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -35,7 +36,7 @@ import androidx.compose.ui.platform.testTag
 import com.unsupportedpastels.hermesandroid.app.ProcessRow
 import com.unsupportedpastels.hermesandroid.app.RunEventState
 import com.unsupportedpastels.hermesandroid.app.RunTodoItem
-import com.unsupportedpastels.mercury.core.transcript.TranscriptPresentationPolicy
+import com.unsupportedpastels.mercury.core.activity.ActivityPresentationPolicy
 import com.unsupportedpastels.hermesandroid.app.RunTodoStatus
 import com.unsupportedpastels.hermesandroid.app.RunToolRow
 import com.unsupportedpastels.hermesandroid.app.RunToolState
@@ -53,30 +54,35 @@ internal fun ActivityStack(
     modifier: Modifier = Modifier,
 ) {
     val toolCount = runState.tools.size
-    val processCount = processRows.size
     val countedTodos = runState.todos.filter { it.status != RunTodoStatus.Cancelled }
     val completedTodos = countedTodos.count { it.status == RunTodoStatus.Completed }
-    val hasActivity = runState.status != null ||
-        runState.tools.isNotEmpty() ||
-        runState.todos.isNotEmpty() ||
-        processRows.isNotEmpty()
-    if (!hasActivity) return
+    val presentation = ActivityPresentationPolicy.decide(
+        assistantActivityPresent = runState.status != null ||
+            runState.tools.isNotEmpty() ||
+            runState.todos.isNotEmpty(),
+        turnActive = runActive,
+        toolCount = toolCount,
+        runningToolCount = runState.tools.count { it.state == RunToolState.Running },
+        completedTodoCount = completedTodos,
+        todoCount = countedTodos.size,
+        activeTodoCount = countedTodos.count {
+            it.status == RunTodoStatus.Pending || it.status == RunTodoStatus.InProgress
+        },
+        loopCount = 0,
+        activeLoopCount = 0,
+        processStatuses = processRows.map(ProcessRow::status),
+    )
+    if (!presentation.activityPresent) return
 
     var expanded by remember { mutableStateOf(false) }
-    val taskLabel = "$completedTodos/${countedTodos.size} tasks"
-    val noun = if (toolCount == 1) "tool" else "tools"
-    val processLabel = if (processCount == 1) "1 process-local process" else "$processCount process-local processes"
-    val stateLabel = if (
-        runActive ||
-        runState.tools.any { it.state == RunToolState.Running } ||
-        runState.todos.any { it.status == RunTodoStatus.Pending || it.status == RunTodoStatus.InProgress } ||
-        processRows.any { it.status.equals("running", ignoreCase = true) }
-    ) "running" else "completed"
-    val accessibilityLabel = if (runState.todos.isEmpty() && processCount == 0) {
+    val stateLabel = if (presentation.assistantActive) "running" else "completed"
+    val assistantSummary = presentation.summary.removePrefix("Activity · ")
+    val accessibilityLabel = if (presentation.processOnly) {
+        "${presentation.summary}, " + if (expanded) "expanded" else "collapsed"
+    } else if (runState.todos.isEmpty() && processRows.isEmpty()) {
         "$toolCount actions, $stateLabel, " + if (expanded) "expanded" else "collapsed"
     } else {
-        "Activity stack, $toolCount $noun, $taskLabel" +
-            (if (processCount == 0) "" else ", $processLabel") +
+        "Activity stack, ${assistantSummary.replace(" · ", ", ")}" +
             ", " + if (expanded) "expanded" else "collapsed"
     }
 
@@ -86,7 +92,10 @@ internal fun ActivityStack(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = modifier
             .fillMaxWidth()
-            .testTag("Unified activity stack")
+            // This tag intentionally describes assistant work, not merely the
+            // presence of process rows. It gives UI tests an assertion that a
+            // process-only surface has no active-work spinner.
+            .testTag(if (presentation.assistantActive) "Active work indicator" else "Unified activity stack")
             .semantics(mergeDescendants = true) {
                 contentDescription = accessibilityLabel
                 stateDescription = if (expanded) "Expanded" else "Collapsed"
@@ -105,11 +114,18 @@ internal fun ActivityStack(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (stateLabel == "running") {
+                if (presentation.assistantActive) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(16.dp),
                         strokeWidth = 2.dp,
                         color = MaterialTheme.colorScheme.primary,
+                    )
+                } else if (presentation.processOnly) {
+                    Icon(
+                        Icons.Outlined.Terminal,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } else {
                     Icon(
@@ -120,10 +136,10 @@ internal fun ActivityStack(
                     )
                 }
                 Text(
-                    TranscriptPresentationPolicy.activitySummary(toolCount, completedTodos, countedTodos.size, processCount = processCount),
+                    presentation.summary,
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelMedium,
-                    maxLines = 1,
+                    maxLines = if (presentation.processOnly) 2 else 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Icon(

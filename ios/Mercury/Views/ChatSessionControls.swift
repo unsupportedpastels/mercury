@@ -26,8 +26,7 @@ extension ChatView {
                 let loaded = try await connection.loadModelOptions(runtimeSessionID: runtimeSessionID)
                 await MainActor.run {
                     guard state.connection === connection else { return }
-                    state.modelOptions = loaded
-                    if let advertised = loaded.current { state.currentModelSelection = advertised }
+                    state.applyModelOptions(loaded)
                     state.modelPickerLoading = false
                 }
             } catch is ChatMethodNotFoundError {
@@ -42,6 +41,34 @@ extension ChatView {
                     state.modelPickerError = "Could not load models for this session."
                 }
             }
+        }
+    }
+
+    /// Hydrates the session catalog during the initial resume/create lifecycle.
+    /// The caller supplies the already-admitted connection so this cannot open
+    /// a second Relay channel or implicitly attach to another runtime.
+    @MainActor
+    func hydrateModelOptions(
+        using connection: ChatConnection,
+        runtimeSessionID: String
+    ) async throws -> ModelOptions? {
+        guard state.modelFeatureSupported else { return nil }
+        do {
+            // ChatConnection bounds this auxiliary RPC and removes its pending
+            // continuation on timeout; metadata failure must not wedge chat.
+            let loaded = try await connection.loadModelOptions(runtimeSessionID: runtimeSessionID)
+            guard state.connection === connection else { return nil }
+            state.applyModelOptions(loaded)
+            return loaded
+        } catch is ChatMethodNotFoundError {
+            state.modelFeatureSupported = false
+            return nil
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // Model metadata is auxiliary to the live chat. A transient catalog
+            // failure leaves the session usable and the picker can retry later.
+            return nil
         }
     }
 
@@ -71,7 +98,7 @@ extension ChatView {
                         )
                         state.showModelPicker = false
                     } else if result.accepted {
-                        state.currentModelSelection = selection
+                        state.applyModelSelection(selection)
                         state.showModelPicker = false
                         state.composerNotice = result.deferred
                             ? "Model will change after the active turn."
@@ -110,10 +137,12 @@ extension ChatView {
                 } else {
                     catalog = try await connection.loadModelOptions(runtimeSessionID: runtimeSessionID)
                 }
-                guard catalog.capabilities(for: state.currentModelSelection ?? catalog.current)?.reasoning == true else {
+                guard SessionModelPickerPolicy.capabilities(
+                    in: catalog,
+                    for: state.currentModelSelection ?? catalog.current
+                )?.reasoning == true else {
                     await MainActor.run {
-                        state.modelOptions = catalog
-                        if state.currentModelSelection == nil { state.currentModelSelection = catalog.current }
+                        state.applyModelOptions(catalog)
                         state.isComposerActionPending = false
                         state.modelPickerApplying = false
                         state.composerError = "The selected model does not explicitly advertise reasoning support."
@@ -122,8 +151,7 @@ extension ChatView {
                 }
                 try await connection.setReasoning(runtimeSessionID: runtimeSessionID, effort: canonical)
                 await MainActor.run {
-                    state.modelOptions = catalog
-                    if state.currentModelSelection == nil { state.currentModelSelection = catalog.current }
+                    state.applyModelOptions(catalog)
                     state.currentReasoningEffort = canonical
                     state.isComposerActionPending = false
                     state.modelPickerApplying = false

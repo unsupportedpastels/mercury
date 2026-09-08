@@ -283,6 +283,9 @@ class HermesConnectionViewModel(
     private val controllerLock: Any
         get() = sessionControllerRegistry.lock
 
+    /** Sessions eligible for one foreground-only reconnect after bounded recovery. */
+    private val automaticChatReconnects = mutableSetOf<DurableSessionId>()
+
     private val mutableSlashCompletions =
         MutableStateFlow<Map<DurableSessionId, SlashCompletionState>>(emptyMap())
     val slashCompletions: StateFlow<Map<DurableSessionId, SlashCompletionState>> =
@@ -481,6 +484,76 @@ class HermesConnectionViewModel(
         }
     }
 
+    /**
+     * Rebinds one durable chat session after bounded transport recovery gave up.
+     * This is deliberately session-scoped: it resumes the existing runtime and
+     * never reconnects the global transport, closes sibling controllers, or
+     * replays the last prompt.
+     */
+    fun retrySessionConnection(
+        durableSessionId: DurableSessionId,
+        automatic: Boolean = false,
+    ): Job {
+        val chat = mutableSnapshots.value.chatSessions[durableSessionId]
+        if (durableSessionId in pendingDraftSessions || chat?.connectionRecoveryAvailable != true) {
+            return viewModelScope.launch { }
+        }
+        if (automatic && mutableSnapshots.value.authenticationState == AuthenticationState.SignInRequired) {
+            return viewModelScope.launch { }
+        }
+        // Direct-mode durable IDs do not prove that this client still owns the
+        // remote runtime. Automatic foreground recovery must not turn into an
+        // implicit open/resume; leave the explicit Retry action available.
+        if (automatic && activeRelayTarget == null) {
+            return viewModelScope.launch { }
+        }
+        liveControllers[durableSessionId]?.let {
+            automaticChatReconnects.remove(durableSessionId)
+            updateChat(durableSessionId) { current ->
+                current.copy(connectionRecoveryAvailable = false, error = null)
+            }
+            return viewModelScope.launch { }
+        }
+        sessionControllerRegistry.chatJobs[durableSessionId]
+            ?.takeIf { it.isActive }
+            ?.let { return it }
+
+        automaticChatReconnects.remove(durableSessionId)
+        updateChat(durableSessionId) {
+            it.copy(
+                connectionPhase = ChatConnectionPhase.Reconnecting,
+                error = null,
+                connectionRecoveryAvailable = false,
+            )
+        }
+        if (automatic && activeRelayTarget != null) {
+            val origin = activeOrigin ?: return viewModelScope.launch { }
+            val originGeneration = generation
+            val operationGeneration = sessionControllerRegistry.nextOperationGeneration(durableSessionId)
+            sessionControllerRegistry.cancelOperationJob(durableSessionId)
+            val attempt = ChatRecoveryAttempt(ChatRecoveryState(operationGeneration))
+            val recoveryJob = viewModelScope.launch {
+                try {
+                    recoverChat(
+                        durableSessionId = durableSessionId,
+                        origin = origin,
+                        originGeneration = originGeneration,
+                        operationGeneration = operationGeneration,
+                        recoveryAttempt = attempt,
+                    )
+                } finally {
+                    finishChatRecovery(attempt)
+                }
+            }
+            sessionControllerRegistry.setOperationJob(durableSessionId, recoveryJob)
+            return recoveryJob
+        }
+        // Explicit Retry is a user action and may resume a retained runtime
+        // after the Relay lease was lost. Automatic recovery never takes this
+        // path, so it cannot implicitly take over another runtime.
+        return openSession(durableSessionId)
+    }
+
     /** Connects through one approved Mercury Relay target without probing its router as Hermes REST. */
     fun connectRelay(target: RelayPairedTarget, profile: String = "default"): Job {
         if (target.status != RelayTargetStatus.Approved) return viewModelScope.launch { }
@@ -631,16 +704,43 @@ class HermesConnectionViewModel(
     }
 
     private fun maybeReconnectOnForeground() {
-        // Only heal a dropped connection; never disturb a live session, an
-        // in-progress attempt, or a deliberate sign-in prompt.
-        if (mutableSnapshots.value.connectionState != ConnectionState.Disconnected) return
-        if (mutableSnapshots.value.authenticationState == AuthenticationState.SignInRequired) return
         if (foregroundReconnectJob?.isActive == true) return
-        val relayTarget = activeRelayTarget
-        foregroundReconnectJob = if (relayTarget != null) {
-            connectRelay(relayTarget, mutableSnapshots.value.selectedProfile)
+        val snapshot = mutableSnapshots.value
+        if (snapshot.authenticationState == AuthenticationState.SignInRequired) return
+        val globalReconnect = if (snapshot.connectionState == ConnectionState.Disconnected) {
+            val relayTarget = activeRelayTarget
+            if (relayTarget != null) {
+                connectRelay(relayTarget, snapshot.selectedProfile)
+            } else {
+                viewModelScope.launch { reconnectActiveOrigin() }
+            }
         } else {
-            viewModelScope.launch { reconnectActiveOrigin() }
+            null
+        }
+        foregroundReconnectJob = viewModelScope.launch {
+            globalReconnect?.join()
+            if (mutableSnapshots.value.authenticationState == AuthenticationState.SignInRequired) return@launch
+            automaticChatReconnects.toList().forEach { durableSessionId ->
+                retrySessionConnection(durableSessionId, automatic = true)
+            }
+        }
+    }
+
+    private fun markChatRecoveryAvailable(
+        durableSessionId: DurableSessionId,
+        allowAutomatic: Boolean,
+        message: String? = null,
+    ) {
+        if (allowAutomatic && activeRelayTarget != null) {
+            automaticChatReconnects += durableSessionId
+        } else {
+            automaticChatReconnects.remove(durableSessionId)
+        }
+        updateChat(durableSessionId) { current ->
+            current.copy(
+                connectionRecoveryAvailable = true,
+                error = message ?: current.error ?: CHAT_CONNECTION_LOST_ERROR,
+            )
         }
     }
 
@@ -1940,18 +2040,34 @@ class HermesConnectionViewModel(
                         ?.takeIf { it.profile == selected && it.model != null && it.provider != null }
                         ?.let { ModelSelection(checkNotNull(it.provider), checkNotNull(it.model)) }
                         ?: options.current
-                    val effectiveCapabilities = effectiveModel?.let { selection ->
-                        resolveModelCapabilities(currentInfo, options, selection)
-                    }
                     val updatedChats = currentSnapshot.chatSessions.mapValues { (_, chat) ->
-                        if (
-                            effectiveModel != null &&
-                            chat.provider == effectiveModel.provider &&
-                            modelIdentifiersMatch(chat.model, effectiveModel.model)
+                        // Model options are profile-scoped. A visible chat may be
+                        // retained while the management catalog switches profiles;
+                        // never overwrite its admitted-session capabilities with
+                        // another profile's same-named model.
+                        if (chat.owningProfile != selected) return@mapValues chat
+                        val selection = if (
+                            !chat.provider.isNullOrBlank() && !chat.model.isNullOrBlank()
                         ) {
+                            ModelSelection(chat.provider, chat.model)
+                        } else {
+                            null
+                        }
+                        val capabilities = selection?.let { candidate ->
+                            resolveModelCapabilities(currentInfo, options, candidate)
+                        }
+                        val isEffectiveModel = effectiveModel != null &&
+                            selection != null &&
+                            selection.provider == effectiveModel.provider &&
+                            modelIdentifiersMatch(selection.model, effectiveModel.model)
+                        if (capabilities != null || isEffectiveModel) {
                             chat.copy(
-                                modelCapabilities = effectiveCapabilities,
-                                reasoningEffort = chat.reasoningEffort ?: profileReasoningEffort,
+                                modelCapabilities = capabilities ?: chat.modelCapabilities,
+                                reasoningEffort = if (isEffectiveModel) {
+                                    chat.reasoningEffort ?: profileReasoningEffort
+                                } else {
+                                    chat.reasoningEffort
+                                },
                             )
                         } else {
                             chat
@@ -2960,7 +3076,9 @@ class HermesConnectionViewModel(
                     chat.copy(
                         model = selection?.model,
                         provider = selection?.provider,
-                        modelCapabilities = options.capabilitiesFor(selection),
+                        modelCapabilities = selection?.let { candidate ->
+                            resolveModelCapabilities(null, options, candidate)
+                        },
                         reasoningEffort = reasoningEffort,
                         draftDefaultsLoaded = true,
                     )
@@ -3178,7 +3296,20 @@ class HermesConnectionViewModel(
             return viewModelScope.launch { }
         }
         if (liveControllers[durableSessionId] != null) {
-            return viewModelScope.launch { }
+            val controller = liveControllers.getValue(durableSessionId)
+            return viewModelScope.launch {
+                if (mutableSnapshots.value.chatSessions[durableSessionId]?.modelCapabilities != null) return@launch
+                val origin = activeOrigin ?: return@launch
+                hydrateSessionModelCapabilities(
+                    durableSessionId = durableSessionId,
+                    session = controller.session,
+                    runtimeSessionId = controller.runtimeSessionId,
+                    origin = origin,
+                    originGeneration = generation,
+                    operationGeneration = controller.operationGeneration,
+                    requirePublishedController = true,
+                )
+            }
         }
         val operationGeneration = sessionControllerRegistry.nextOperationGeneration(durableSessionId)
         sessionControllerRegistry.cancelOperationJob(durableSessionId)
@@ -3209,7 +3340,14 @@ class HermesConnectionViewModel(
                     )
                 }
             }
-            updateChat(durableSessionId) { it.copy(isLoading = !hasCachedMessages, error = null) }
+            automaticChatReconnects.remove(durableSessionId)
+            updateChat(durableSessionId) {
+                it.copy(
+                    isLoading = !hasCachedMessages,
+                    error = null,
+                    connectionRecoveryAvailable = false,
+                )
+            }
             try {
                 val relayTarget = activeRelayTarget
                 var accessToken: String? = null
@@ -3254,6 +3392,7 @@ class HermesConnectionViewModel(
                         messages = loadedMessages,
                         isLoading = false,
                         error = null,
+                        connectionPhase = ChatConnectionPhase.Idle,
                         transcriptSource = CacheSource.Live,
                     )
                 }
@@ -3265,7 +3404,6 @@ class HermesConnectionViewModel(
                 if (
                     accessToken != null &&
                     (chatConnector != null || (relayTarget != null && relaySessionFactory != null)) &&
-                    (relayTarget == null || liveControllers.isEmpty()) &&
                     mutableSnapshots.value.authenticationState == AuthenticationState.Authenticated
                 ) {
                     ensureLiveSession(
@@ -3290,7 +3428,12 @@ class HermesConnectionViewModel(
                 }
             } catch (cancelled: CancellationException) {
                 if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
-                    updateChat(durableSessionId) { it.copy(isLoading = false) }
+                    updateChat(durableSessionId) {
+                        it.copy(
+                            isLoading = false,
+                            connectionPhase = ChatConnectionPhase.Idle,
+                        )
+                    }
                 }
                 throw cancelled
             } catch (_: NativeRefreshExpiredException) {
@@ -3303,6 +3446,8 @@ class HermesConnectionViewModel(
                 updateChat(durableSessionId) {
                     it.copy(
                         isLoading = false,
+                        connectionPhase = ChatConnectionPhase.Idle,
+                        connectionRecoveryAvailable = true,
                         error = error.message
                             ?.take(120)
                             ?: "Could not load transcript (${error.javaClass.simpleName})",
@@ -3359,9 +3504,14 @@ class HermesConnectionViewModel(
         }
         val operationGeneration = sessionControllerRegistry.nextOperationGeneration(durableSessionId)
         sessionControllerRegistry.cancelOperationJob(durableSessionId)
+        automaticChatReconnects.remove(durableSessionId)
         clearSendingState(durableSessionId)
         updateChat(durableSessionId) {
-            it.copy(runState = RunEventState(), connectionPhase = ChatConnectionPhase.Connecting)
+            it.copy(
+                runState = RunEventState(),
+                connectionPhase = ChatConnectionPhase.Connecting,
+                connectionRecoveryAvailable = false,
+            )
         }
         val job = viewModelScope.launch {
             val origin = activeOrigin ?: run {
@@ -3581,9 +3731,7 @@ class HermesConnectionViewModel(
                         }
                     } else if (!isChatRecoveryInProgress(durableSessionId, operationGeneration)) {
                         clearSendingState(durableSessionId)
-                        updateChat(durableSessionId) {
-                            it.copy(error = "Connection lost while receiving response")
-                        }
+                        markChatRecoveryAvailable(durableSessionId, allowAutomatic = true)
                     }
                 } else {
                     clearSendingState(durableSessionId)
@@ -4465,7 +4613,13 @@ class HermesConnectionViewModel(
                 } else {
                     options.current
                 }
-                val capabilities = options.capabilitiesFor(chatSelection)
+                val capabilities = chatSelection?.let { selection ->
+                    resolveModelCapabilities(
+                        currentInfo = null,
+                        options = options,
+                        selection = selection,
+                    )
+                }
                 if (capabilities != null && isCurrentModelPicker(requestGeneration, durableSessionId)) {
                     updateChat(durableSessionId) { current ->
                         current.copy(modelCapabilities = capabilities)
@@ -4749,7 +4903,9 @@ class HermesConnectionViewModel(
             if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                 updateChat(durableSessionId) {
                     // Send retains its lock until staging/ack; open/control releases it.
-                    if (previousPhase == ChatConnectionPhase.Idle) it.copy(connectionPhase = ChatConnectionPhase.Idle) else it
+                    if (previousPhase == ChatConnectionPhase.Idle ||
+                        previousPhase == ChatConnectionPhase.Reconnecting
+                    ) it.copy(connectionPhase = ChatConnectionPhase.Idle) else it
                 }
             }
         }
@@ -4827,6 +4983,24 @@ class HermesConnectionViewModel(
                 ?.takeIf { it != durableSessionId }
                 ?.let { serverDurableIds[durableSessionId] = it }
             applyResume(durableSessionId, resumed)
+            // Direct idle opens close their temporary runtime below, so hydrate
+            // before that close. Relay controllers are published first: the
+            // session-scoped catalog must borrow the already-admitted lease and
+            // never create a second channel or implicitly take over a remote
+            // runtime.
+            if (relayTarget == null &&
+                mutableSnapshots.value.chatSessions[durableSessionId]?.modelCapabilities == null
+            ) {
+                hydrateSessionModelCapabilities(
+                    durableSessionId = durableSessionId,
+                    session = session,
+                    runtimeSessionId = resumed.runtimeSessionId,
+                    origin = origin,
+                    originGeneration = originGeneration,
+                    operationGeneration = operationGeneration,
+                    requirePublishedController = false,
+                )
+            }
             if (creatingDraft) {
                 val draftSettings = mutableSnapshots.value.chatSessions[durableSessionId]
                 if (draftSettings?.modelCapabilities?.fast == true && draftSettings.fastMode != null) {
@@ -4862,6 +5036,19 @@ class HermesConnectionViewModel(
                 ),
             )
             publishActiveRuntime(durableSessionId, resumed.runtimeSessionId)
+            if (relayTarget != null &&
+                mutableSnapshots.value.chatSessions[durableSessionId]?.modelCapabilities == null
+            ) {
+                hydrateSessionModelCapabilities(
+                    durableSessionId = durableSessionId,
+                    session = session,
+                    runtimeSessionId = resumed.runtimeSessionId,
+                    origin = origin,
+                    originGeneration = originGeneration,
+                    operationGeneration = operationGeneration,
+                    requirePublishedController = true,
+                )
+            }
             // A turn already running on the server (started by another client or before
             // an app restart) is an active turn from this client's perspective too: it
             // needs the foreground service so background completion/approval events can
@@ -5243,9 +5430,7 @@ class HermesConnectionViewModel(
                     }
                 } else if (!isChatRecoveryInProgress(durableSessionId, operationGeneration)) {
                     clearSendingState(durableSessionId)
-                    updateChat(durableSessionId) {
-                        it.copy(error = "Connection lost while receiving response")
-                    }
+                    markChatRecoveryAvailable(durableSessionId, allowAutomatic = true)
                 }
             }
         }
@@ -5337,7 +5522,7 @@ class HermesConnectionViewModel(
                 candidate = if (relayTarget != null) {
                     relaySessionFactory?.invoke(
                         relayTarget,
-                        mutableSnapshots.value.selectedProfile,
+                        profile,
                         RelayAdmissionEnvelope.channelForSession(durableSessionId.value),
                     ) ?: throw HermesConnectionException("Mercury Relay chat is unavailable")
                 } else {
@@ -5374,8 +5559,10 @@ class HermesConnectionViewModel(
                         messages = messages,
                         backgroundTasks = current.backgroundTasks.recoverRelayTasks(
                             recoverySnapshot, serverDurableId(durableSessionId).value, profile),
+                        connectionRecoveryAvailable = true,
                         error = "Live session ownership was lost. Background status shows only recorded evidence.",
                     ) }
+                    automaticChatReconnects.remove(durableSessionId)
                     closeChatSessionNonCancellably(candidate)
                     return
                 }
@@ -5416,20 +5603,7 @@ class HermesConnectionViewModel(
                         previousRuntimeSessionId = previous?.runtimeSessionId ?: resumed.runtimeSessionId,
                     )
                 } else {
-                    val messages = if (relayTarget != null) {
-                        parseRelayTranscriptRows(candidate.relayRequest(
-                            "relay.session.transcript",
-                            buildJsonObject {
-                                put("profile", mutableSnapshots.value.selectedProfile)
-                                put("session_id", serverDurableId(durableSessionId).value)
-                                put("limit", 100)
-                                put("offset", 0)
-                                put("order", "latest")
-                            },
-                        ))
-                    } else {
-                        client.loadTranscript(origin, token, serverDurableId(durableSessionId), profile)
-                    }
+                    val messages = client.loadTranscript(origin, token, serverDurableId(durableSessionId), profile)
                     if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                         closeChatSessionNonCancellably(candidate)
                         return
@@ -5468,14 +5642,86 @@ class HermesConnectionViewModel(
         appForegroundStates.first { it }
         if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
         clearSendingState(durableSessionId)
-        updateChat(durableSessionId) {
-            it.copy(
-                error = "Connection lost while receiving response",
+        markChatRecoveryAvailable(durableSessionId, allowAutomatic = true)
+    }
+
+    /**
+     * Hydrates the capability flags for the model returned by this session's
+     * authoritative resume/create response. The profile catalog is a separate,
+     * late-arriving snapshot and may be absent when a session is first opened;
+     * model picker interaction must not be the first request that fills these
+     * flags.
+     *
+     * This reader only uses an already admitted chat session. In particular, it
+     * never creates a controller or resumes a remote runtime on its own. Relay
+     * callers invoke it after publishing the exact controller so the request
+     * stays on that session's lease channel.
+     */
+    private suspend fun hydrateSessionModelCapabilities(
+        durableSessionId: DurableSessionId,
+        session: HermesChatSession,
+        runtimeSessionId: RuntimeSessionId,
+        origin: ServerOrigin,
+        originGeneration: Long,
+        operationGeneration: Long,
+        requirePublishedController: Boolean,
+    ) {
+        val options = try {
+            withTimeoutOrNull(5_000L) {
+                session.loadModelOptions(runtimeSessionId)
+            } ?: return
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Capability metadata is auxiliary. A missing/unsupported model
+            // options method must not tear down an otherwise usable chat.
+            return
+        }
+        currentCoroutineContext().ensureActive()
+        if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
+        if (requirePublishedController &&
+            !isExactControllerRuntime(durableSessionId, session, runtimeSessionId)
+        ) return
+
+        val current = mutableSnapshots.value.chatSessions[durableSessionId] ?: return
+        val provider = current.provider
+        val model = current.model
+        val selection = if (!provider.isNullOrBlank() && !model.isNullOrBlank()) {
+            ModelSelection(provider, model)
+        } else {
+            options.current
+        } ?: return
+        val capabilities = resolveModelCapabilities(
+            currentInfo = null,
+            options = options,
+            selection = selection,
+        ) ?: return
+        if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return
+        if (requirePublishedController &&
+            !isExactControllerRuntime(durableSessionId, session, runtimeSessionId)
+        ) return
+        updateChat(durableSessionId) { latest ->
+            val latestProvider = latest.provider
+            val latestModel = latest.model
+            val latestSelection = if (!latestProvider.isNullOrBlank() && !latestModel.isNullOrBlank()) {
+                ModelSelection(latestProvider, latestModel)
+            } else {
+                selection
+            }
+            val latestCapabilities = resolveModelCapabilities(
+                currentInfo = null,
+                options = options,
+                selection = latestSelection,
+            )
+            latest.copy(
+                modelCapabilities = latestCapabilities
+                    ?: capabilities.takeIf { latestSelection == selection },
             )
         }
     }
 
     private fun applyResume(durableSessionId: DurableSessionId, resumed: ResumedChatSession) {
+        automaticChatReconnects.remove(durableSessionId)
         val resumedMessages = resumed.messages.mapNotNull(::chatMessageFromJson)
         updateChat(durableSessionId) { current ->
             val baseMessages = if (resumedMessages.isNotEmpty()) resumedMessages else current.messages
@@ -5512,6 +5758,7 @@ class HermesConnectionViewModel(
                 isLoading = false,
                 isSending = resumed.running,
                 error = null,
+                connectionRecoveryAvailable = false,
                 model = resumed.model ?: current.model,
                 provider = resumed.provider ?: current.provider,
                 reasoningEffort = resumed.reasoningEffort ?: current.reasoningEffort,
@@ -6643,6 +6890,7 @@ class HermesConnectionViewModel(
 
     private suspend fun disconnectChat() {
         clearAllSlashCompletions()
+        automaticChatReconnects.clear()
         val controllers = sessionControllerRegistry.detachAll()
         controllers.forEach { controller ->
             removeActiveRuntime(controller.runtimeSessionId)
@@ -6650,7 +6898,12 @@ class HermesConnectionViewModel(
         }
         mutableSnapshots.value = mutableSnapshots.value.copy(
             chatSessions = mutableSnapshots.value.chatSessions.mapValues { (_, chat) ->
-                chat.copy(processRows = emptyList(), backgroundTasks = chat.backgroundTasks.unavailable(), connectionPhase = ChatConnectionPhase.Idle)
+                chat.copy(
+                    processRows = emptyList(),
+                    backgroundTasks = chat.backgroundTasks.unavailable(),
+                    connectionPhase = ChatConnectionPhase.Idle,
+                    connectionRecoveryAvailable = false,
+                )
             },
         )
         notifications.activeCountChanged(0)

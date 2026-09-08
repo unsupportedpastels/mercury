@@ -1,10 +1,13 @@
 package com.unsupportedpastels.hermesandroid.ui
 
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.assertCountEquals
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.unsupportedpastels.hermesandroid.app.ProcessRow
 import com.unsupportedpastels.hermesandroid.app.RunEventState
@@ -47,6 +50,7 @@ class ActivityStackTest {
         composeRule.onNodeWithContentDescription(
             "Activity stack, 2 tools, 1/2 tasks, collapsed",
         ).assertIsDisplayed().performClick()
+        composeRule.onAllNodesWithTag("Active work indicator").assertCountEquals(1)
         composeRule.onNodeWithText("Inspect gateway").assertIsDisplayed()
         composeRule.onNodeWithText("Render activity stack").assertIsDisplayed()
         composeRule.onNodeWithContentDescription(
@@ -60,20 +64,19 @@ class ActivityStackTest {
             HermesAndroidTheme {
                 ActivityStack(
                     runState = RunEventState(),
-                    processRows = listOf(
-                        ProcessRow(
-                            processId = "process-1",
-                            command = "python server.py",
-                            status = "running",
-                        ),
-                    ),
+                    processRows = listOf(ProcessRow("process-1", "python server.py", "running")) +
+                        (1..7).map { index ->
+                            ProcessRow("completed-$index", "build watcher $index", "exited", exitCode = 0)
+                        },
                 )
             }
         }
 
         composeRule.onNodeWithContentDescription(
-            "Activity stack, 0 tools, 0/0 tasks, 1 process-local process, collapsed",
+            "Processes · last reported: 1 running · 7 exited, collapsed",
         ).assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("Processes · last reported: 1 running · 7 exited").assertIsDisplayed()
+        composeRule.onAllNodesWithTag("Active work indicator").assertCountEquals(0)
         composeRule.onNodeWithText("Processes · process-local").assertIsDisplayed()
         composeRule.onNodeWithText("python server.py").assertIsDisplayed()
         composeRule.onNodeWithText("running").assertIsDisplayed()

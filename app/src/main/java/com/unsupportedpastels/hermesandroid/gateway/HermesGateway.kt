@@ -118,6 +118,8 @@ data class ChatSessionSnapshot(
     val transcriptPresentation: TranscriptPresentation? = null,
     /** Bound for this chat's lifetime, independent of the visible profile catalog. */
     val owningProfile: String? = null,
+    /** True when this session can be resumed without replaying its last prompt. */
+    val connectionRecoveryAvailable: Boolean = false,
 ) {
     init {
         require(processRows.size <= MAX_PROCESS_ROWS) { "Process rows exceed the bounded limit" }
