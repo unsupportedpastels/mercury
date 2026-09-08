@@ -275,7 +275,12 @@ extension ChatView {
             }
             guard !Task.isCancelled,
                   state.connectionOwnership.isCurrent(ownershipToken),
-                  state.connection === candidate else {
+                  state.connection === candidate,
+                  backgroundTaskScope == requestedScope,
+                  appModel.activeProfile == requestedProfile,
+                  appModel.activeRelayTarget?.id == requestedTargetID,
+                  appModel.serverOrigin == requestedOrigin,
+                  appModel.relaySelectionGeneration == requestedSelection else {
                 await RelayConnectionPool.shared.discard(candidate)
                 return false
             }
