@@ -830,6 +830,9 @@ final class ChatConnection: @unchecked Sendable {
 
             var iterator = responseStream.makeAsyncIterator()
             guard let result = try await iterator.next() else {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
                 throw ChatError.transport("Hermes response stream ended")
             }
             return result
