@@ -24,7 +24,10 @@ import com.unsupportedpastels.hermesandroid.gateway.HermesChatProtocolException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatSession
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatTransportException
 import com.unsupportedpastels.hermesandroid.gateway.InflightPrompt
+import com.unsupportedpastels.hermesandroid.gateway.ModelCapabilities
 import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
+import com.unsupportedpastels.hermesandroid.gateway.ModelProviderOption
+import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
 import com.unsupportedpastels.hermesandroid.gateway.PromptSubmission
 import com.unsupportedpastels.hermesandroid.gateway.ResumedChatSession
 import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
@@ -149,6 +152,60 @@ class HermesChatIntegrationTest {
         assertEquals(listOf("Earlier question", "Earlier answer"), chat.messages.map { it.text })
         // A lost submit acknowledgement still needs the existing retry warning.
         assertEquals("Submission was not confirmed. Check the transcript before retrying.", chat.error)
+    }
+
+    @Test
+    fun managementCatalogDoesNotOverwriteCapabilitiesOfChatOwnedByAnotherProfile() = runTest(dispatcher) {
+        val selectedCatalog = ModelOptions(
+            current = ModelSelection("provider", "shared-model"),
+            providers = listOf(
+                ModelProviderOption(
+                    slug = "provider",
+                    name = "Provider",
+                    models = listOf("shared-model"),
+                    capabilities = mapOf(
+                        "shared-model" to ModelCapabilities(reasoning = true, fast = true),
+                    ),
+                ),
+            ),
+            profile = "default",
+        )
+        val ownerCatalog = selectedCatalog.copy(
+            providers = listOf(
+                selectedCatalog.providers.single().copy(
+                    capabilities = mapOf(
+                        "shared-model" to ModelCapabilities(reasoning = false, fast = false),
+                    ),
+                ),
+            ),
+            profile = "director",
+        )
+        val client = ChatConnectionClient(
+            owningProfile = "director",
+            modelOptionsByProfile = mapOf("default" to selectedCatalog, "director" to ownerCatalog),
+        )
+        val session = StreamingChatSession(
+            resumedModel = "shared-model",
+            resumedProvider = "provider",
+            modelOptions = ownerCatalog,
+        )
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(ServerSettingsState.Ready(origin)),
+            client = client,
+            tokenStore = MemoryTokenStore(tokens),
+            chatConnector = HermesChatConnector { _, _ -> session },
+            nowEpochSeconds = { 1_900_000_000 },
+        )
+        advanceUntilIdle()
+        viewModel.openSession(durableId).join()
+        val before = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        assertEquals("director", before.owningProfile)
+        assertEquals(ModelCapabilities(reasoning = false, fast = false), before.modelCapabilities)
+
+        viewModel.loadManagementSettings("default", refreshStatus = false).join()
+
+        val after = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        assertEquals(ModelCapabilities(reasoning = false, fast = false), after.modelCapabilities)
     }
 
     @Test
@@ -2748,7 +2805,10 @@ private class MemoryTokenStore(initial: NativeTokenSet?) : NativeTokenStore {
     override suspend fun clear(serverOrigin: ServerOrigin) { value = null }
 }
 
-private class ChatConnectionClient(private val owningProfile: String = "default") : HermesConnectionClient {
+private class ChatConnectionClient(
+    private val owningProfile: String = "default",
+    private val modelOptionsByProfile: Map<String, ModelOptions> = emptyMap(),
+) : HermesConnectionClient {
     private val durableId = DurableSessionId("durable-1")
     val transcriptProfiles = mutableListOf<String>()
     override suspend fun loadProfiles(serverOrigin: ServerOrigin, accessToken: String) =
@@ -2758,7 +2818,8 @@ private class ChatConnectionClient(private val owningProfile: String = "default"
         serverOrigin: ServerOrigin,
         accessToken: String,
         profile: String,
-    ) = ModelOptions(providers = emptyList(), current = null, profile = profile)
+    ) = modelOptionsByProfile[profile]
+        ?: ModelOptions(providers = emptyList(), current = null, profile = profile)
 
     override suspend fun loadSessionsForProfile(
         serverOrigin: ServerOrigin,
@@ -3317,6 +3378,9 @@ private class CancellableCreateChatSession : HermesChatSession {
 private class StreamingChatSession(
     private val submitFailure: Exception? = null,
     private val runningOnResume: Boolean = false,
+    private val resumedModel: String? = null,
+    private val resumedProvider: String? = null,
+    private val modelOptions: ModelOptions? = null,
 ) : HermesChatSession {
     private val mutableEvents = MutableSharedFlow<HermesChatEvent>(extraBufferCapacity = 8)
     override val events: Flow<HermesChatEvent> = mutableEvents
@@ -3350,8 +3414,13 @@ private class StreamingChatSession(
             messages = emptyList(),
             running = runningOnResume,
             inflight = null as InflightPrompt?,
+            model = resumedModel,
+            provider = resumedProvider,
         )
     }
+
+    override suspend fun loadModelOptions(runtimeSessionId: RuntimeSessionId): ModelOptions =
+        checkNotNull(modelOptions) { "model options not configured for this fixture" }
 
     override suspend fun submitPrompt(
         runtimeSessionId: RuntimeSessionId,

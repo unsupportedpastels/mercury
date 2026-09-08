@@ -53,9 +53,10 @@ final class ChatConnection: @unchecked Sendable {
     private let requestNamespace: String?
     private var readerStarted = false
 
-    /// id → continuation for in-flight RPCs. Also mirrors method names so a
-    /// -32601 failure can name the unsupported method.
-    private var pendingRequests: [String: CheckedContinuation<[String: Any], Error>] = [:]
+    /// id → response stream continuation for in-flight RPCs. Also mirrors method
+    /// names so a -32601 failure can name the unsupported method.
+    private typealias ResponseStream = AsyncThrowingStream<[String: Any], Error>
+    private var pendingRequests: [String: ResponseStream.Continuation] = [:]
     private var pendingRequestMethods: [String: String] = [:]
     private var pendingBindingParams: [String: [String: Any]] = [:]
     private var pendingRequestTimeouts: [String: Task<Void, Never>] = [:]
@@ -703,7 +704,7 @@ final class ChatConnection: @unchecked Sendable {
 
         for timeoutTask in timeoutTasks { timeoutTask.cancel() }
         let error = ChatError.transport("Hermes chat connection closed")
-        for (_, continuation) in pending { continuation.resume(throwing: error) }
+        for (_, continuation) in pending { continuation.finish(throwing: error) }
         await socket.close()
         finishStreams()
     }
@@ -711,7 +712,7 @@ final class ChatConnection: @unchecked Sendable {
     // MARK: - Request/response correlation
 
     private struct PendingRequest {
-        let continuation: CheckedContinuation<[String: Any], Error>
+        let continuation: ResponseStream.Continuation
         let method: String?
         let bindingParams: [String: Any]?
     }
@@ -735,7 +736,7 @@ final class ChatConnection: @unchecked Sendable {
 
     private func failPendingRequest(_ id: String, error: Error) {
         guard let pending = takePendingRequest(id) else { return }
-        pending.continuation.resume(throwing: error)
+        pending.continuation.finish(throwing: error)
     }
 
     private func request(
@@ -768,69 +769,70 @@ final class ChatConnection: @unchecked Sendable {
         let text = String(data: data, encoding: .utf8) ?? ""
         try ensureFrameSize(text)
 
+        let (responseStream, responseContinuation) = ResponseStream.makeStream(of: [String: Any].self)
         return try await withTaskCancellationHandler(operation: {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[String: Any], Error>) in
-                stateLock.lock()
-                if closed {
-                    stateLock.unlock()
-                    continuation.resume(throwing: ChatError.transport("Hermes chat connection is closed"))
-                    return
-                }
-                pendingRequests[id] = continuation
-                pendingRequestMethods[id] = method
-                if method == "session.resume" || method == "session.create" {
-                    pendingBindingParams[id] = params
-                }
-                let wasCancelled = Task.isCancelled
+            stateLock.lock()
+            if closed {
                 stateLock.unlock()
+                responseContinuation.finish(throwing: ChatError.transport("Hermes chat connection is closed"))
+                throw ChatError.transport("Hermes chat connection is closed")
+            }
+            pendingRequests[id] = responseContinuation
+            pendingRequestMethods[id] = method
+            if method == "session.resume" || method == "session.create" {
+                pendingBindingParams[id] = params
+            }
+            stateLock.unlock()
 
-                if wasCancelled {
-                    failPendingRequest(id, error: CancellationError())
-                    return
-                }
+            // The continuation is registered before the send so a fast response
+            // cannot be dropped. Transmission itself stays in this structured
+            // request task; no unstructured sender can outlive cancellation.
+            if Task.isCancelled {
+                failPendingRequest(id, error: CancellationError())
+                throw CancellationError()
+            }
 
-                if let timeoutNanoseconds {
-                    let timeoutTask = Task { [weak self] in
-                        do {
-                            try await Task.sleep(nanoseconds: timeoutNanoseconds)
-                            try Task.checkCancellation()
-                        } catch {
-                            return
-                        }
-                        self?.failPendingRequest(
-                            id,
-                            error: ChatError.transport("Hermes RPC request timed out")
-                        )
-                    }
-                    stateLock.lock()
-                    if pendingRequests[id] != nil && !closed {
-                        pendingRequestTimeouts[id] = timeoutTask
-                        stateLock.unlock()
-                    } else {
-                        stateLock.unlock()
-                        timeoutTask.cancel()
-                    }
-                }
-
-                guard !Task.isCancelled else {
-                    failPendingRequest(id, error: CancellationError())
-                    return
-                }
-
-                Task { [weak self] in
-                    guard let self else { return }
+            if let timeoutNanoseconds {
+                let timeoutTask = Task { [weak self] in
                     do {
-                        try await self.socket.sendText(text)
-                    } catch is CancellationError {
-                        self.failPendingRequest(id, error: CancellationError())
+                        try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                        try Task.checkCancellation()
                     } catch {
-                        self.failPendingRequest(
-                            id,
-                            error: ChatError.transport("Could not send Hermes chat request")
-                        )
+                        return
                     }
+                    self?.failPendingRequest(
+                        id,
+                        error: ChatError.transport("Hermes RPC request timed out")
+                    )
+                }
+                stateLock.lock()
+                if pendingRequests[id] != nil && !closed {
+                    pendingRequestTimeouts[id] = timeoutTask
+                    stateLock.unlock()
+                } else {
+                    stateLock.unlock()
+                    timeoutTask.cancel()
                 }
             }
+
+            do {
+                try Task.checkCancellation()
+                try await socket.sendText(text)
+            } catch is CancellationError {
+                failPendingRequest(id, error: CancellationError())
+            } catch {
+                failPendingRequest(
+                    id,
+                    error: ChatError.transport("Could not send Hermes chat request")
+                )
+                throw ChatError.transport("Could not send Hermes chat request")
+            }
+
+            var iterator = responseStream.makeAsyncIterator()
+            guard let result = try await iterator.next() else {
+                throw ChatError.transport("Hermes response stream ended")
+            }
+            return result
         }, onCancel: {
             self.failPendingRequest(id, error: CancellationError())
         })
@@ -880,7 +882,7 @@ final class ChatConnection: @unchecked Sendable {
 
         for timeoutTask in timeoutTasks { timeoutTask.cancel() }
         let error = failure ?? ChatError.transport("Hermes chat connection closed")
-        for (_, continuation) in pending { continuation.resume(throwing: error) }
+        for (_, continuation) in pending { continuation.finish(throwing: error) }
         await socket.close()
         finishStreams()
     }
@@ -914,23 +916,23 @@ final class ChatConnection: @unchecked Sendable {
         if let errorObject = message["error"] as? [String: Any] {
             let code = int64Field("code", in: errorObject)
             if code == -32601 {
-                continuation.resume(throwing: ChatMethodNotFoundError(method: method ?? ""))
+                continuation.finish(throwing: ChatMethodNotFoundError(method: method ?? ""))
                 return
             }
             if method == "relay.folders.list" || method == "relay.folders.create",
                let safeMessage = MercuryCore.RelayFoldersContract.shared.safeErrorMessage(
                    reason: errorObject["message"] as? String
                ) {
-                continuation.resume(throwing: RelayFoldersError.hostRejected(safeMessage))
+                continuation.finish(throwing: RelayFoldersError.hostRejected(safeMessage))
                 return
             }
             let suffix = code.map { " (\($0))" } ?? ""
-            continuation.resume(throwing: ChatError.protocolError("Hermes RPC request failed\(suffix)"))
+            continuation.finish(throwing: ChatError.protocolError("Hermes RPC request failed\(suffix)"))
             return
         }
 
         guard let result = message["result"] as? [String: Any] else {
-            continuation.resume(throwing: ChatError.protocolError("Hermes response was incomplete"))
+            continuation.finish(throwing: ChatError.protocolError("Hermes response was incomplete"))
             return
         }
         // Install the authenticated correlated binding before reading the next
@@ -947,7 +949,8 @@ final class ChatConnection: @unchecked Sendable {
                                                    profile: bindingParams["profile"] as? String)
             }
         }
-        continuation.resume(returning: result)
+        continuation.yield(result)
+        continuation.finish()
     }
 
     // MARK: - Event decoding

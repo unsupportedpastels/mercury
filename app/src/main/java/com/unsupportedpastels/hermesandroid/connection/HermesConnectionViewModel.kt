@@ -2041,6 +2041,11 @@ class HermesConnectionViewModel(
                         ?.let { ModelSelection(checkNotNull(it.provider), checkNotNull(it.model)) }
                         ?: options.current
                     val updatedChats = currentSnapshot.chatSessions.mapValues { (_, chat) ->
+                        // Model options are profile-scoped. A visible chat may be
+                        // retained while the management catalog switches profiles;
+                        // never overwrite its admitted-session capabilities with
+                        // another profile's same-named model.
+                        if (chat.owningProfile != selected) return@mapValues chat
                         val selection = if (
                             !chat.provider.isNullOrBlank() && !chat.model.isNullOrBlank()
                         ) {
