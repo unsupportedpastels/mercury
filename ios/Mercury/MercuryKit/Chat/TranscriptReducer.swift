@@ -273,6 +273,20 @@ func coalesceTranscriptEntries(_ rows: [TranscriptState.Row]) -> [TranscriptEntr
         }
 }
 
+/// Presentation-only explanation for a current turn with no final assistant
+/// prose while a child is still actively observed. This never adds a transcript row.
+func missingFinalResponseNotice(
+    _ rows: [TranscriptState.Row],
+    activeChildCount: Int,
+    parentTurnSending: Bool
+) -> String? {
+    MercuryCore.TranscriptPresentationPolicy.shared.missingFinalResponseNotice(
+        rows: rows.map(\.core),
+        activeChildCount: Int32(activeChildCount),
+        parentTurnSending: parentTurnSending
+    )
+}
+
 // MARK: - Event conversion (Swift -> shared core)
 
 private extension ChatEvent {

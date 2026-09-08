@@ -39,4 +39,61 @@ final class SessionModelPickerPolicyTests: XCTestCase {
             []
         )
     }
+
+    func testCapabilitiesResolveAQualifiedResumedModelFromTheSessionCatalog() {
+        let catalog = ModelOptions(
+            current: ModelSelection(provider: "openai", model: "gpt-5"),
+            providers: [
+                ModelProviderOption(
+                    slug: "openai",
+                    name: "OpenAI",
+                    models: ["gpt-5"],
+                    capabilities: [
+                        "gpt-5": ModelCapabilities(fast: true, reasoning: true)
+                    ]
+                )
+            ]
+        )
+
+        XCTAssertEqual(
+            SessionModelPickerPolicy.capabilities(
+                in: catalog,
+                for: ModelSelection(provider: "openai", model: "openai/gpt-5")
+            ),
+            ModelCapabilities(fast: true, reasoning: true)
+        )
+    }
+
+    @MainActor
+    func testLateCatalogHydratesTheResumedSelectionWithoutPickerState() {
+        let state = ChatSessionState(
+            sessionID: "durable-1",
+            title: "Session",
+            isNewSession: false,
+            incomingShare: nil
+        )
+        let resumed = ModelSelection(provider: "openai", model: "openai/gpt-5")
+        state.applyModelSelection(resumed)
+
+        let catalog = ModelOptions(
+            current: ModelSelection(provider: "openai", model: "gpt-5"),
+            providers: [
+                ModelProviderOption(
+                    slug: "openai",
+                    name: "OpenAI",
+                    models: ["gpt-5"],
+                    capabilities: [
+                        "gpt-5": ModelCapabilities(fast: true, reasoning: true)
+                    ]
+                )
+            ]
+        )
+        state.applyModelOptions(catalog)
+
+        XCTAssertEqual(state.currentModelSelection, resumed)
+        XCTAssertEqual(
+            state.currentModelCapabilities,
+            ModelCapabilities(fast: true, reasoning: true)
+        )
+    }
 }

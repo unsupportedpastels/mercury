@@ -41,7 +41,9 @@ struct BackgroundTaskEvidence: Sendable, Equatable {
               ) else { return nil }
         return Self(kind: event.kind == .start ? .start : event.kind == .tool ? .tool : .complete,
                     childID: event.childId, goal: event.goal, action: event.action,
-                    terminalStatus: BackgroundTaskStatus(event.terminalStatus))
+                    terminalStatus: BackgroundTaskStatus(event.terminalStatus),
+                    eventID: event.eventId,
+                    historical: event.historical)
     }
     func core(session: String) -> MercuryCore.BackgroundTaskEvent {
         MercuryCore.BackgroundTaskEvent(sessionId: session,
@@ -68,7 +70,22 @@ struct BackgroundTaskRow: Sendable, Equatable, Identifiable {
     var terminal: Bool { core.terminal }
     func recentlyActive(now: Int64) -> Bool { core.recentlyActive(now: now) }
     func label(now: Int64) -> String { core.label(now: now) }
+    func isDismissible(now: Int64) -> Bool { core.isDismissible(now: now) }
+    var dismissalKey: String { core.dismissalKey() }
+    func timeLabel(now: Int64) -> String { core.timeLabel(now: now) }
 }
+
+struct BackgroundTaskPresentation: Sendable, Equatable {
+    let activeCount: Int
+    let unresolvedCount: Int
+    let terminalCount: Int
+    let unavailableCount: Int
+    let unknownCount: Int
+    let terminalOnly: Bool
+    let statusUnavailable: Bool
+    let headline: String
+}
+
 struct BackgroundTasks: @unchecked Sendable, Equatable {
     private var core: MercuryCore.BackgroundTasks
     init(rows: [BackgroundTaskRow] = []) {
@@ -84,6 +101,29 @@ struct BackgroundTasks: @unchecked Sendable, Equatable {
     }
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.core == rhs.core }
     func activeCount(now: Int64) -> Int { Int(core.activeCount(now: now)) }
+    func presentation(now: Int64) -> BackgroundTaskPresentation {
+        presentation(rows: rows, now: now)
+    }
+    func presentation(rows: [BackgroundTaskRow], now: Int64) -> BackgroundTaskPresentation {
+        let decision = MercuryCore.BackgroundTaskPresentationPolicy.shared.summarize(
+            rows: rows.map(\.core), now: now
+        )
+        return BackgroundTaskPresentation(
+            activeCount: Int(decision.activeCount),
+            unresolvedCount: Int(decision.unresolvedCount),
+            terminalCount: Int(decision.terminalCount),
+            unavailableCount: Int(decision.unavailableCount),
+            unknownCount: Int(decision.unknownCount),
+            terminalOnly: decision.terminalOnly,
+            statusUnavailable: decision.statusUnavailable,
+            headline: decision.headline
+        )
+    }
+    func secondaryLabel(rows: [BackgroundTaskRow], now: Int64) -> String {
+        MercuryCore.BackgroundTaskPresentationPolicy.shared.secondaryLabel(
+            rows: rows.map(\.core), now: now
+        )
+    }
     mutating func markUnavailable() { core = core.unavailable() }
     mutating func reconcile(_ statuses: [String: String], runtime: String) {
         core = core.reconcile(active: statuses.map {

@@ -28,6 +28,9 @@ data class BackgroundTaskRow(
     val terminal: Boolean get() = shared().terminal
     fun recentlyActive(now: Long): Boolean = shared().recentlyActive(now)
     fun label(now: Long): String = shared().label(now)
+    fun isDismissible(now: Long): Boolean = shared().isDismissible(now)
+    fun dismissalKey(): String = shared().dismissalKey()
+    fun timeLabel(now: Long): String = shared().timeLabel(now)
     internal fun shared() = com.unsupportedpastels.mercury.core.relay.BackgroundTaskRow(
         runtimeId.value, id, goal, action, status, observedAtMillis, available, identityKnown)
 }
@@ -39,6 +42,17 @@ data class BackgroundTasks(
     internal fun shared() = com.unsupportedpastels.mercury.core.relay.BackgroundTasks(
         rows.map { it.shared() }, processedEventIds)
     fun activeCount(now: Long): Int = shared().activeCount(now)
+    fun presentation(now: Long): com.unsupportedpastels.mercury.core.relay.BackgroundTaskPresentation =
+        presentation(rows, now)
+    fun presentation(
+        rows: List<BackgroundTaskRow>,
+        now: Long,
+    ): com.unsupportedpastels.mercury.core.relay.BackgroundTaskPresentation =
+        com.unsupportedpastels.mercury.core.relay.BackgroundTaskPresentationPolicy
+            .summarize(rows.map { it.shared() }, now)
+    fun secondaryLabel(rows: List<BackgroundTaskRow>, now: Long): String =
+        com.unsupportedpastels.mercury.core.relay.BackgroundTaskPresentationPolicy
+            .secondaryLabel(rows.map { it.shared() }, now)
     fun unavailable(): BackgroundTasks = shared().unavailable().native()
     fun reconcile(
         status: com.unsupportedpastels.hermesandroid.app.DelegationStatus,

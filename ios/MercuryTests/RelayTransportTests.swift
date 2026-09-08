@@ -239,6 +239,64 @@ final class RelayTransportTests: XCTestCase {
         await host2.close()
     }
 
+    func testDiscardedFailedCandidateIsNotBorrowedOnRetry() async throws {
+        let (device1, hostSocket1) = InMemoryRelayTransport.pair()
+        let (device2, hostSocket2) = InMemoryRelayTransport.pair()
+        let factory = FakeRelaySocketFactory(sockets: [device1, device2])
+        let pool = RelayConnectionPool(socketFactory: factory)
+        let target = makeTarget()
+
+        let host1 = Task {
+            let admitted = try await admit(socket: hostSocket1)
+            for frame in [
+                ["jsonrpc": "2.0", "method": "relay.lease.attached", "params": [
+                    "recovery_version": 1, "lease_id": "failed", "last_seq": 0,
+                    "resume_cursor": 0, "replay_gap": false, "recovery_reset": false,
+                    "bindings": [], "task_snapshot": []
+                ]] as [String: Any],
+                ["jsonrpc": "2.0", "method": "relay.lease.replay_complete",
+                 "params": ["lease_id": "failed", "last_seq": 0]] as [String: Any]
+            ] {
+                try await sendFrame(frame, socket: hostSocket1, channel: admitted.channel)
+            }
+            let request = try await readFrame(
+                socket: hostSocket1, channel: admitted.channel, reassembler: admitted.reassembler
+            )
+            try await sendFrame([
+                "jsonrpc": "2.0",
+                "id": try XCTUnwrap(request["id"]),
+                "error": ["code": -32000, "message": "resume failed"]
+            ], socket: hostSocket1, channel: admitted.channel)
+        }
+
+        let failed = try await pool.acquire(target: target, profile: "default")
+        do {
+            _ = try await failed.resume(durableSessionID: "durable", profile: "default")
+            XCTFail("expected the first resume to fail")
+        } catch { }
+        try await host1.value
+        await pool.discard(failed)
+
+        let host2 = Task {
+            let admitted = try await admit(socket: hostSocket2)
+            try await sendFrame(["jsonrpc": "2.0", "method": "relay.lease.attached", "params": [
+                "recovery_version": 1, "lease_id": "replacement", "last_seq": 0,
+                "resume_cursor": 0, "replay_gap": false, "recovery_reset": false,
+                "bindings": [], "task_snapshot": []
+            ]], socket: hostSocket2, channel: admitted.channel)
+            try await sendFrame(["jsonrpc": "2.0", "method": "relay.lease.replay_complete",
+                                 "params": ["lease_id": "replacement", "last_seq": 0]],
+                                socket: hostSocket2, channel: admitted.channel)
+        }
+        let replacement = try await pool.acquire(target: target, profile: "default")
+        try await host2.value
+        XCTAssertFalse(failed === replacement)
+        XCTAssertEqual(factory.requestedURLs.count, 2)
+        await replacement.close()
+        await hostSocket1.close()
+        await hostSocket2.close()
+    }
+
     func testPoolConsumesOffscreenChildBeforeFollowingRPC() async throws {
         let (device, hostSocket) = InMemoryRelayTransport.pair()
         let pool = RelayConnectionPool(socketFactory: FakeRelaySocketFactory(sockets: [device]))

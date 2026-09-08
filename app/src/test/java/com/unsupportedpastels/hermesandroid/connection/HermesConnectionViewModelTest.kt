@@ -8,6 +8,7 @@ import com.unsupportedpastels.hermesandroid.files.ManagedVideoCache
 import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
 import com.unsupportedpastels.hermesandroid.gateway.CacheSource
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
+import com.unsupportedpastels.hermesandroid.gateway.ChatConnectionPhase
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
 import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnector
@@ -998,6 +999,146 @@ class HermesConnectionViewModelTest {
         assertEquals("openai-codex", chat.provider)
         assertEquals("gpt-5.6-sol", chat.model)
         assertEquals(null, chat.reasoningEffort)
+        assertTrue(chat.draftDefaultsLoaded)
+    }
+
+    @Test
+    fun foregroundDoesNotAutomaticallyReopenDirectSessionWithoutRetainedRelayOwnership() =
+        runTest(dispatcher) {
+            val origin = ServerOrigin.parse("https://hermes.example")
+            val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+            val foreground = MutableStateFlow(true)
+            val client = AuthenticatingHermesConnectionClient()
+            val chatSession = ScriptedEventChatSession(emptyList())
+            var connectCalls = 0
+            val viewModel = HermesConnectionViewModel(
+                settingsStates = settings,
+                client = client,
+                tokenStore = FixedTokenStore(),
+                appForegroundStates = foreground,
+                chatConnector = HermesChatConnector { _, _ ->
+                    connectCalls += 1
+                    if (connectCalls == 1) {
+                        chatSession
+                    } else {
+                        throw HermesChatTransportException("direct retry unavailable")
+                    }
+                },
+                projectConnector = null,
+            )
+
+            runCurrent()
+            client.probeResponse.complete(authRequiredInfo())
+            runCurrent()
+            client.authenticationResponse.complete(AuthenticatedHermesConnection("user", emptyList()))
+            advanceUntilIdle()
+
+            val durableId = viewModel.createNewSession()
+            viewModel.sendMessage(durableId, "Start direct turn")
+            advanceUntilIdle()
+
+            val failed = viewModel.snapshots.value.chatSessions.getValue(durableId)
+            assertTrue(failed.connectionRecoveryAvailable)
+            assertFalse(failed.isSending)
+            assertEquals(ChatConnectionPhase.Idle, failed.connectionPhase)
+            val error = failed.error
+            assertTrue(error?.isNotBlank() == true)
+            val callsBeforeForeground = connectCalls
+
+            foreground.value = false
+            runCurrent()
+            foreground.value = true
+            advanceUntilIdle()
+
+            val afterForeground = viewModel.snapshots.value.chatSessions.getValue(durableId)
+            assertEquals(callsBeforeForeground, connectCalls)
+            assertEquals(ChatConnectionPhase.Idle, afterForeground.connectionPhase)
+            assertTrue(afterForeground.connectionRecoveryAvailable)
+            assertEquals(error, afterForeground.error)
+        }
+
+    @Test
+    fun failedDirectTranscriptRetryReturnsToIdleAndKeepsRetryAvailable() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val client = AuthenticatingHermesConnectionClient()
+        val chatSession = ScriptedEventChatSession(emptyList())
+        var connectCalls = 0
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = settings,
+            client = client,
+            tokenStore = FixedTokenStore(),
+            chatConnector = HermesChatConnector { _, _ ->
+                connectCalls += 1
+                if (connectCalls == 1) {
+                    chatSession
+                } else {
+                    throw HermesChatTransportException("direct retry unavailable")
+                }
+            },
+            projectConnector = null,
+        )
+
+        runCurrent()
+        client.probeResponse.complete(authRequiredInfo())
+        runCurrent()
+        client.authenticationResponse.complete(AuthenticatedHermesConnection("user", emptyList()))
+        advanceUntilIdle()
+
+        val durableId = viewModel.createNewSession()
+        viewModel.sendMessage(durableId, "Start direct turn")
+        advanceUntilIdle()
+        assertTrue(viewModel.snapshots.value.chatSessions.getValue(durableId).connectionRecoveryAvailable)
+
+        client.transcriptFailure = HermesChatTransportException("direct transcript unavailable")
+        viewModel.retrySessionConnection(durableId).join()
+        advanceUntilIdle()
+
+        val afterRetry = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        assertEquals(ChatConnectionPhase.Idle, afterRetry.connectionPhase)
+        assertTrue(afterRetry.connectionRecoveryAvailable)
+        assertEquals("direct transcript unavailable", afterRetry.error)
+    }
+
+    @Test
+    fun newDraftResolvesQualifiedModelCapabilityAliasFromProfileCatalog() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val client = AuthenticatingHermesConnectionClient().apply {
+            defaultModelOptions = ModelOptions(
+                current = ModelSelection("openai-codex", "vendor/gpt-5.6-sol"),
+                providers = listOf(
+                    ModelProviderOption(
+                        slug = "openai-codex",
+                        name = "Codex",
+                        models = listOf("vendor/gpt-5.6-sol"),
+                        capabilities = mapOf(
+                            "gpt-5.6-sol" to ModelCapabilities(reasoning = true, fast = true),
+                        ),
+                    ),
+                ),
+            )
+        }
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = settings,
+            client = client,
+            tokenStore = FixedTokenStore(),
+            projectConnector = null,
+        )
+
+        runCurrent()
+        client.probeResponse.complete(authRequiredInfo())
+        runCurrent()
+        client.authenticationResponse.complete(AuthenticatedHermesConnection("user", emptyList()))
+        advanceUntilIdle()
+
+        val draftId = viewModel.createNewSession()
+        advanceUntilIdle()
+
+        val chat = viewModel.snapshots.value.chatSessions.getValue(draftId)
+        assertEquals("vendor/gpt-5.6-sol", chat.model)
+        assertEquals("openai-codex", chat.provider)
+        assertEquals(ModelCapabilities(reasoning = true, fast = true), chat.modelCapabilities)
         assertTrue(chat.draftDefaultsLoaded)
     }
 
@@ -3731,6 +3872,7 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
     var hostDirectoryResponse = HostDirectoryListing("/srv", emptyList())
     val hostDirectoryRequests = mutableListOf<Triple<ServerOrigin, String?, String?>>()
     var defaultModelOptions = ModelOptions(current = null, providers = emptyList())
+    var transcriptFailure: Throwable? = null
     var profiles = listOf("default")
     val defaultModelProfiles = mutableListOf<String>()
     var profileReasoningEffort: String? = null
@@ -3855,7 +3997,10 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
         accessToken: String?,
         durableSessionId: DurableSessionId,
         profile: String,
-    ): List<com.unsupportedpastels.hermesandroid.gateway.ChatMessage> = emptyList()
+    ): List<com.unsupportedpastels.hermesandroid.gateway.ChatMessage> {
+        transcriptFailure?.let { throw it }
+        return emptyList()
+    }
 
     override suspend fun triggerCronJob(
         serverOrigin: ServerOrigin,

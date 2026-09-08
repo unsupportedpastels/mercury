@@ -2,6 +2,7 @@ package com.unsupportedpastels.mercury.core.transcript
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 class TranscriptPresentationPolicyTest {
     @Test
@@ -68,5 +69,53 @@ class TranscriptPresentationPolicyTest {
             TranscriptPresentationPolicy.reasoningPreview("**Planning unified activity stack implementation**\nMore detail"),
         )
         assertEquals("a b c", TranscriptPresentationPolicy.reasoningPreview("a b   c\n\nd", maxChars = 5))
+    }
+
+    @Test
+    fun missingFinalResponseNoticeRequiresCurrentTurnAndObservedActiveChild() {
+        val rows = listOf(
+            TranscriptRow(1, "user", "older", completed = true),
+            TranscriptRow(2, "assistant", "older answer", completed = true),
+            TranscriptRow(3, "user", "current", completed = true),
+            TranscriptRow(4, "tool", "child result", completed = true),
+            TranscriptRow(5, "assistant", "", completed = true, reasoningText = "waiting"),
+        )
+
+        assertEquals(
+            TranscriptPresentationPolicy.MISSING_FINAL_RESPONSE_NOTICE,
+            TranscriptPresentationPolicy.missingFinalResponseNotice(
+                rows = rows,
+                activeChildCount = 1,
+                parentTurnSending = false,
+            ),
+        )
+        assertNull(
+            TranscriptPresentationPolicy.missingFinalResponseNotice(
+                rows = rows,
+                activeChildCount = 0,
+                parentTurnSending = false,
+            ),
+        )
+        assertNull(
+            TranscriptPresentationPolicy.missingFinalResponseNotice(
+                rows = rows,
+                activeChildCount = 1,
+                parentTurnSending = true,
+            ),
+        )
+        assertNull(
+            TranscriptPresentationPolicy.missingFinalResponseNotice(
+                rows = rows + TranscriptRow(6, "assistant", "final answer", completed = true),
+                activeChildCount = 1,
+                parentTurnSending = false,
+            ),
+        )
+        assertNull(
+            TranscriptPresentationPolicy.missingFinalResponseNotice(
+                rows = rows.drop(3),
+                activeChildCount = 1,
+                parentTurnSending = false,
+            ),
+        )
     }
 }

@@ -24,14 +24,17 @@ internal fun BackgroundTaskStrip(tasks: BackgroundTasks, nowOverride: Long? = nu
             delay(1_000)
         }
     }
-    val visible = tasks.rows.filterNot { it.terminal && "${it.runtimeId.value}/${it.id}" in dismissed }
+    // A dismissed row is hidden only while the exact observed evidence remains
+    // dismissible. New evidence for the same child gets a different key and is
+    // visible again; a row that becomes fresh/available is never suppressed.
+    val visible = tasks.rows.filterNot { row ->
+        row.isDismissible(now) && row.dismissalKey() in dismissed
+    }
     if (visible.isEmpty()) return
-    val unresolved = visible.filterNot { it.terminal }
-    val completedOnly = unresolved.isEmpty()
+    val presentation = tasks.presentation(visible, now)
+    val completedOnly = presentation.terminalOnly
+    val secondaryLabel = tasks.secondaryLabel(visible, now)
     var expanded by rememberSaveable(completedOnly) { mutableStateOf(false) }
-    val active = visible.count { it.recentlyActive(now) }
-    val latest = (if (completedOnly) visible else unresolved).maxBy { it.observedAtMillis }
-    val age = ((now - latest.observedAtMillis).coerceAtLeast(0) / 1000)
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         shape = MaterialTheme.shapes.medium,
@@ -40,15 +43,12 @@ internal fun BackgroundTaskStrip(tasks: BackgroundTasks, nowOverride: Long? = nu
         Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Column(Modifier.weight(1f).padding(top = 8.dp)) {
-                    Text(if (completedOnly) "Background tasks · completed details"
-                    else if (unresolved.any { !it.recentlyActive(now) }) {
-                        if (active == 0) "Background tasks · status unavailable"
-                        else "Background tasks · $active active · other status unavailable"
-                    } else "Background tasks · $active active", style = MaterialTheme.typography.labelLarge)
-                    Text(if (latest.observedAtMillis <= 0) {
-                        if (completedOnly) "${latest.label(now)} · time unavailable" else "Activity time unavailable"
-                    } else if (completedOnly) "${latest.label(now)} ${age}s ago" else "Last observed activity ${age}s ago", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(presentation.headline, style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        secondaryLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "Hide details" else "Details") }
             }
@@ -59,18 +59,23 @@ internal fun BackgroundTaskStrip(tasks: BackgroundTasks, nowOverride: Long? = nu
                         Column {
                             Text(row.goal, style = MaterialTheme.typography.labelLarge)
                             Text(row.label(now), style = MaterialTheme.typography.bodySmall)
-                            val rowAge = (now - row.observedAtMillis).coerceAtLeast(0) / 1000
-                            Text(if (row.observedAtMillis <= 0) {
-                                if (row.terminal) "${row.label(now)} · time unavailable" else "Activity time unavailable"
-                            } else if (row.terminal) "${row.label(now)} ${rowAge}s ago" else "Last observed activity ${rowAge}s ago",
-                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                row.timeLabel(now),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                             row.action?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         }
                     }
                     Text("Only observed child events are shown. Silence does not mean finished or needs input.",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (visible.any { it.terminal }) TextButton(onClick = {
-                        dismissed = (dismissed + visible.filter { it.terminal }.map { "${it.runtimeId.value}/${it.id}" }).takeLast(64)
+                    val unavailable = visible.filter { !it.terminal && it.isDismissible(now) }
+                    if (unavailable.isNotEmpty()) TextButton(onClick = {
+                        dismissed = (dismissed + unavailable.map { it.dismissalKey() }).takeLast(64)
+                    }) { Text("Dismiss unavailable") }
+                    val completed = visible.filter { it.terminal }
+                    if (completed.isNotEmpty()) TextButton(onClick = {
+                        dismissed = (dismissed + completed.map { it.dismissalKey() }).takeLast(64)
                     }) { Text("Dismiss completed") }
                 }
             }

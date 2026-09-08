@@ -27,6 +27,7 @@ import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
 import com.unsupportedpastels.hermesandroid.gateway.PromptSubmission
 import com.unsupportedpastels.hermesandroid.gateway.ResumedChatSession
 import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
+import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
 import com.unsupportedpastels.mercury.core.relay.RelayPlatformCrypto
 import com.unsupportedpastels.mercury.core.relay.RelayBase64
 import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
@@ -353,6 +354,50 @@ class RelayConnectionViewModelTest {
     }
 
     @Test
+    fun exhaustedRecoveryCanBeRetriedWithoutReplayingPrompt() = runTest(dispatcher) {
+        val sessions = mutableListOf<FakeRelaySession>()
+        var blockResume = false
+        val viewModel = relayViewModel {
+            FakeRelaySession().also {
+                if (blockResume) it.cancellableResumeBarrier = kotlinx.coroutines.CompletableDeferred()
+                sessions += it
+            }
+        }
+        advanceUntilIdle()
+        viewModel.connectRelay(target()).join()
+        val id = DurableSessionId("relay-session-1")
+        viewModel.sendMessage(id, "first").join()
+        val original = sessions.last()
+        blockResume = true
+        original.channel.close()
+        runCurrent()
+        advanceTimeBy(100_000)
+        runCurrent()
+
+        val failed = viewModel.snapshots.value.chatSessions.getValue(id)
+        assertEquals("Connection lost while receiving response", failed.error)
+        assertEquals(false, failed.isSending)
+        assertEquals(1, original.submitCalls)
+
+        blockResume = false
+        viewModel.retrySessionConnection(id).join()
+
+        val recovered = viewModel.snapshots.value.chatSessions.getValue(id)
+        val replacement = sessions.last()
+        assertEquals(null, recovered.error)
+        assertEquals(false, recovered.isSending)
+        assertEquals(1, replacement.resumeCalls)
+        assertEquals(0, replacement.submitCalls)
+        assertEquals(1, original.submitCalls)
+        assertEquals(1, viewModel.snapshots.value.activeRuntimes.count { it.durableSessionId == id })
+
+        viewModel.sendMessage(id, "second").join()
+        assertEquals(1, replacement.submitCalls)
+        assertEquals("second", replacement.lastSubmitted)
+        assertEquals(1, original.submitCalls)
+    }
+
+    @Test
     fun unansweredHistoricalTranscriptHasBoundedAttemptsAndReleasesNextSend() = runTest(dispatcher) {
         val sessions = mutableListOf<FakeRelaySession>()
         var blockTranscript = false
@@ -427,6 +472,54 @@ class RelayConnectionViewModelTest {
             viewModel.snapshots.value.chatSessions.getValue(id).backgroundTasks.rows.single().status)
         viewModel.sendMessage(id, "next explicit send").join()
         assertEquals(1, sessions.last().submitCalls)
+    }
+
+    @Test
+    fun foregroundAutomaticRetryResumesRetainedRelayWithoutPromptReplay() = runTest(dispatcher) {
+        val foreground = MutableStateFlow(true)
+        val sessions = mutableListOf<FakeRelaySession>()
+        var blockResume = false
+        val viewModel = HermesConnectionViewModel(
+            appForegroundStates = foreground,
+            settingsStates = MutableStateFlow(ServerSettingsState.Ready(ServerCatalog.empty())),
+            client = object : HermesConnectionClient {
+                override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo = error("no direct probe")
+            },
+            attachmentReader = com.unsupportedpastels.hermesandroid.attachment.AttachmentByteReader { "hello".toByteArray() },
+            relaySessionFactory = { _, _, _ ->
+                FakeRelaySession().also {
+                    if (sessions.size >= 3) it.recoverySnapshot = recoverySnapshot(live = true)
+                    if (blockResume) it.cancellableResumeBarrier = kotlinx.coroutines.CompletableDeferred()
+                    sessions += it
+                }
+            },
+        )
+        advanceUntilIdle()
+        viewModel.connectRelay(target()).join()
+        val id = DurableSessionId("relay-session-1")
+        viewModel.sendMessage(id, "accepted once").join()
+        val original = sessions.last()
+        blockResume = true
+        original.channel.close()
+        runCurrent()
+        advanceTimeBy(100_000)
+        runCurrent()
+        assertEquals("Connection lost while receiving response",
+            viewModel.snapshots.value.chatSessions.getValue(id).error)
+
+        blockResume = false
+        foreground.value = false
+        runCurrent()
+        foreground.value = true
+        advanceUntilIdle()
+
+        val recovered = viewModel.snapshots.value.chatSessions.getValue(id)
+        assertEquals(null, recovered.error)
+        assertEquals(false, recovered.isSending)
+        assertEquals(1, viewModel.snapshots.value.activeRuntimes.count { it.durableSessionId == id })
+        assertEquals(1, sessions.last().resumeCalls)
+        assertEquals(0, sessions.last().submitCalls)
+        assertEquals(1, original.submitCalls)
     }
 
     private fun relayViewModel(
@@ -766,6 +859,60 @@ class RelayConnectionViewModelTest {
     }
 
     @Test
+    fun relaySessionHydratesCapabilitiesWhenCatalogArrivesAfterResume() = runTest(dispatcher) {
+        val catalogReady = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val sessions = mutableListOf<FakeRelaySession>()
+        val advertised = ModelOptions(
+            current = ModelSelection("test-provider", "gpt-relay"),
+            providers = listOf(
+                ModelProviderOption(
+                    slug = "test-provider",
+                    name = "Test Provider",
+                    models = listOf("gpt-relay"),
+                    capabilities = mapOf(
+                        "gpt-relay" to ModelCapabilities(reasoning = true, fast = true),
+                    ),
+                ),
+            ),
+        )
+        val viewModel = relayViewModel {
+            FakeRelaySession().also {
+                it.resumeModel = "gpt-relay"
+                it.resumeProvider = "test-provider"
+                it.sessionModelOptions = advertised
+                it.modelOptionsBarrier = catalogReady
+                sessions += it
+            }
+        }
+        advanceUntilIdle()
+        viewModel.connectRelay(target()).join()
+
+        // Open the durable session before any model catalog is available. The
+        // Relay controller is already published while the session-scoped
+        // catalog request waits, so this must not take over another runtime or
+        // require opening the picker to repair the snapshot.
+        val durableId = DurableSessionId("relay-session-1")
+        val opening = viewModel.openSession(durableId)
+        runCurrent()
+        val pending = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        assertEquals(null, pending.modelCapabilities)
+        assertEquals(
+            RuntimeAccess.Controller,
+            viewModel.snapshots.value.activeRuntimes.single { it.durableSessionId == durableId }.access,
+        )
+        assertEquals(1, sessions.last().modelOptionsCalls)
+
+        catalogReady.complete(Unit)
+        opening.join()
+
+        assertEquals(
+            ModelCapabilities(reasoning = true, fast = true),
+            viewModel.snapshots.value.chatSessions.getValue(durableId).modelCapabilities,
+        )
+        assertEquals(1, sessions.last().modelOptionsCalls)
+    }
+
+    @Test
     fun imagesReuseAdmittedControllerAndDiscardProfileSwitchResult() = runTest(dispatcher) {
         val response = kotlinx.coroutines.CompletableDeferred<Unit>()
         val received = mutableListOf<String>()
@@ -911,6 +1058,11 @@ class RelayConnectionViewModelTest {
         var resumeBarrier: kotlinx.coroutines.CompletableDeferred<Unit>? = null
         var closeCalls = 0
         var profileOptionsCalls = 0
+        var modelOptionsCalls = 0
+        var sessionModelOptions: ModelOptions? = null
+        var modelOptionsBarrier: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+        var resumeModel: String? = null
+        var resumeProvider: String? = null
         var processCalls = 0
         var processBlockCall = -1
         var processBarrier: kotlinx.coroutines.CompletableDeferred<Unit>? = null
@@ -944,6 +1096,12 @@ class RelayConnectionViewModelTest {
                     ),
                 ),
             )
+        }
+
+        override suspend fun loadModelOptions(runtimeSessionId: RuntimeSessionId): ModelOptions {
+            modelOptionsCalls += 1
+            modelOptionsBarrier?.await()
+            return checkNotNull(sessionModelOptions)
         }
 
         open override suspend fun relayRequest(method: String, params: JsonObject): JsonObject {
@@ -1018,7 +1176,16 @@ class RelayConnectionViewModelTest {
             resumeCalls += 1
             cancellableResumeBarrier?.await()
             kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { resumeBarrier?.await() }
-            return ResumedChatSession(RuntimeSessionId("runtime"), durableSessionId, true, resumeMessages, resumeRunning, null)
+            return ResumedChatSession(
+                runtimeSessionId = RuntimeSessionId("runtime"),
+                durableSessionId = durableSessionId,
+                resumed = true,
+                messages = resumeMessages,
+                running = resumeRunning,
+                inflight = null,
+                model = resumeModel,
+                provider = resumeProvider,
+            )
         }
 
         override suspend fun createSession(

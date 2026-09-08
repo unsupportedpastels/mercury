@@ -149,6 +149,21 @@ class TranscriptEngineTest {
         assertFalse(state.rows[1].completed)
     }
 
+    @Test
+    fun interimCommentarySurvivesToolBoundaryAndTerminalWithoutText() {
+        val state = reduce(
+            ChatEvent.MessageStart(sid, null),
+            ChatEvent.MessageInterim(sid, "I will inspect the files first.", alreadyStreamed = false),
+            ChatEvent.ToolStart(sid, "tool-1", "read_file", null),
+            ChatEvent.ToolComplete(sid, "tool-1", "read_file", "done"),
+            ChatEvent.MessageComplete(sid, text = ""),
+        )
+
+        assertEquals("I will inspect the files first.", state.rows.first().text)
+        assertTrue(state.rows.first().completed)
+        assertEquals(ToolRowState.Completed, state.tools.single().state)
+    }
+
     // --- tools ----------------------------------------------------------------
 
     @Test
@@ -440,5 +455,87 @@ class TranscriptEngineTest {
         assertEquals(2, burst.tools.size)
         assertIs<TranscriptEntry.Message>(entries[2])
         assertIs<TranscriptEntry.ToolRun>(entries[3])
+    }
+
+    @Test
+    fun liveToolActivityDoesNotDropPartiallyCoveredPersistedToolHistory() {
+        val rows = buildList {
+            add(TranscriptRow(1, "user", "older", completed = true))
+            add(TranscriptRow(2, "tool", "old result", completed = true, toolName = "read_file"))
+            add(TranscriptRow(3, "assistant", "old answer", completed = true))
+            add(TranscriptRow(4, "user", "current", completed = true))
+            repeat(10) { index ->
+                add(
+                    TranscriptRow(
+                        id = 5L + index,
+                        role = "tool",
+                        text = "current result $index",
+                        completed = true,
+                        toolName = "tool-$index",
+                    ),
+                )
+            }
+            add(TranscriptRow(15, "assistant", "current answer", completed = true))
+        }
+
+        // Every history row must remain visible until exact invocation identity
+        // is available to reconcile it against separately rendered live tools.
+        val entries = coalesceTranscriptEntries(rows)
+
+        val toolRuns = entries.filterIsInstance<TranscriptEntry.ToolRun>()
+        assertEquals(listOf(1, 10), toolRuns.map { it.rows.size })
+        assertEquals(
+            listOf("older", "old answer", "current", "current answer"),
+            entries.filterIsInstance<TranscriptEntry.Message>().map { it.row.text },
+        )
+    }
+
+    @Test
+    fun paginatedToolOnlyHistoryPageKeepsRowsWhenNoUserIsPresent() {
+        val rows = (0 until 10).map { index ->
+            TranscriptRow(
+                id = index.toLong(),
+                role = "tool",
+                text = "page result $index",
+                completed = true,
+                toolName = "tool-$index",
+            )
+        }
+
+        val entries = coalesceTranscriptEntries(rows)
+
+        val toolRun = assertIs<TranscriptEntry.ToolRun>(entries.single())
+        assertEquals(10, toolRun.rows.size)
+        assertEquals("page result 0", toolRun.rows.first().text)
+        assertEquals("page result 9", toolRun.rows.last().text)
+    }
+
+    @Test
+    fun fiftyLiveRowsDoNotEraseOlderPersistedRowsBeyondTheLiveWindow() {
+        val rows = buildList {
+            add(TranscriptRow(1, "user", "current", completed = true))
+            // Live RunEventState retains only its final 50 rows, while the
+            // persisted transcript page can contain more history than that.
+            repeat(60) { index ->
+                add(
+                    TranscriptRow(
+                        id = 2L + index,
+                        role = "tool",
+                        text = "persisted result $index",
+                        completed = true,
+                        toolName = "tool-$index",
+                    ),
+                )
+            }
+            add(TranscriptRow(62, "assistant", "final answer", completed = true))
+        }
+
+        val entries = coalesceTranscriptEntries(rows)
+
+        val toolRun = entries.filterIsInstance<TranscriptEntry.ToolRun>().single()
+        assertEquals(60, toolRun.rows.size)
+        assertEquals("persisted result 0", toolRun.rows.first().text)
+        assertEquals("persisted result 59", toolRun.rows.last().text)
+        assertEquals("final answer", entries.filterIsInstance<TranscriptEntry.Message>().last().row.text)
     }
 }

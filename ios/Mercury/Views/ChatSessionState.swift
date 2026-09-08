@@ -70,6 +70,9 @@ final class ChatSessionState {
     var showModelPicker = false
     var modelOptions: ModelOptions?
     var currentModelSelection: ModelSelection?
+    /// Capability metadata is retained independently of picker presentation so
+    /// a late session catalog can hydrate the composer after resume.
+    var hydratedModelCapabilities: ModelCapabilities?
     var currentReasoningEffort: String?
     var currentFastMode: Bool?
     var modelPickerLoading = false
@@ -204,7 +207,30 @@ final class ChatSessionState {
     }
 
     var currentModelCapabilities: ModelCapabilities? {
-        modelOptions?.capabilities(for: currentModelSelection ?? modelOptions?.current)
+        hydratedModelCapabilities
+            ?? SessionModelPickerPolicy.capabilities(
+                in: modelOptions,
+                for: currentModelSelection ?? modelOptions?.current
+            )
+    }
+
+    func applyModelSelection(_ selection: ModelSelection) {
+        currentModelSelection = selection
+        hydratedModelCapabilities = SessionModelPickerPolicy.capabilities(
+            in: modelOptions,
+            for: selection
+        )
+    }
+
+    func applyModelOptions(_ options: ModelOptions, preservingSelection: Bool = true) {
+        modelOptions = options
+        if !preservingSelection || currentModelSelection == nil {
+            currentModelSelection = options.current
+        }
+        hydratedModelCapabilities = SessionModelPickerPolicy.capabilities(
+            in: options,
+            for: currentModelSelection ?? options.current
+        )
     }
 
     var composerModelLabel: String? {

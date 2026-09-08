@@ -22,14 +22,27 @@ final class ChatConnection: @unchecked Sendable {
 
     // MARK: Configuration
 
+    /// Capability discovery is auxiliary to chat admission. Keep its deadline
+    /// explicit so a server that accepts the request but never replies cannot
+    /// hold the connection in its establishing phase indefinitely.
+    static let defaultModelOptionsTimeoutNanoseconds: UInt64 = 5_000_000_000
+
     private let socket: any ChatSocketing
     private let maxFrameBytes: Int
+    private let modelOptionsTimeoutNanoseconds: UInt64
 
     var relaySocket: RelayChatSocket? { socket as? RelayChatSocket }
     var isClosed: Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
         return closed
+    }
+
+    /// Test/diagnostic seam for proving timed-out RPCs do not remain retained.
+    var pendingRequestCount: Int {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return pendingRequests.count
     }
 
     // MARK: Lifecycle state
@@ -45,6 +58,7 @@ final class ChatConnection: @unchecked Sendable {
     private var pendingRequests: [String: CheckedContinuation<[String: Any], Error>] = [:]
     private var pendingRequestMethods: [String: String] = [:]
     private var pendingBindingParams: [String: [String: Any]] = [:]
+    private var pendingRequestTimeouts: [String: Task<Void, Never>] = [:]
 
     // MARK: Event stream
 
@@ -66,11 +80,16 @@ final class ChatConnection: @unchecked Sendable {
         var choices: [String]
     }
 
-    init(socket: any ChatSocketing, maxFrameBytes configured: Int? = nil) throws {
+    init(
+        socket: any ChatSocketing,
+        maxFrameBytes configured: Int? = nil,
+        modelOptionsTimeoutNanoseconds: UInt64 = ChatConnection.defaultModelOptionsTimeoutNanoseconds
+    ) throws {
         let resolvedLimit = try validatedMaxFrameBytes(configured ?? 36 * 1024 * 1024)
         self.socket = socket
         self.requestNamespace = socket is RelayChatSocket ? UUID().uuidString : nil
         self.maxFrameBytes = resolvedLimit
+        self.modelOptionsTimeoutNanoseconds = max(1, modelOptionsTimeoutNanoseconds)
     }
 
     deinit {
@@ -127,9 +146,16 @@ final class ChatConnection: @unchecked Sendable {
     // MARK: - Public RPC surface (Android-parity subset)
 
     func resume(durableSessionID: String, profile: String?, automaticRecovery: Bool = false) async throws -> ResumedChatSession {
-        if automaticRecovery, let relaySocket,
-           !(await relaySocket.canAutomaticallyResume(durable: durableSessionID, profile: profile)) {
-            throw ChatError.transport("Retained session unavailable")
+        if automaticRecovery {
+            guard let relaySocket else {
+                // Direct Hermes has no authoritative same-client ownership
+                // proof. An implicit resume would therefore be an unsafe
+                // takeover; the caller must use the explicit Retry path.
+                throw ChatError.transport("Explicit retry required to resume this session")
+            }
+            guard await relaySocket.canAutomaticallyResume(durable: durableSessionID, profile: profile) else {
+                throw ChatError.transport("Retained session unavailable")
+            }
         }
         var params: [String: Any] = [
             "session_id": durableSessionID,
@@ -365,7 +391,7 @@ final class ChatConnection: @unchecked Sendable {
             "session_id": sessionKey,
             "explicit_only": true,
             "include_unconfigured": false,
-        ])
+        ], timeoutNanoseconds: modelOptionsTimeoutNanoseconds)
         return parseModelOptions(result)
     }
 
@@ -668,11 +694,14 @@ final class ChatConnection: @unchecked Sendable {
         }
         closed = true
         let pending = pendingRequests
+        let timeoutTasks = Array(pendingRequestTimeouts.values)
         pendingRequests.removeAll()
         pendingRequestMethods.removeAll()
         pendingBindingParams.removeAll()
+        pendingRequestTimeouts.removeAll()
         stateLock.unlock()
 
+        for timeoutTask in timeoutTasks { timeoutTask.cancel() }
         let error = ChatError.transport("Hermes chat connection closed")
         for (_, continuation) in pending { continuation.resume(throwing: error) }
         await socket.close()
@@ -681,7 +710,39 @@ final class ChatConnection: @unchecked Sendable {
 
     // MARK: - Request/response correlation
 
-    private func request(_ method: String, _ params: [String: Any]) async throws -> [String: Any] {
+    private struct PendingRequest {
+        let continuation: CheckedContinuation<[String: Any], Error>
+        let method: String?
+        let bindingParams: [String: Any]?
+    }
+
+    private func takePendingRequest(_ id: String) -> PendingRequest? {
+        stateLock.lock()
+        guard let continuation = pendingRequests.removeValue(forKey: id) else {
+            stateLock.unlock()
+            return nil
+        }
+        let pending = PendingRequest(
+            continuation: continuation,
+            method: pendingRequestMethods.removeValue(forKey: id),
+            bindingParams: pendingBindingParams.removeValue(forKey: id)
+        )
+        let timeoutTask = pendingRequestTimeouts.removeValue(forKey: id)
+        stateLock.unlock()
+        timeoutTask?.cancel()
+        return pending
+    }
+
+    private func failPendingRequest(_ id: String, error: Error) {
+        guard let pending = takePendingRequest(id) else { return }
+        pending.continuation.resume(throwing: error)
+    }
+
+    private func request(
+        _ method: String,
+        _ params: [String: Any],
+        timeoutNanoseconds: UInt64? = nil
+    ) async throws -> [String: Any] {
         stateLock.lock()
         if closed {
             stateLock.unlock()
@@ -707,35 +768,72 @@ final class ChatConnection: @unchecked Sendable {
         let text = String(data: data, encoding: .utf8) ?? ""
         try ensureFrameSize(text)
 
-        return try await withCheckedThrowingContinuation { continuation in
-            stateLock.lock()
-            if closed {
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[String: Any], Error>) in
+                stateLock.lock()
+                if closed {
+                    stateLock.unlock()
+                    continuation.resume(throwing: ChatError.transport("Hermes chat connection is closed"))
+                    return
+                }
+                pendingRequests[id] = continuation
+                pendingRequestMethods[id] = method
+                if method == "session.resume" || method == "session.create" {
+                    pendingBindingParams[id] = params
+                }
+                let wasCancelled = Task.isCancelled
                 stateLock.unlock()
-                continuation.resume(throwing: ChatError.transport("Hermes chat connection is closed"))
-                return
-            }
-            pendingRequests[id] = continuation
-            pendingRequestMethods[id] = method
-            if method == "session.resume" || method == "session.create" {
-                pendingBindingParams[id] = params
-            }
-            stateLock.unlock()
 
-            Task {
-                do {
-                    try await self.socket.sendText(text)
-                } catch {
-                    self.stateLock.lock()
-                    let registered = self.pendingRequests.removeValue(forKey: id)
-                    self.pendingRequestMethods.removeValue(forKey: id)
-                    self.pendingBindingParams.removeValue(forKey: id)
-                    self.stateLock.unlock()
-                    if let registered {
-                        registered.resume(throwing: ChatError.transport("Could not send Hermes chat request"))
+                if wasCancelled {
+                    failPendingRequest(id, error: CancellationError())
+                    return
+                }
+
+                if let timeoutNanoseconds {
+                    let timeoutTask = Task { [weak self] in
+                        do {
+                            try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                            try Task.checkCancellation()
+                        } catch {
+                            return
+                        }
+                        self?.failPendingRequest(
+                            id,
+                            error: ChatError.transport("Hermes RPC request timed out")
+                        )
+                    }
+                    stateLock.lock()
+                    if pendingRequests[id] != nil && !closed {
+                        pendingRequestTimeouts[id] = timeoutTask
+                        stateLock.unlock()
+                    } else {
+                        stateLock.unlock()
+                        timeoutTask.cancel()
+                    }
+                }
+
+                guard !Task.isCancelled else {
+                    failPendingRequest(id, error: CancellationError())
+                    return
+                }
+
+                Task { [weak self] in
+                    guard let self else { return }
+                    do {
+                        try await self.socket.sendText(text)
+                    } catch is CancellationError {
+                        self.failPendingRequest(id, error: CancellationError())
+                    } catch {
+                        self.failPendingRequest(
+                            id,
+                            error: ChatError.transport("Could not send Hermes chat request")
+                        )
                     }
                 }
             }
-        }
+        }, onCancel: {
+            self.failPendingRequest(id, error: CancellationError())
+        })
     }
 
     // MARK: - Read loop
@@ -773,11 +871,14 @@ final class ChatConnection: @unchecked Sendable {
         _ = closed
         closed = true
         let pending = pendingRequests
+        let timeoutTasks = Array(pendingRequestTimeouts.values)
         pendingRequests.removeAll()
         pendingRequestMethods.removeAll()
         pendingBindingParams.removeAll()
+        pendingRequestTimeouts.removeAll()
         stateLock.unlock()
 
+        for timeoutTask in timeoutTasks { timeoutTask.cancel() }
         let error = failure ?? ChatError.transport("Hermes chat connection closed")
         for (_, continuation) in pending { continuation.resume(throwing: error) }
         await socket.close()
@@ -805,12 +906,10 @@ final class ChatConnection: @unchecked Sendable {
         }
 
         guard let id = (message["id"] as? String) ?? int64Field("id", in: message).map(String.init) else { return }
-        stateLock.lock()
-        let continuation = pendingRequests.removeValue(forKey: id)
-        let method = pendingRequestMethods.removeValue(forKey: id)
-        let bindingParams = pendingBindingParams.removeValue(forKey: id)
-        stateLock.unlock()
-        guard let continuation else { return }
+        guard let pending = takePendingRequest(id) else { return }
+        let continuation = pending.continuation
+        let method = pending.method
+        let bindingParams = pending.bindingParams
 
         if let errorObject = message["error"] as? [String: Any] {
             let code = int64Field("code", in: errorObject)

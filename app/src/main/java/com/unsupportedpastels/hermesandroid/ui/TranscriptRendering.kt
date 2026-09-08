@@ -85,7 +85,9 @@ internal fun transcriptEntryKey(entry: TranscriptEntry, chat: ChatSessionSnapsho
  * tool messages collapse into one [TranscriptEntry.ToolRun], and reasoning-only
  * assistant steps followed by tool runs collapse into one
  * [TranscriptEntry.WorkBurst]. Original message indices are preserved so
- * per-message expansion state stays stable.
+ * per-message expansion state stays stable. Persisted tool rows remain in this
+ * historical presentation even when a separate live activity card is present;
+ * the current DTO does not carry an exact identity for safe suppression.
  */
 internal fun coalesceTranscriptEntries(messages: List<ChatMessage>): List<TranscriptEntry> {
     val rows = messages.mapIndexed { index, message ->
@@ -99,7 +101,9 @@ internal fun coalesceTranscriptEntries(messages: List<ChatMessage>): List<Transc
     }
     fun indexed(row: com.unsupportedpastels.mercury.core.transcript.TranscriptRow) =
         IndexedChatMessage(row.id.toInt(), messages[row.id.toInt()])
-    return com.unsupportedpastels.mercury.core.transcript.coalesceTranscriptEntries(rows).map { entry ->
+    return com.unsupportedpastels.mercury.core.transcript.coalesceTranscriptEntries(
+        rows,
+    ).map { entry ->
         when (entry) {
             is com.unsupportedpastels.mercury.core.transcript.TranscriptEntry.Message ->
                 TranscriptEntry.Single(entry.row.id.toInt(), messages[entry.row.id.toInt()])
@@ -109,6 +113,32 @@ internal fun coalesceTranscriptEntries(messages: List<ChatMessage>): List<Transc
                 TranscriptEntry.WorkBurst(entry.reasoning.map(::indexed), entry.tools.map(::indexed))
         }
     }
+}
+
+/**
+ * Presentation-only explanation for a current turn whose final assistant
+ * prose has not arrived while an observed child is still active. This never
+ * appends a synthetic transcript message.
+ */
+internal fun missingFinalResponseNotice(
+    messages: List<ChatMessage>,
+    activeChildCount: Int,
+    parentTurnSending: Boolean,
+): String? {
+    val rows = messages.mapIndexed { index, message ->
+        com.unsupportedpastels.mercury.core.transcript.TranscriptRow(
+            id = index.toLong(),
+            role = message.role.name.lowercase(),
+            text = message.text,
+            completed = !message.isStreaming,
+            reasoningText = message.reasoningText,
+        )
+    }
+    return TranscriptPresentationPolicy.missingFinalResponseNotice(
+        rows = rows,
+        activeChildCount = activeChildCount,
+        parentTurnSending = parentTurnSending,
+    )
 }
 
 /**

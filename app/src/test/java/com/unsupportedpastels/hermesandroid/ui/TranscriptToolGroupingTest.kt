@@ -3,6 +3,7 @@ package com.unsupportedpastels.hermesandroid.ui
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessageRole
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class TranscriptToolGroupingTest {
@@ -102,5 +103,89 @@ class TranscriptToolGroupingTest {
             listOf(TranscriptEntry.WorkBurst(reasoning = listOf(IndexedChatMessage(0, messages[0])), tools = emptyList())),
             entries,
         )
+    }
+
+    @Test
+    fun partialLiveCoverageRetainsEveryPersistedToolRowAndAssistantProse() {
+        val messages = buildList {
+            add(message(ChatMessageRole.User, "older"))
+            add(message(ChatMessageRole.Tool, "read_file · old result"))
+            add(message(ChatMessageRole.Assistant, "old answer"))
+            add(message(ChatMessageRole.User, "current"))
+            repeat(10) { index ->
+                add(message(ChatMessageRole.Tool, "tool-$index · current result $index"))
+            }
+            add(message(ChatMessageRole.Assistant, "current answer"))
+        }
+
+        val entries = coalesceTranscriptEntries(messages)
+
+        assertEquals(6, entries.size)
+        assertEquals(
+            listOf("older", "old answer", "current", "current answer"),
+            entries.filterIsInstance<TranscriptEntry.Single>().map { it.message.text },
+        )
+        val toolRuns = entries.filterIsInstance<TranscriptEntry.ToolRun>()
+        assertEquals(listOf(1, 10), toolRuns.map { it.tools.size })
+        assertEquals((4..13).toList(), toolRuns.last().tools.map { it.index })
+    }
+
+    @Test
+    fun paginatedToolOnlyPageRetainsRowsWithoutAUserMarker() {
+        val messages = (0 until 10).map { index ->
+            message(ChatMessageRole.Tool, "tool-$index · page result $index")
+        }
+
+        val entries = coalesceTranscriptEntries(messages)
+
+        val toolRun = entries.single() as TranscriptEntry.ToolRun
+        assertEquals(10, toolRun.tools.size)
+        assertEquals(0, toolRun.tools.first().index)
+        assertEquals(9, toolRun.tools.last().index)
+    }
+
+    @Test
+    fun finalLiveWindowDoesNotEraseEarlierPersistedRows() {
+        val messages = buildList {
+            add(message(ChatMessageRole.User, "current"))
+            repeat(60) { index ->
+                add(message(ChatMessageRole.Tool, "tool-$index · persisted result $index"))
+            }
+            add(message(ChatMessageRole.Assistant, "final answer"))
+        }
+
+        val entries = coalesceTranscriptEntries(messages)
+
+        val toolRun = entries.filterIsInstance<TranscriptEntry.ToolRun>().single()
+        assertEquals(60, toolRun.tools.size)
+        assertEquals(1, toolRun.tools.first().index)
+        assertEquals(60, toolRun.tools.last().index)
+        assertEquals("final answer", entries.filterIsInstance<TranscriptEntry.Single>().last().message.text)
+    }
+
+    @Test
+    fun missingFinalResponseNoticeIsOnlyShownForActiveChildWithoutCurrentProse() {
+        val messages = listOf(
+            message(ChatMessageRole.User, "older"),
+            message(ChatMessageRole.Assistant, "older answer"),
+            message(ChatMessageRole.User, "current"),
+            message(ChatMessageRole.Tool, "delegate_task · still running"),
+            ChatMessage(ChatMessageRole.Assistant, "", reasoningText = "waiting"),
+        )
+
+        assertEquals(
+            "Background work continues. The final response is not available yet.",
+            missingFinalResponseNotice(messages, activeChildCount = 1, parentTurnSending = false),
+        )
+        assertNull(missingFinalResponseNotice(messages, activeChildCount = 0, parentTurnSending = false))
+        assertNull(missingFinalResponseNotice(messages, activeChildCount = 1, parentTurnSending = true))
+        assertNull(
+            missingFinalResponseNotice(
+                messages + message(ChatMessageRole.Assistant, "final answer"),
+                activeChildCount = 1,
+                parentTurnSending = false,
+            ),
+        )
+        assertNull(missingFinalResponseNotice(messages.drop(3), activeChildCount = 1, parentTurnSending = false))
     }
 }

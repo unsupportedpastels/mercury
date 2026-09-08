@@ -575,6 +575,65 @@ final class TranscriptReducerTests: XCTestCase {
         XCTAssertEqual(tools.map(\.toolName), ["read_file", "terminal"])
     }
 
+    func testLiveActivityRetainsPersistedRowsWhenCoverageIsPartial() {
+        let rows: [TranscriptState.Row] = [
+            .init(role: "user", text: "older", completed: true),
+            .init(role: "tool", text: "old result", completed: true, toolName: "read_file"),
+            .init(role: "assistant", text: "old answer", completed: true),
+            .init(role: "user", text: "current", completed: true),
+            .init(role: "tool", text: "replayed result", completed: true, toolName: "terminal"),
+            .init(role: "assistant", text: "current answer", completed: true),
+        ]
+
+        let entries = coalesceTranscriptEntries(rows)
+
+        XCTAssertEqual(entries.count, 6)
+        guard case .toolRun(let oldTools) = entries[1] else {
+            return XCTFail("expected the prior turn's tool run to remain visible")
+        }
+        XCTAssertEqual(oldTools.map(\.text), ["old result"])
+        guard case .toolRun(let currentTools) = entries[4] else {
+            return XCTFail("expected the current turn's persisted tool row to remain visible")
+        }
+        XCTAssertEqual(currentTools.map(\.text), ["replayed result"])
+        guard case .message(let current) = entries[5] else {
+            return XCTFail("expected the current answer to remain visible")
+        }
+        XCTAssertEqual(current.text, "current answer")
+    }
+
+    func testMissingFinalResponseNoticeRequiresActiveChildAndNoCurrentProse() {
+        let rows: [TranscriptState.Row] = [
+            .init(role: "user", text: "older", completed: true),
+            .init(role: "assistant", text: "older answer", completed: true),
+            .init(role: "user", text: "current", completed: true),
+            .init(role: "tool", text: "child result", completed: true),
+            .init(role: "assistant", text: "", completed: true, reasoningText: "waiting"),
+        ]
+        let notice = "Background work continues. The final response is not available yet."
+
+        XCTAssertEqual(
+            missingFinalResponseNotice(rows, activeChildCount: 1, parentTurnSending: false),
+            notice
+        )
+        XCTAssertNil(missingFinalResponseNotice(rows, activeChildCount: 0, parentTurnSending: false))
+        XCTAssertNil(missingFinalResponseNotice(rows, activeChildCount: 1, parentTurnSending: true))
+        XCTAssertNil(
+            missingFinalResponseNotice(
+                rows + [.init(role: "assistant", text: "final answer", completed: true)],
+                activeChildCount: 1,
+                parentTurnSending: false
+            )
+        )
+        XCTAssertNil(
+            missingFinalResponseNotice(
+                Array(rows.dropFirst(3)),
+                activeChildCount: 1,
+                parentTurnSending: false
+            )
+        )
+    }
+
     /// Resume parity: ensureInflightAssistantRow inserts one streaming row
     /// and never duplicates on re-resume.
     func testEnsureInflightAssistantRowGuardsAgainstDuplicates() {
