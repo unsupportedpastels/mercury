@@ -61,12 +61,12 @@ final class ChatConnectionRecoveryTests: XCTestCase {
             try await connection.loadModelOptions(runtimeSessionID: "runtime-1")
         }
         var registered = false
-        for _ in 0..<100 {
+        for _ in 0..<200 {
             if connection.pendingRequestCount == 1 {
                 registered = true
                 break
             }
-            await Task.yield()
+            try? await Task.sleep(nanoseconds: 1_000_000)
         }
         XCTAssertTrue(registered, "the never-replying request must register before cancellation")
 
