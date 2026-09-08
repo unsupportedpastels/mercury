@@ -394,5 +394,131 @@ class StartupScenarioTest(unittest.TestCase):
                     sock.close()
 
 
+class ProgressScenarioTest(unittest.TestCase):
+    def setUp(self):
+        self.env = patch.dict(os.environ, {
+            "FAKE_HERMES_SCENARIO": "android-progress",
+            "FAKE_HERMES_TEST_KEY": "synthetic-progress-control",
+            "FAKE_HERMES_STARTUP": "0",
+        })
+        self.env.start()
+        fake_hermes.reset_synthetic_state()
+        self.addCleanup(self.env.stop)
+
+    def test_history_uses_official_tool_result_rows_and_separate_evidence(self):
+        rows = fake_hermes.transcript_messages()
+        todo = next(row for row in rows if row.get("tool_name") == "todo_list")
+        self.assertEqual(todo["role"], "tool")
+        self.assertTrue(todo["tool_call_id"])
+        self.assertIsInstance(todo["timestamp"], (int, float))
+        result = json.loads(todo["content"])
+        self.assertEqual(result["revision"], 1)
+        self.assertEqual([(t["content"], t["status"]) for t in result["todos"]], [
+            ("Inspect progress contract", "completed"),
+            ("Verify progress recovery", "in_progress"),
+            ("Install test build", "pending"),
+        ])
+        evidence = next(row for row in rows if row.get("tool_name") == "terminal")
+        self.assertIn("Synthetic checks passed", evidence["content"])
+        self.assertIn("no real checks executed", evidence["content"])
+        self.assertLess(len(evidence["content"]), 2_000)
+        self.assertEqual(fake_hermes.transcript_messages("work"), [])
+        self.assertEqual(fake_hermes.transcript_messages(session_id="other"), [])
+
+    def test_partial_start_is_not_the_complete_todo_snapshot(self):
+        events = fake_hermes.progress_tool_events(2)
+        start, complete = events
+        self.assertEqual(start[0], "tool.start")
+        self.assertEqual(complete[0], "tool.complete")
+        self.assertEqual(start[1]["tool_id"], complete[1]["tool_id"])
+        self.assertEqual(start[1]["args"]["merge"], True)
+        self.assertEqual(len(start[1]["args"]["todos"]), 1)
+        result = json.loads(complete[1]["result"])
+        self.assertEqual(len(result["todos"]), 3)
+        self.assertEqual(result["revision"], 2)
+
+    def test_read_only_refresh_and_explicit_advance_with_counters(self):
+        with FakeHermesServer() as server:
+            token = fake_hermes.mint_session_token()
+            control = {"X-Fake-Hermes-Test-Key": "synthetic-progress-control"}
+            def state(method="GET"):
+                with urlopen(Request(server.origin + "/__test__/progress", method=method,
+                                     headers=control, data=b"{}" if method == "POST" else None), timeout=2) as response:
+                    return json.load(response)
+            before = state()
+            path = "/api/sessions/e2e-session-1/messages"
+            _, initial = _json_request(server.origin, "GET", path, token=token)
+            _, same = _json_request(server.origin, "GET", path, token=token)
+            self.assertEqual(initial, same)
+            self.assertEqual(state()["revision"], 1)
+            self.assertEqual(state()["history_reads"], before["history_reads"] + 2)
+            self.assertEqual(state()["rpc_counts"], {})
+            self.assertEqual(state("POST")["revision"], 2)
+            self.assertEqual(state()["revision"], 2)
+            _, updated = _json_request(server.origin, "GET", path, token=token)
+            todo = [r for r in updated["messages"] if r.get("tool_name") == "todo_list"][-1]
+            self.assertEqual(json.loads(todo["content"])["todos"][1]["status"], "completed")
+            self.assertEqual(state()["rpc_counts"], {})
+            sock = _startup_chat_socket(server.origin)
+            sock.close()
+            self.assertEqual(state()["rpc_counts"]["session.resume"], 1)
+
+    def test_progress_events_cross_actual_websocket_and_count_prompt(self):
+        with FakeHermesServer() as server, patch.object(fake_hermes, "PROMPT_WAIT_SECONDS", 0.01):
+            sock = _startup_chat_socket(server.origin)
+            try:
+                _send_websocket_json(sock, {"jsonrpc": "2.0", "id": 2, "method": "prompt.submit",
+                                            "params": {"text": "synthetic event contract"}})
+                events = []
+                while not events or _event_type(events[-1]) != "message.complete":
+                    events.append(_receive_websocket_json(sock))
+                tool_events = [e for e in events if _event_type(e) in ("tool.start", "tool.complete")]
+                self.assertEqual([_event_type(e) for e in tool_events], ["tool.start", "tool.complete"])
+                start, complete = [e["params"]["payload"] for e in tool_events]
+                self.assertEqual(start["tool_id"], complete["tool_id"])
+                self.assertEqual(len(json.loads(complete["result"])["todos"]), 3)
+                self.assertEqual(fake_hermes.progress_test_state()["rpc_counts"]["prompt.submit"], 1)
+            finally:
+                sock.close()
+
+    def test_default_prompt_preserves_interrupt_sentinel_without_todo_events(self):
+        with patch.dict(os.environ, {"FAKE_HERMES_SCENARIO": "default"}), \
+                patch.object(fake_hermes, "PROMPT_WAIT_SECONDS", 0.01), FakeHermesServer() as server:
+            sock = _startup_chat_socket(server.origin)
+            try:
+                _send_websocket_json(sock, {"jsonrpc": "2.0", "id": 2, "method": "prompt.submit",
+                                            "params": {"text": "synthetic default contract"}})
+                events = []
+                while not events or _event_type(events[-1]) != "message.complete":
+                    events.append(_receive_websocket_json(sock))
+                self.assertFalse(any(str(_event_type(e)).startswith("tool.") for e in events))
+                self.assertEqual(events[-1]["params"]["payload"], {
+                    "text": fake_hermes.SENTINEL_TEXT, "status": "interrupted"})
+            finally:
+                sock.close()
+
+    def test_control_requires_explicit_test_key_not_app_auth(self):
+        with FakeHermesServer() as server:
+            for headers in ({}, {"X-Fake-Hermes-Test-Key": "wrong"},
+                            {"Authorization": "Bearer " + fake_hermes.mint_session_token()}):
+                with self.assertRaises(HTTPError) as failure:
+                    urlopen(Request(server.origin + "/__test__/progress", headers=headers), timeout=2)
+                self.assertEqual(failure.exception.code, 403)
+            with patch.dict(os.environ, {"FAKE_HERMES_TEST_KEY": ""}):
+                with self.assertRaises(HTTPError) as failure:
+                    urlopen(server.origin + "/__test__/progress", timeout=2)
+                self.assertEqual(failure.exception.code, 403)
+
+    def test_default_scenario_has_no_progress_or_control_routes(self):
+        with patch.dict(os.environ, {"FAKE_HERMES_SCENARIO": "default"}):
+            self.assertEqual(fake_hermes.transcript_messages(), [])
+            with FakeHermesServer() as server:
+                for method in ("GET", "POST"):
+                    with self.assertRaises(HTTPError) as failure:
+                        urlopen(Request(server.origin + "/__test__/progress", method=method,
+                                        data=b"{}" if method == "POST" else None), timeout=2)
+                    self.assertEqual(failure.exception.code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()

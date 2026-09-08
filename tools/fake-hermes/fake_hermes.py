@@ -20,6 +20,12 @@ Usage:  python3 fake_hermes.py [PORT]     (default 8787, cleartext HTTP)
 Set MERCURY_E2E_VIDEO_FILE to a local synthetic MP4 to exercise authenticated
 managed-video download/playback. Only the fixed fixture path is served.
 
+Set FAKE_HERMES_SCENARIO=android-progress for saved todo_list recovery.
+FAKE_HERMES_TEST_KEY enables the fake-only /__test__/progress control endpoint:
+GET reads counters; POST advances once to revision 2. Both require the matching
+X-Fake-Hermes-Test-Key header. App clients must never call this private route.
+Use only on an isolated test network. All progress/evidence is synthetic.
+
 Login:  any username, password "e2epass"  -> HttpOnly session cookie.
 """
 
@@ -71,6 +77,62 @@ SYNTHETIC_FILES = {}
 SYNTHETIC_PROJECTS = {}
 SYNTHETIC_ACTIVE_PROJECTS = {}
 SYNTHETIC_TRANSCRIPTS = {}
+PROGRESS_REVISION = 1
+PROGRESS_HISTORY_READS = 0
+PROGRESS_RPC_COUNTS = {}
+
+
+PROGRESS_EPOCH = int(time.time()) - 60
+
+
+def progress_scenario_enabled():
+    return os.environ.get("FAKE_HERMES_SCENARIO", FAKE_HERMES_SCENARIO).strip().lower() == "android-progress"
+
+
+def progress_result(revision):
+    return {
+        "todos": [
+            {"id": "inspect", "content": "Inspect progress contract", "status": "completed"},
+            {"id": "recover", "content": "Verify progress recovery", "status": "completed" if revision == 2 else "in_progress"},
+            {"id": "install", "content": "Install test build", "status": "pending"},
+        ],
+        "revision": revision,
+        "summary": {"total": 3, "completed": revision, "in_progress": 2 - revision, "pending": 1},
+    }
+
+
+def progress_tool_events(revision):
+    """A partial merge request is not authoritative; only completion has all todos."""
+    tool_id = f"synthetic-todo-{revision}"
+    return [
+        ("tool.start", {"tool_id": tool_id, "name": "todo_list", "args": {
+            "merge": True, "todos": [progress_result(revision)["todos"][1]],
+        }}),
+        ("tool.complete", {"tool_id": tool_id, "name": "todo_list",
+                           "result": json.dumps(progress_result(revision))}),
+    ]
+
+
+def progress_messages():
+    with _lock:
+        revision = PROGRESS_REVISION
+    rows = []
+    for number in range(1, revision + 1):
+        rows.append({"role": "tool", "tool_name": "todo_list",
+                     "tool_call_id": f"synthetic-todo-{number}",
+                     "timestamp": PROGRESS_EPOCH + number,
+                     "content": json.dumps(progress_result(number))})
+    rows.append({"role": "tool", "tool_name": "terminal",
+                 "tool_call_id": "synthetic-evidence-1", "timestamp": PROGRESS_EPOCH + 10,
+                 "content": "Synthetic checks passed (synthetic fixture; no real checks executed)."})
+    return rows
+
+
+def progress_test_state():
+    with _lock:
+        return {"scenario": "android-progress", "synthetic": True,
+                "revision": PROGRESS_REVISION, "history_reads": PROGRESS_HISTORY_READS,
+                "rpc_counts": dict(PROGRESS_RPC_COUNTS)}
 
 
 def startup_scenario_enabled():
@@ -101,6 +163,10 @@ def startup_delayed_ack_is_error():
 
 
 def _reset_synthetic_state_locked():
+    global PROGRESS_REVISION, PROGRESS_HISTORY_READS, PROGRESS_RPC_COUNTS
+    PROGRESS_REVISION = 1
+    PROGRESS_HISTORY_READS = 0
+    PROGRESS_RPC_COUNTS = {}
     global SYNTHETIC_DIRECTORIES, SYNTHETIC_FILES
     global SYNTHETIC_PROJECTS, SYNTHETIC_ACTIVE_PROJECTS, SYNTHETIC_TRANSCRIPTS
     SYNTHETIC_DIRECTORIES = {
@@ -251,6 +317,8 @@ def _record_synthetic_turn(profile, session_id, prompt, response):
 
 
 def transcript_messages(profile="default", session_id=DURABLE_SESSION_ID):
+    if progress_scenario_enabled():
+        return progress_messages() if profile == "default" and session_id == DURABLE_SESSION_ID else []
     messages = []
     if VIDEO_FIXTURE_FILE:
         messages.append({"role": "assistant", "content": "Video playback fixture\nMEDIA: " + VIDEO_MANAGED_PATH})
@@ -439,12 +507,29 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- routing ------------------------------------------------------------
 
+    def handle_progress_control(self, advance=False):
+        global PROGRESS_REVISION
+        if not progress_scenario_enabled():
+            self.send_json({"error": "not found"}, status=404)
+            return
+        key = os.environ.get("FAKE_HERMES_TEST_KEY", "")
+        supplied = self.headers.get("X-Fake-Hermes-Test-Key", "")
+        if not key or not secrets.compare_digest(key.encode(), supplied.encode()):
+            self.send_json({"error": "test control denied"}, status=403)
+            return
+        if advance:
+            with _lock:
+                PROGRESS_REVISION = 2
+        self.send_json(progress_test_state())
+
     def do_GET(self):
         parts = urlsplit(self.path)
         path, query = parts.path, parse_qs(parts.query)
         log(http_log_summary("GET", self.path))
 
-        if path == "/api/status":
+        if path == "/__test__/progress":
+            self.handle_progress_control()
+        elif path == "/api/status":
             self.send_json({
                 "version": "0.20.0",
                 "auth_required": True,
@@ -487,7 +572,7 @@ class Handler(BaseHTTPRequestHandler):
                             "title": DURABLE_SESSION_TITLE,
                             "preview": "",
                             "last_active": time.time(),
-                            "message_count": 0,
+                            "message_count": len(progress_messages()) if progress_scenario_enabled() else 0,
                             "model": "fake-model",
                             "billing_provider": "fake",
                             "profile": "default",
@@ -503,6 +588,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.require_auth():
                 session_id = path.split("/")[3]
                 profile = _synthetic_profile(query.get("profile", [None])[0]) or "default"
+                if progress_scenario_enabled() and profile == "default" and session_id == DURABLE_SESSION_ID:
+                    global PROGRESS_HISTORY_READS
+                    with _lock:
+                        PROGRESS_HISTORY_READS += 1
                 messages = transcript_messages(profile, session_id)
                 self.send_json({
                     "session_id": session_id,
@@ -614,7 +703,11 @@ class Handler(BaseHTTPRequestHandler):
         path = parts.path
         log(http_log_summary("POST", self.path))
 
-        if path == "/auth/password-login":
+        if path == "/__test__/progress":
+            # No caller-supplied paths/content/state: this is one bounded advance.
+            self.read_body_json()
+            self.handle_progress_control(advance=True)
+        elif path == "/auth/password-login":
             body = self.read_body_json()
             if body.get("password") == PASSWORD and str(body.get("username", "")).strip():
                 token = mint_session_token()
@@ -894,6 +987,10 @@ class WsSession:
         if request_id is None or not isinstance(method, str):
             return
 
+        if progress_scenario_enabled():
+            with _lock:
+                PROGRESS_RPC_COUNTS[method] = PROGRESS_RPC_COUNTS.get(method, 0) + 1
+
         if startup_scenario_enabled() and self._handle_startup_rpc(request_id, method, params):
             return
 
@@ -1030,6 +1127,11 @@ class WsSession:
 
     def stream_prompt_events(self):
         try:
+            if progress_scenario_enabled():
+                with _lock:
+                    revision = PROGRESS_REVISION
+                for event_type, payload in progress_tool_events(revision):
+                    self.push_event(event_type, payload)
             self.push_event("message.start", {})
             time.sleep(0.05)
             self.push_event("message.delta", {"text": "The answer "})

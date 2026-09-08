@@ -851,14 +851,21 @@ class HermesChatConnection internal constructor(
         }
         val shared = ChatEventDecoder.decode(type, sessionId, payloadElement.toString()) ?: return
         val payload = payloadElement as? JsonObject
-        val todos = if (shared is com.unsupportedpastels.mercury.core.transcript.ChatEvent.ToolStart ||
-            shared is com.unsupportedpastels.mercury.core.transcript.ChatEvent.ToolComplete
-        ) {
+        val todos = if (shared is com.unsupportedpastels.mercury.core.transcript.ChatEvent.ToolComplete) {
             payload?.boundedTodoItems()
         } else {
             null
         }
-        val event = shared.toAndroidEvent(todos) ?: return
+        val decodedEvent = shared.toAndroidEvent(todos) ?: return
+        val historical = params.booleanValue("relay_replay") == true
+        val event = when (decodedEvent) {
+            is HermesChatEvent.ToolComplete -> decodedEvent.copy(
+                progressSnapshot = payload?.let(com.unsupportedpastels.hermesandroid.app.DurableProgressParser::liveSnapshot),
+                historical = historical,
+            )
+            is HermesChatEvent.ToolStart -> decodedEvent.copy(historical = historical)
+            else -> decodedEvent
+        }
 
         when (event) {
             is HermesChatEvent.ApprovalRequest -> synchronized(interactionLock) {

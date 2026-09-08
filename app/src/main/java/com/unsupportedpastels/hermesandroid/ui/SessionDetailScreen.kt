@@ -6,6 +6,12 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.mutableLongStateOf
+import kotlinx.coroutines.delay
+import com.unsupportedpastels.mercury.core.activity.ActivityLineInput
+import com.unsupportedpastels.mercury.core.activity.ActivityLinePolicy
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -100,7 +106,6 @@ import com.unsupportedpastels.hermesandroid.app.RunEventState
 import com.unsupportedpastels.hermesandroid.app.RunInteractionLifecycle
 import com.unsupportedpastels.hermesandroid.app.RunToolState
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
-import com.unsupportedpastels.hermesandroid.app.ProcessRow
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.app.isNoProjectBucket
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
@@ -202,6 +207,7 @@ internal fun SessionDetailScreen(
     stopping: Boolean,
     onStop: () -> Unit,
     onRetryConnection: () -> Unit = {},
+    onGetProgress: () -> Unit = {},
     slashCompletion: SlashCompletionState? = null,
     onSlashCompletionSelected: (SlashCompletionState, SlashCompletionItem) -> Unit = { _, _ -> },
     onLoadSessionInsights: () -> Unit,
@@ -246,12 +252,6 @@ internal fun SessionDetailScreen(
     // this submission. Optimistic transcript rows are not acceptance evidence.
     var pendingSend by remember(session.id, voiceInputScopeKey) { mutableStateOf<PendingComposerSend?>(null) }
     val connectionBusy = chat.connectionPhase != ChatConnectionPhase.Idle
-    val connectionProgress = when (chat.connectionPhase) {
-        ChatConnectionPhase.Connecting -> "Connecting…"
-        ChatConnectionPhase.Reconnecting -> "Reconnecting…"
-        ChatConnectionPhase.Submitting -> "Sending…"
-        ChatConnectionPhase.Idle -> null
-    }
     val controlledTurn = showStop && chat.isSending && !connectionBusy
     val currentDraft by rememberUpdatedState(draft)
     val currentOnDraftChanged by rememberUpdatedState(onDraftChanged)
@@ -281,11 +281,47 @@ internal fun SessionDetailScreen(
         errors += onAddAttachments(candidates)
         attachmentError = errors.takeIf { it.isNotEmpty() }?.joinToString("\n")
     }
-    val hasRunStateContent = chat.runState.hasVisibleContent() ||
-        chat.processRows.isNotEmpty()
+    val hasRunStateContent = chat.runState.hasVisibleContent()
+    val turnActive = chat.isSending || connectionBusy || pendingSend != null
+    val transcriptEntries = remember(chat.messages, turnActive) { foldTranscriptTurns(chat.messages, turnActive) }
+    var showActivity by remember(session.id) { mutableStateOf(false) }
+    var activityNow by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(session.id) {
+        while (true) { activityNow = System.currentTimeMillis(); delay(1_000) }
+    }
+    var dismissedBackground by rememberSaveable(session.id.value) { mutableStateOf(emptyList<String>()) }
+    val visibleBackground = chat.backgroundTasks.rows.filterNot {
+        it.isDismissible(activityNow) && it.dismissalKey() in dismissedBackground
+    }
+    val connectionLost = chat.connectionRecoveryAvailable && !connectionBusy
+    val observedRun = chat.runState.copy(
+        todos = if (chat.progress.hasMilestoneSnapshot) chat.progress.milestones else chat.runState.todos,
+        status = chat.runState.status.takeUnless { chat.progress.restored },
+    )
+    val summary = SessionProgressPolicy.summarize(observedRun, chat.isSending)
+    val currentMessages = chat.messages.drop(chat.messages.indexOfLast { it.role == ChatMessageRole.User }.coerceAtLeast(0))
+    val streaming = currentMessages.lastOrNull { it.role == ChatMessageRole.Assistant && it.isStreaming }
+    val runningTools = observedRun.tools.filter { it.state == RunToolState.Running }
+    val line = rememberHeldActivityLine(ActivityLinePolicy.decide(ActivityLineInput(
+        isSending = chat.isSending && !chat.progress.restored,
+        isStopping = stopping,
+        connectionPhase = chat.connectionPhase.name.lowercase(),
+        pendingSubmission = pendingSend != null,
+        connectionLost = connectionLost,
+        awaitingUser = hasPendingTailInteraction(chat.runState),
+        runningToolNames = runningTools.map { it.name },
+        runningToolContext = runningTools.firstOrNull()?.context,
+        statusText = observedRun.status?.text,
+        statusKind = observedRun.status?.kind,
+        streamingAnswer = streaming?.text?.isNotBlank() == true,
+        streamingReasoning = streaming?.reasoningText?.isNotBlank() == true,
+        inProgressTodo = summary.inProgress.firstOrNull()?.label,
+        activeChildCount = if (connectionLost || connectionBusy || chat.progress.restored) 0
+            else chat.backgroundTasks.presentation(visibleBackground, activityNow).activeCount,
+    )))
 
     val timelineLastIndex = (
-        chat.messages.size + if (hasRunStateContent) 1 else 0
+        transcriptEntries.size + if (hasRunStateContent) 1 else 0
     ).minus(1).coerceAtLeast(0)
     val transcriptListState = rememberLazyListState(
         initialFirstVisibleItemIndex = timelineLastIndex,
@@ -335,6 +371,8 @@ internal fun SessionDetailScreen(
     }
     var lastFollowedMessageCount by remember(session.id) { mutableStateOf(chat.messages.size) }
     LaunchedEffect(
+        transcriptEntries.size,
+        turnActive,
         chat.messages.size,
         chat.messages.lastOrNull()?.text?.length,
         chat.runState,
@@ -443,9 +481,6 @@ internal fun SessionDetailScreen(
                     }
                 }
                 else -> {
-                    val transcriptEntries = remember(chat.messages) {
-                        coalesceTranscriptEntries(chat.messages)
-                    }
                     Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
                     LazyColumn(
                         state = transcriptListState,
@@ -457,51 +492,17 @@ internal fun SessionDetailScreen(
                         items(
                             items = transcriptEntries,
                             key = { entry ->
-                                transcriptEntryKey(entry, chat)
+                                foldedEntryKey(entry, chat)
                             },
                         ) { entry ->
-                            if (entry is TranscriptEntry.ToolRun) {
-                                var toolsExpanded by rememberSaveable(
-                                    session.id.value,
-                                    transcriptEntryKey(entry, chat),
-                                ) {
-                                    mutableStateOf(false)
-                                }
-                                TranscriptToolRunGroup(
-                                    tools = entry.tools,
-                                    expanded = toolsExpanded,
-                                    onToggle = { toolsExpanded = !toolsExpanded },
-                                    sessionKey = session.id.value,
-                                    loadManagedImage = { path ->
-                                        onLoadManagedImage(path).getOrThrow()
-                                    },
-                                    loadManagedVideo = onLoadManagedVideo,
-                                    peekManagedVideo = onPeekManagedVideo,
-                                )
+                            if (entry is FoldedEntry.TurnActivity) {
+                                var expanded by rememberSaveable(session.id.value, foldedEntryKey(entry, chat)) { mutableStateOf(false) }
+                                TurnActivityGroup(entry, expanded, { expanded = !expanded }, session.id.value,
+                                    loadManagedImage = { path -> onLoadManagedImage(path).getOrThrow() },
+                                    loadManagedVideo = onLoadManagedVideo, peekManagedVideo = onPeekManagedVideo)
                                 return@items
                             }
-                            if (entry is TranscriptEntry.WorkBurst) {
-                                var burstExpanded by rememberSaveable(
-                                    session.id.value,
-                                    transcriptEntryKey(entry, chat),
-                                ) {
-                                    mutableStateOf(false)
-                                }
-                                WorkBurstGroup(
-                                    reasoning = entry.reasoning,
-                                    tools = entry.tools,
-                                    expanded = burstExpanded,
-                                    onToggle = { burstExpanded = !burstExpanded },
-                                    sessionKey = session.id.value,
-                                    loadManagedImage = { path ->
-                                        onLoadManagedImage(path).getOrThrow()
-                                    },
-                                    loadManagedVideo = onLoadManagedVideo,
-                                    peekManagedVideo = onPeekManagedVideo,
-                                )
-                                return@items
-                            }
-                            val messageIndex = (entry as TranscriptEntry.Single).index
+                            entry as FoldedEntry.Single
                             val message = entry.message
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 if (message.role == ChatMessageRole.System) {
@@ -511,23 +512,12 @@ internal fun SessionDetailScreen(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
-                                message.reasoningText.takeIf { it.isNotBlank() }?.let { reasoning ->
-                                    var showReasoning by rememberSaveable(session.id.value, messageIndex) {
-                                        mutableStateOf(false)
-                                    }
-                                    ThinkingBlock(
-                                        reasoning = reasoning,
-                                        streaming = message.isStreaming,
-                                        expanded = showReasoning,
-                                        onToggle = { showReasoning = !showReasoning },
-                                    )
-                                }
                                 val renderedText = message.text.ifEmpty {
                                     if (message.isStreaming) "…" else ""
                                 }
                                 when {
                                     message.role == ChatMessageRole.Tool -> {
-                                        var showToolMessage by rememberSaveable(session.id.value, transcriptEntryKey(entry, chat)) {
+                                        var showToolMessage by rememberSaveable(session.id.value, foldedEntryKey(entry, chat)) {
                                             mutableStateOf(false)
                                         }
                                         ToolMessageBlock(
@@ -619,8 +609,6 @@ internal fun SessionDetailScreen(
                             item(key = "run-state") {
                                 RunStateContent(
                                     runState = chat.runState,
-                                    processRows = chat.processRows,
-                                    runActive = chat.isSending,
                                     durableSessionId = session.id,
                                     onClarificationResponse = onClarificationResponse,
                                     onApprovalResponse = onApprovalResponse,
@@ -728,23 +716,6 @@ internal fun SessionDetailScreen(
                     }
                 }
             }
-            if (connectionProgress != null || pendingSend != null || chat.isSending) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        connectionProgress ?: if (pendingSend != null) "Sending…" else "Hermes is responding…",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
             if (slashCompletion != null && slashCompletion.items.isNotEmpty()) {
                 SlashCompletionMenu(
                     completion = slashCompletion,
@@ -758,8 +729,6 @@ internal fun SessionDetailScreen(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            BackgroundResponseNotice(chat.messages, chat.backgroundTasks, chat.isSending)
-            BackgroundTaskStrip(chat.backgroundTasks)
             // Keep the composer available during a controlled turn so the user can
             // issue the server's /steer command through the normal send path.
             val composerEnabled = true
@@ -842,10 +811,13 @@ internal fun SessionDetailScreen(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .testTag("Message composer"),
+                    .testTag("Message composer")
+                    .animateContentSize(tween(150)),
                 shape = RoundedCornerShape(30.dp),
                 color = MaterialTheme.colorScheme.surfaceContainer,
             ) {
+                Column {
+                ComposerActivityLine(line, chat.progress.turnStartedAtEpochMillis, { showActivity = true })
                 Row(
                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -1054,6 +1026,7 @@ internal fun SessionDetailScreen(
                     }
                 }
             }
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1211,8 +1184,27 @@ internal fun SessionDetailScreen(
             }
         }
     }
+    if (showActivity) {
+        SessionActivitySheet(
+            summary = summary, connectionLost = connectionLost,
+            lastObservedAt = chat.progress.lastObservedAtEpochMillis, now = activityNow,
+            onDismiss = { showActivity = false }, onRetryConnection = onRetryConnection,
+            onGetUpdate = onGetProgress, refreshing = chat.progress.refreshing,
+            refreshError = chat.progress.refreshError, restored = chat.progress.restored || connectionBusy,
+            partialHistory = chat.progress.restored && chat.progress.partialHistory,
+            backgroundRows = visibleBackground, processRows = chat.processRows,
+            onDismissBackground = { rows -> dismissedBackground = (dismissedBackground + rows.map { it.dismissalKey() }).takeLast(64) },
+            evidence = chat.progress.evidence.filter { it.completed && !it.summary.isNullOrBlank() && it.toolName !in setOf("todo", "todo_list") }
+                .map { SessionProgressItem(it.toolName, it.summary) },
+            tools = observedRun.tools, status = observedRun.status?.text, isSending = chat.isSending,
+            currentMessages = if (turnActive) currentMessages else emptyList(),
+            loadManagedImage = { path -> onLoadManagedImage(path).getOrThrow() },
+            loadManagedVideo = onLoadManagedVideo, peekManagedVideo = onPeekManagedVideo,
+        )
+    }
     if (showSessionInsights) {
         SessionInsightsSheet(
+            onOpenActivity = { showSessionInsights = false; showActivity = true },
             sessionTitle = session.title,
             chat = chat,
             workspaceLabel = workspaceLabel,
@@ -1256,40 +1248,16 @@ internal fun SessionDetailScreen(
 @Composable
 private fun RunStateContent(
     runState: RunEventState,
-    processRows: List<ProcessRow>,
-    runActive: Boolean,
     durableSessionId: DurableSessionId,
     onClarificationResponse: (String, String?, String) -> Unit,
     onApprovalResponse: (String, Boolean) -> Unit,
     onBlockingResponse: (UnsupportedBlockingKind, String, String) -> Unit,
 ) {
-    if (!runState.hasVisibleContent() && processRows.isEmpty()) return
-    val runningTools = runState.tools.filter { it.state == RunToolState.Running }
-    var toolsExpanded by remember(durableSessionId.value) {
-        mutableStateOf(false)
-    }
+    if (!runState.hasVisibleContent()) return
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (runActive || runningTools.isNotEmpty()) {
-            runState.status?.let { status -> RunStatusPill(status) }
-        }
-        if (runState.todos.isNotEmpty() || processRows.isNotEmpty()) {
-            ActivityStack(
-                runState = runState,
-                processRows = processRows,
-                runActive = runActive,
-            )
-        } else if (runState.tools.isNotEmpty()) {
-            // Preserve the established tool-only surface; the unified stack takes
-            // over as soon as a second authoritative activity family is present.
-            ToolActivityGroup(
-                tools = runState.tools,
-                expanded = toolsExpanded,
-                onToggle = { toolsExpanded = !toolsExpanded },
-            )
-        }
         runState.clarification?.let { clarification ->
             ClarificationCard(
                 durableSessionId = durableSessionId,
@@ -1311,10 +1279,7 @@ private fun RunStateContent(
 }
 
 private fun RunEventState.hasVisibleContent(): Boolean =
-    status != null ||
-        tools.isNotEmpty() ||
-        todos.isNotEmpty() ||
-        clarification != null ||
+    clarification != null ||
         approval != null ||
         unsupportedBlocking != null
 
@@ -1324,9 +1289,10 @@ private fun RunEventState.hasVisibleContent(): Boolean =
  * while one is present so it never overlaps that card's own action buttons.
  */
 private fun hasPendingTailInteraction(runState: RunEventState): Boolean =
-    runState.clarification?.lifecycle == RunInteractionLifecycle.Pending ||
-        runState.approval?.lifecycle == RunInteractionLifecycle.Pending ||
-        runState.unsupportedBlocking?.lifecycle == RunInteractionLifecycle.Pending
+    listOf(runState.clarification?.lifecycle, runState.approval?.lifecycle,
+        runState.unsupportedBlocking?.lifecycle).any {
+        it == RunInteractionLifecycle.Pending || it == RunInteractionLifecycle.Responding
+    }
 
 private fun resolvePickedAttachment(context: Context, uri: Uri): ComposerAttachment {
     require(uri.scheme == "content") { "Selected item was not a readable document" }

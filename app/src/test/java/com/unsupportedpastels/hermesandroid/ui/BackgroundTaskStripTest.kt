@@ -27,6 +27,7 @@ class BackgroundTaskStripTest {
             ), initialRoute = com.unsupportedpastels.hermesandroid.navigation.SessionDetailRoute(id))
         } }
         compose.onAllNodesWithText("Thinking").assertCountEquals(0)
+        compose.onNodeWithTag("Turn activity").performClick()
         compose.onNodeWithText("Reasoning").assertIsDisplayed()
         compose.onNodeWithText("Partial answer preserved").assertIsDisplayed()
         compose.onAllNodesWithText("[response interrupted]").assertCountEquals(2)

@@ -515,6 +515,14 @@ interface HermesConnectionClient {
         profile: String = "default",
     ): List<ChatMessage> = throw UnsupportedOperationException()
 
+    /** Keeps official tool-result metadata until the progress parser has consumed it. */
+    suspend fun loadTranscriptEnvelope(
+        serverOrigin: ServerOrigin,
+        accessToken: String?,
+        durableSessionId: DurableSessionId,
+        profile: String = "default",
+    ): TranscriptEnvelope = TranscriptEnvelope(loadTranscript(serverOrigin, accessToken, durableSessionId, profile))
+
     suspend fun loadHostDirectories(
         serverOrigin: ServerOrigin,
         accessToken: String?,
@@ -1535,7 +1543,14 @@ class HttpHermesConnectionClient(
         accessToken: String?,
         durableSessionId: DurableSessionId,
         profile: String,
-    ): List<ChatMessage> = try {
+    ): List<ChatMessage> = loadTranscriptEnvelope(serverOrigin, accessToken, durableSessionId, profile).messages
+
+    override suspend fun loadTranscriptEnvelope(
+        serverOrigin: ServerOrigin,
+        accessToken: String?,
+        durableSessionId: DurableSessionId,
+        profile: String,
+    ): TranscriptEnvelope = try {
         TRANSCRIPT_PAGE_LIMITS.forEachIndexed { index, pageLimit ->
             try {
                 return loadTranscriptPage(
@@ -1564,7 +1579,7 @@ class HttpHermesConnectionClient(
         durableSessionId: DurableSessionId,
         pageLimit: Int,
         profile: String,
-    ): List<ChatMessage> {
+    ): TranscriptEnvelope {
         val encodedId = durableSessionId.value.encodeURLPathPart()
         val response = client.get("${serverOrigin.value}/api/sessions/$encodedId/messages") {
             hermesAuth(accessToken)
@@ -1586,7 +1601,9 @@ class HttpHermesConnectionClient(
         val decoded = json.decodeFromString<HermesTranscriptResponse>(
             response.readBodyTextBounded(MAX_TRANSCRIPT_BODY_BYTES),
         )
-        return (decoded.messages.ifEmpty { decoded.data }).mapNotNull { row ->
+        val rows = decoded.messages.ifEmpty { decoded.data }.takeLast(pageLimit)
+        val progress = com.unsupportedpastels.hermesandroid.app.DurableProgressParser.parse(rows)
+        val messages = rows.mapNotNull { row ->
             val role = when (row["role"]?.jsonPrimitive?.contentOrNull?.lowercase()) {
                 "user" -> ChatMessageRole.User
                 "assistant" -> ChatMessageRole.Assistant
@@ -1624,6 +1641,7 @@ class HttpHermesConnectionClient(
                 reasoningText = reasoning.orEmpty(),
             )
         }
+        return TranscriptEnvelope(messages, progress)
     }
 
     override suspend fun loadHostFiles(

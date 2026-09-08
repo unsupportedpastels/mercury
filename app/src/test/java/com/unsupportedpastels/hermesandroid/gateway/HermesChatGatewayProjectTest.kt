@@ -106,6 +106,68 @@ class HermesChatGatewayProjectTest {
     }
 
     @Test
+    fun todoListToolNameFromLiveHostAlsoCarriesBoundedTodoState() = runTest {
+        // Hermes hosts emit the checklist tool as `todo_list`; the typed
+        // `todos` payload is identical to the `todo` shape.
+        val socket = MetadataSocket()
+        val connection = HermesChatGateway(
+            origin = ServerOrigin.parse("https://hermes.example"),
+            accessToken = "access-token",
+            ticketClient = object : WsTicketClient {
+                override suspend fun mintTicket(origin: ServerOrigin, accessToken: String) =
+                    WsTicket("ticket", 30)
+            },
+            socketFactory = object : ChatWebSocketFactory { override suspend fun connect(url: String) = socket },
+            parentScope = backgroundScope,
+        ).connect()
+
+        socket.offer(
+            """{"jsonrpc":"2.0","method":"event","params":{"session_id":"runtime-1","type":"tool.complete","payload":{"tool_id":"todo-tool","name":"todo_list","summary":"updated","todos":[{"id":"one","content":"Verify strip","status":"in_progress"}]}}}""",
+        )
+
+        val event = connection.events.first()
+        val todoEvent = event as HermesChatEvent.ToolComplete
+        assertEquals(
+            listOf(RunTodoStatus.InProgress),
+            todoEvent.todos?.map(RunTodoItem::status),
+        )
+        connection.close()
+    }
+
+    @Test
+    fun progressNeverPromotesPartialArgsAndMarksRelayReplayAsHistorical() = runTest {
+        val socket = MetadataSocket()
+        val connection = HermesChatGateway(
+            origin = ServerOrigin.parse("https://hermes.example"),
+            accessToken = "access-token",
+            ticketClient = object : WsTicketClient {
+                override suspend fun mintTicket(origin: ServerOrigin, accessToken: String) = WsTicket("ticket", 30)
+            },
+            socketFactory = object : ChatWebSocketFactory { override suspend fun connect(url: String) = socket },
+            parentScope = backgroundScope,
+        ).connect()
+        try {
+            for (type in listOf("tool.start", "tool.complete")) {
+                socket.offer("""{"jsonrpc":"2.0","method":"event","params":{"session_id":"runtime-1","type":"$type","payload":{"tool_id":"partial","name":"todo_list","args":{"todos":[{"id":"one","status":"completed"}]}}}}""")
+                when (val event = connection.events.first()) {
+                    is HermesChatEvent.ToolStart -> assertEquals(null, event.todos)
+                    is HermesChatEvent.ToolComplete -> {
+                        assertEquals(null, event.todos)
+                        assertEquals(null, event.progressSnapshot)
+                    }
+                    else -> error("Expected tool event")
+                }
+            }
+            socket.offer("""{"jsonrpc":"2.0","method":"event","params":{"session_id":"runtime-1","type":"tool.complete","relay_replay":true,"payload":{"tool_id":"full","name":"todo_list","result":{"todos":[],"revision":8}}}}""")
+            val complete = connection.events.first() as HermesChatEvent.ToolComplete
+            assertTrue(complete.historical)
+            assertTrue(complete.progressSnapshot!!.hasMilestoneSnapshot)
+            assertEquals(8L, complete.progressSnapshot!!.revision)
+            assertEquals(emptyList<RunTodoItem>(), complete.todos)
+        } finally { connection.close() }
+    }
+
+    @Test
     fun processListUsesTheSelectedRuntimeAndBoundsOfficialRows() = runTest {
         val socket = MetadataSocket()
         socket.onSend = { frame ->

@@ -242,7 +242,8 @@ class HermesAppTest {
             }
         }
 
-        // Collapsed: one group header, no raw per-tool rows visible yet.
+        composeRule.onNodeWithTag("Turn activity").assertIsDisplayed().performClick()
+        // The turn disclosure retains the expandable per-tool group.
         composeRule.onNodeWithContentDescription("3 actions, completed, collapsed")
             .assertIsDisplayed()
         composeRule.onAllNodesWithText("Tool").assertCountEquals(0)
@@ -519,6 +520,7 @@ class HermesAppTest {
             }
         }
 
+        composeRule.onNodeWithContentDescription("Change session model").assertIsDisplayed()
         composeRule.onNodeWithText("gpt-5.6-sol").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Change reasoning effort").assertIsDisplayed().performClick()
         composeRule.onNodeWithText("high").performClick()
@@ -548,6 +550,7 @@ class HermesAppTest {
             }
         }
 
+        composeRule.onNodeWithContentDescription("Change session model").assertIsDisplayed()
         composeRule.onNodeWithText("high").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Reported reasoning effort")
             .assertIsDisplayed()
@@ -577,6 +580,7 @@ class HermesAppTest {
             }
         }
 
+        composeRule.onNodeWithContentDescription("Change session model").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Change reasoning effort").assertIsDisplayed().performClick()
         composeRule.onNodeWithText("high").performClick()
         assertEquals(sessionId to "high", selectedReasoning)
@@ -606,6 +610,7 @@ class HermesAppTest {
             }
         }
 
+        composeRule.onNodeWithContentDescription("Change session model").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Change fast mode").assertIsDisplayed().performClick()
         composeRule.onNodeWithText("Fast").performClick()
         assertEquals(sessionId to true, selectedFast)
@@ -702,6 +707,7 @@ class HermesAppTest {
             }
         }
 
+        composeRule.onNodeWithContentDescription("Change session model").assertIsDisplayed()
         composeRule.onNodeWithText("gpt-5.6-sol").assertIsDisplayed()
         composeRule.onNodeWithText("medium").assertIsDisplayed()
         composeRule.onAllNodesWithText("Fast").assertCountEquals(0)
@@ -1561,15 +1567,12 @@ class HermesAppTest {
         }
 
         composeRule.onNodeWithText("First session").performClick()
-        composeRule.onNodeWithContentDescription("Current status: working — Gathering context")
-            .assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("2 actions, running, collapsed").performClick()
-        composeRule.onNodeWithContentDescription("Running tool read_file: src/main.kt")
-            .assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("Completed tool shell: Listed project files")
-            .performScrollTo()
-            .assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Activity: Exploring · src/main.kt").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Stop Hermes response").assertIsDisplayed()
+        composeRule.onAllNodesWithContentDescription("2 actions, running, collapsed").assertCountEquals(0)
+        composeRule.onNodeWithTag("Composer activity line").performClick()
+        composeRule.onNodeWithContentDescription("Running tool read_file: src/main.kt").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Completed tool shell: Listed project files").assertIsDisplayed()
     }
 
     @Test
@@ -1637,15 +1640,10 @@ class HermesAppTest {
         }
 
         composeRule.onNodeWithText("First session").performClick()
-        composeRule.onNodeWithText("working").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Activity: Exploring · src/main.kt").assertIsDisplayed().performClick()
         composeRule.onNodeWithText("Gathering context").assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("2 actions, running, collapsed").performClick()
-        composeRule.onNodeWithText("read_file").assertIsDisplayed()
-        composeRule.onNodeWithText("src/main.kt").assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("Running").assertIsDisplayed()
-        composeRule.onNodeWithText("shell").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithText("Listed project files").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("Completed").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Running tool read_file: src/main.kt").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Completed tool shell: Listed project files").assertIsDisplayed()
         composeRule.onAllNodesWithText("arguments").assertCountEquals(0)
         composeRule.onAllNodesWithText("results").assertCountEquals(0)
         composeRule.onAllNodesWithText("duration").assertCountEquals(0)
@@ -1695,21 +1693,14 @@ class HermesAppTest {
             }
         }
 
-        composeRule.onNodeWithContentDescription("2 actions, completed, collapsed")
-            .assertIsDisplayed()
+        composeRule.onNodeWithText("The answer remains the primary content.").assertIsDisplayed()
         composeRule.onAllNodesWithText("search_files").assertCountEquals(0)
-        composeRule.onAllNodesWithText("read_file").assertCountEquals(0)
-
-        composeRule.onNodeWithContentDescription("2 actions, completed, collapsed").performClick()
-
-        composeRule.onNodeWithContentDescription("2 actions, completed, expanded")
-            .assertIsDisplayed()
-        composeRule.onNodeWithContentDescription(
-            "Completed tool search_files: Found the relevant plan section",
-        ).assertIsDisplayed()
-        composeRule.onNodeWithContentDescription(
-            "Completed tool read_file: Read the tracked backlog",
-        ).assertIsDisplayed()
+        composeRule.onAllNodesWithTag("Composer activity line").assertCountEquals(0)
+        // Runtime-only summaries have no transcript turn identity: expose them as session activity.
+        composeRule.onNodeWithContentDescription("Open session details").performClick()
+        composeRule.onNodeWithContentDescription("Open activity details").performClick()
+        composeRule.onNodeWithContentDescription("Completed tool search_files: Found the relevant plan section").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Completed tool read_file: Read the tracked backlog").assertIsDisplayed()
     }
 
     @Test
@@ -1720,6 +1711,7 @@ class HermesAppTest {
             chatSessions = mapOf(
                 sessionId to ChatSessionSnapshot(
                     messages = listOf(
+                        ChatMessage(ChatMessageRole.Tool, "read_file result"),
                         ChatMessage(
                             role = ChatMessageRole.Assistant,
                             text = transcriptText,
@@ -1751,13 +1743,13 @@ class HermesAppTest {
             .fetchSemanticsNode()
             .boundsInRoot
             .top
-        val completedSummaryTop = composeRule.onNodeWithContentDescription("1 action, completed, collapsed")
+        val completedSummaryTop = composeRule.onNodeWithContentDescription("Activity, 1 step, collapsed")
             .fetchSemanticsNode()
             .boundsInRoot
             .top
 
         assertTrue(transcriptTop < completedSummaryTop)
-        composeRule.onNodeWithContentDescription("1 action, completed, collapsed")
+        composeRule.onNodeWithContentDescription("Activity, 1 step, collapsed")
             .assert(hasAnyAncestor(hasTestTag("Session timeline")))
     }
 
@@ -1788,14 +1780,13 @@ class HermesAppTest {
             }
         }
 
-        composeRule.onNodeWithContentDescription("1 action, completed, collapsed").performClick()
-        composeRule.onNodeWithContentDescription("Completed tool read_file: Read the file")
-            .assertIsDisplayed()
-
+        composeRule.onNodeWithContentDescription("Open session details").performClick()
+        composeRule.onNodeWithContentDescription("Open activity details").performClick()
+        composeRule.onNodeWithContentDescription("Completed tool read_file: Read the file").assertIsDisplayed()
         restorationTester.emulateSavedInstanceStateRestore()
-
-        composeRule.onNodeWithContentDescription("1 action, completed, collapsed").assertIsDisplayed()
-        composeRule.onAllNodesWithText("Read the file").assertCountEquals(0)
+        composeRule.onAllNodesWithTag("Session activity sheet").assertCountEquals(0)
+        composeRule.onAllNodesWithTag("Composer activity line").assertCountEquals(0)
+        composeRule.onNodeWithText("Done").assertIsDisplayed()
     }
 
     @Test
@@ -2252,6 +2243,7 @@ class HermesAppTest {
             connectedSnapshot.copy(
                 chatSessions = mapOf(
                     sessionId to ChatSessionSnapshot(
+                        isSending = true,
                         messages = listOf(
                             ChatMessage(
                                 role = ChatMessageRole.Assistant,
@@ -2270,6 +2262,7 @@ class HermesAppTest {
             }
         }
 
+        composeRule.onNodeWithTag("Composer activity line").performClick()
         composeRule.onNodeWithContentDescription("Show thinking").performClick()
         composeRule.onNodeWithText("Reasoning details").assertIsDisplayed()
         composeRule.runOnIdle {
@@ -2564,6 +2557,9 @@ class HermesAppTest {
 
         composeRule.onNodeWithText("First session").performClick()
         composeRule.onNode(hasSetTextAction()).performTextInput("Keep this draft")
+        composeRule.onNodeWithContentDescription("Change session model").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Open session details").assertIsDisplayed()
+        composeRule.onAllNodesWithContentDescription("Composer options").assertCountEquals(0)
         composeRule.onNodeWithContentDescription("Change session model").performClick()
 
         assertEquals(sessionId, pickerOpened)

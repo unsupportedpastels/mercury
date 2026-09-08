@@ -68,7 +68,7 @@ class ComposerRecoveryTest {
         chat.value = ChatSessionSnapshot(connectionPhase = ChatConnectionPhase.Reconnecting, isLoading = true, isSending = true)
         render(controller = true)
         rule.onNode(hasSetTextAction()).assertIsEnabled().performTextReplacement("Edited during recovery")
-        rule.onNodeWithText("Reconnecting…").assertIsDisplayed()
+        rule.onNodeWithText("Reconnecting").assertIsDisplayed()
         rule.onNodeWithContentDescription("Send message").assertIsNotEnabled()
         rule.onAllNodesWithContentDescription("Stop Hermes response").assertCountEquals(0)
         rule.runOnIdle { assertEquals("Edited during recovery", draft.value); assertEquals(0, sends) }
@@ -77,7 +77,7 @@ class ComposerRecoveryTest {
     @Test fun connectingGatesSendWithoutClaimingResponse() {
         chat.value = ChatSessionSnapshot(connectionPhase = ChatConnectionPhase.Connecting, isSending = true)
         render()
-        rule.onNodeWithText("Connecting…").assertIsDisplayed()
+        rule.onNodeWithText("Connecting").assertIsDisplayed()
         rule.onNodeWithContentDescription("Send message").assertIsNotEnabled()
         rule.onAllNodesWithText("Hermes is responding…").assertCountEquals(0)
     }
@@ -141,7 +141,7 @@ class ComposerRecoveryTest {
         rule.onNodeWithContentDescription("Send message").performClick()
         rule.onNodeWithContentDescription("Send message").assertIsNotEnabled()
         rule.runOnIdle { chat.value = chat.value.copy(connectionPhase = ChatConnectionPhase.Submitting) }
-        rule.onNodeWithText("Sending…").assertIsDisplayed()
+        rule.onNodeWithText("Sending").assertIsDisplayed()
         rule.onNode(hasSetTextAction()).assertIsEnabled()
         rule.onNodeWithContentDescription("Send message").assertIsNotEnabled()
         rule.runOnIdle { assertEquals(1, sends) }
