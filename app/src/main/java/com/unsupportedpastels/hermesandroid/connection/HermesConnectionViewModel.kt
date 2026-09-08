@@ -5522,7 +5522,7 @@ class HermesConnectionViewModel(
                 candidate = if (relayTarget != null) {
                     relaySessionFactory?.invoke(
                         relayTarget,
-                        mutableSnapshots.value.selectedProfile,
+                        profile,
                         RelayAdmissionEnvelope.channelForSession(durableSessionId.value),
                     ) ?: throw HermesConnectionException("Mercury Relay chat is unavailable")
                 } else {
