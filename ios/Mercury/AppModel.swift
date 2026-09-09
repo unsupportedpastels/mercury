@@ -295,6 +295,37 @@ final class AppModel {
         self.offlineCacheStore = offlineCacheStore
         self.relayTargetStore = relayTargetStore
         self.startupChoiceStore = startupChoiceStore
+        Task { [weak self] in
+            await RelayConnectionPool.shared.setTaskSink { target, profile, durable, tasks in
+                Task { @MainActor in
+                    self?.observeRelayBackgroundTasks(target: target, profile: profile,
+                                                      durable: durable, tasks: tasks)
+                }
+            }
+        }
+    }
+
+    // MARK: - Background tasks
+
+    /// One key per (transport, profile, durable session) for `backgroundTasksBySession`.
+    static func backgroundTaskScope(relayTarget: RelayPairedTarget?, serverOrigin: String?,
+                                    profile: String, durable: String) -> String {
+        let origin = relayTarget.map { "relay:\($0.relayOrigin)|\($0.id)" }
+            ?? "direct:\(serverOrigin ?? "unconfigured")"
+        return "\(origin)|\(profile)|\(durable)"
+    }
+
+    /// A pooled relay reader applied child evidence for a durable session,
+    /// whether or not that chat is open. Home reads this dictionary, so the
+    /// copy must follow the owner or a completion would strand a stale row.
+    func observeRelayBackgroundTasks(target: RelayPairedTarget, profile: String,
+                                     durable: String, tasks: BackgroundTasks) {
+        guard activeRelayTarget?.id == target.id else { return }
+        let scope = Self.backgroundTaskScope(relayTarget: target, serverOrigin: nil,
+                                             profile: profile, durable: durable)
+        if backgroundTasksBySession[scope] != tasks {
+            backgroundTasksBySession[scope] = tasks
+        }
     }
 
     /// The currently live, successfully selected identity. It is derived from

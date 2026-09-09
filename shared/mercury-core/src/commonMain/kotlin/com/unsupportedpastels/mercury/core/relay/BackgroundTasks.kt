@@ -175,6 +175,15 @@ object BackgroundTaskPresentationPolicy {
         return timeLabel(rows.maxBy { it.observedAtMillis }, now)
     }
 
+    /**
+     * Rows a host-wide "running" surface may show: identity known, still
+     * observable, and with worker activity inside the recency window. A stale
+     * or unavailable row is evidence for the owning chat's strip, not proof
+     * that anything is running now.
+     */
+    fun runningRows(rows: List<BackgroundTaskRow>, now: Long): List<BackgroundTaskRow> =
+        rows.filter { it.recentlyActive(now) }.sortedByDescending { it.observedAtMillis }
+
     private fun isStatusUnavailable(row: BackgroundTaskRow, now: Long): Boolean =
         !row.available || !row.identityKnown || row.status == BackgroundTaskStatus.Unknown || !row.recentlyActive(now)
 }
@@ -293,8 +302,14 @@ internal fun decodeBackgroundTaskEvent(type: String, runtime: String, payload: J
         else -> return null
     }
     if (runtime.isBlank() || runtime.length > 512) return null
+    // Identifiers and enums must be exact: an over-long value is rejected.
     fun text(key: String, max: Int): String? = (payload[key] as? JsonPrimitive)
         ?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() && it.length <= max }
+    // Free text is display evidence: an over-long value is clipped, never
+    // dropped, so a long delegation goal still yields a legible title.
+    fun clipped(key: String, max: Int): String? = (payload[key] as? JsonPrimitive)
+        ?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+        ?.let { clipDisplayText(it, max) }
     val child = text("subagent_id", 256) ?: text("child_session_id", 256)?.let { "session:$it" }
         ?: text("delegation_id", 256)?.let { batch ->
             (payload["task_index"] as? JsonPrimitive)?.intOrNull?.takeIf { it in 0..255 }?.let { "$batch:$it" }
@@ -305,8 +320,26 @@ internal fun decodeBackgroundTaskEvent(type: String, runtime: String, payload: J
         "interrupted", "cancelled", "canceled", "stopped" -> BackgroundTaskStatus.Stopped
         else -> BackgroundTaskStatus.Unknown
     }
-    return BackgroundTaskEvent(runtime, kind, child, text("goal", 240),
-        text("tool_preview", 320) ?: text("text", 320) ?: text("tool_name", 120) ?: text("summary", 320), terminal)
+    return BackgroundTaskEvent(runtime, kind, child, clipped("goal", GOAL_DISPLAY_CHARS),
+        clipped("tool_preview", ACTION_DISPLAY_CHARS) ?: clipped("text", ACTION_DISPLAY_CHARS)
+            ?: text("tool_name", 120) ?: clipped("summary", ACTION_DISPLAY_CHARS), terminal)
+}
+
+internal const val GOAL_DISPLAY_CHARS = 240
+internal const val ACTION_DISPLAY_CHARS = 320
+
+/**
+ * Bounds free text for a one-line native row: only the first line is kept and
+ * anything beyond [max] is cut at a word boundary with an ellipsis.
+ */
+internal fun clipDisplayText(value: String, max: Int = Int.MAX_VALUE): String {
+    val firstLine = value.lineSequence().map(String::trim).firstOrNull(String::isNotEmpty) ?: return ""
+    if (firstLine.length <= max) return firstLine
+    val budget = (max - 1).coerceAtLeast(1)
+    val cut = firstLine.take(budget)
+    val boundary = cut.lastIndexOf(' ')
+    val head = if (boundary >= budget / 2) cut.substring(0, boundary) else cut
+    return head.trimEnd() + "\u2026"
 }
 
 data class BackgroundTaskRegistryEntry(val subagentId: String, val status: String)

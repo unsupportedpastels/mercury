@@ -125,4 +125,40 @@ class BackgroundTasksTest {
         assertEquals(1000L, stale.rows.single().observedAtMillis)
         assertEquals(0, started.activeCount(121001))
     }
+
+    @Test fun longGoalIsClippedToLegibleTitleNotDropped() {
+        val goal = ("Write one original long poem, 80-100 lines, titled 'The House That Kept the Rain'. " +
+            "Literary free verse about siblings clearing their late mother's house and discovering she secretly " +
+            "repaired neighbors' broken things for decades. Concrete images, restraint, no rhyme, and an ending that " +
+            "lands on an object rather than a statement.")
+        assertTrue(goal.length > GOAL_DISPLAY_CHARS)
+        val decoded = event("subagent.tool", """{"subagent_id":"child","goal":${Json.encodeToString(kotlinx.serialization.json.JsonPrimitive.serializer(), kotlinx.serialization.json.JsonPrimitive(goal))},"text":"humanizer"}""")
+        val title = requireNotNull(decoded.goal)
+        assertTrue(title.length <= GOAL_DISPLAY_CHARS)
+        assertTrue(title.endsWith("\u2026"))
+        assertTrue(title.startsWith("Write one original long poem"))
+        assertFalse(title.dropLast(1).endsWith(" "))
+        assertEquals("humanizer", decoded.action)
+        val row = BackgroundTasks().reduce(decoded, runtime, 1000).rows.single()
+        assertEquals(title, row.goal)
+    }
+
+    @Test fun clipKeepsFirstLineAndCutsAtWordBoundary() {
+        assertEquals("first line", clipDisplayText("  first line \nsecond", 100))
+        assertEquals("alpha beta\u2026", clipDisplayText("alpha beta gamma delta", 14))
+        assertEquals("abcdefghijklm\u2026", clipDisplayText("abcdefghijklmnopqrstuvwxyz", 14))
+        assertEquals("", clipDisplayText("  \n  ", 14))
+    }
+
+    @Test fun runningRowsShowOnlyRecentAvailableIdentifiedActivity() {
+        val active = BackgroundTasks().reduce(event("subagent.tool"), runtime, 100_000).rows.single()
+        val stale = active.copy(id = "stale", observedAtMillis = 1_000)
+        val unavailable = active.copy(id = "gone", available = false)
+        val finished = active.copy(id = "done", status = BackgroundTaskStatus.Finished)
+        val anonymous = active.copy(id = "identity-unavailable", identityKnown = false, status = BackgroundTaskStatus.Unknown)
+        val newer = active.copy(id = "newer", observedAtMillis = 101_000)
+        val rows = listOf(stale, unavailable, active, finished, anonymous, newer)
+        assertEquals(listOf(newer, active), BackgroundTaskPresentationPolicy.runningRows(rows, 125_000))
+        assertEquals(emptyList(), BackgroundTaskPresentationPolicy.runningRows(rows, 250_000))
+    }
 }

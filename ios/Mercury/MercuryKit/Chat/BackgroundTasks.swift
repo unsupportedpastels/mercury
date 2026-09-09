@@ -123,6 +123,16 @@ struct BackgroundTasks: @unchecked Sendable, Equatable {
             headline: decision.headline
         )
     }
+    /// Rows a host-wide "running" surface may show; see the shared policy.
+    static func runningRows(_ rows: [BackgroundTaskRow], now: Int64) -> [BackgroundTaskRow] {
+        let core = MercuryCore.BackgroundTaskPresentationPolicy.shared.runningRows(rows: rows.map(\.core), now: now)
+        return core.map { row in
+            BackgroundTaskRow(runtime: row.runtimeId, childID: row.id, goal: row.goal,
+                action: row.action, status: BackgroundTaskStatus(row.status),
+                observedAtMillis: row.observedAtMillis, available: row.available,
+                identityKnown: row.identityKnown)
+        }
+    }
     func secondaryLabel(rows: [BackgroundTaskRow], now: Int64) -> String {
         MercuryCore.BackgroundTaskPresentationPolicy.shared.secondaryLabel(
             rows: rows.map(\.core), now: now
