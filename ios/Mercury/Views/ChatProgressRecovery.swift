@@ -55,6 +55,79 @@ extension ChatView {
         }
     }
 
+    /// How often a chat re-asks the gateway registry about unresolved children.
+    static let backgroundRegistryPollInterval: Duration = .seconds(30)
+
+    /// A registry poll stops for a definitively unsupported method or a dead
+    /// connection (its reconnect restarts polling); every other failure is
+    /// retried on the next interval, matching the Android loop.
+    static func registryPollContinues(after error: Error, connectionClosed: Bool) -> Bool {
+        if connectionClosed || error is CancellationError || error is ChatMethodNotFoundError { return false }
+        return true
+    }
+
+    /// A reopened app's only child evidence is a recovered snapshot with no
+    /// fresh event to observe, and a child inside a long tool call emits
+    /// nothing. The gateway's `delegation.status` registry is the authoritative
+    /// liveness signal, so keep asking it while unresolved children remain.
+    /// Each "running" answer counts as activity for one window without being
+    /// mistaken for a worker event. Registry silence never invents rows.
+    @MainActor
+    func startBackgroundRegistryPolling() {
+        state.backgroundRegistryTask?.cancel()
+        state.backgroundRegistryPolling = false
+        guard backgroundTasks.hasUnresolvedIdentifiedChildren, let childRuntime = state.runtimeSessionID,
+              let candidate = state.connection, let ownershipToken = state.connectionOwnershipToken,
+              state.connectionOwnership.isCurrent(ownershipToken) else { return }
+        let scope = backgroundTaskScope
+        state.backgroundRegistryGeneration &+= 1
+        let generation = state.backgroundRegistryGeneration
+        state.backgroundRegistryPolling = true
+        state.backgroundRegistryTask = Task { @MainActor [weak candidate] in
+            defer { if state.backgroundRegistryGeneration == generation { state.backgroundRegistryPolling = false } }
+            while !Task.isCancelled {
+                guard let candidate, state.connectionOwnership.isCurrent(ownershipToken), state.connection === candidate,
+                      backgroundTaskScope == scope, state.runtimeSessionID == childRuntime else { return }
+                let statuses: [String: String]
+                do {
+                    statuses = try await candidate.backgroundTaskStatuses()
+                } catch {
+                    // Retain last known rows; an unanswered registry is not
+                    // success or failure. Only a host without the method ends
+                    // the poll: a transient RPC failure must not hide a
+                    // still-running silent child once its window expires.
+                    guard Self.registryPollContinues(after: error, connectionClosed: candidate.isClosed) else { return }
+                    try? await Task.sleep(for: Self.backgroundRegistryPollInterval)
+                    continue
+                }
+                guard !Task.isCancelled, state.connectionOwnership.isCurrent(ownershipToken), state.connection === candidate,
+                      backgroundTaskScope == scope, state.runtimeSessionID == childRuntime else { return }
+                if let relay = candidate.relaySocket {
+                    let tasks = await relay.reconcileRetainedTasks(durable: state.durableID ?? sessionID,
+                                                                  runtime: childRuntime, statuses: statuses)
+                    guard !Task.isCancelled, state.connectionOwnership.isCurrent(ownershipToken),
+                          state.connection === candidate, backgroundTaskScope == scope,
+                          state.runtimeSessionID == childRuntime, let tasks else { return }
+                    appModel.backgroundTasksBySession[scope] = tasks
+                } else {
+                    var tasks = backgroundTasks
+                    tasks.reconcile(statuses, runtime: childRuntime, previousRuntime: state.previousRuntimeSessionID,
+                                    now: Int64(Date().timeIntervalSince1970 * 1000))
+                    appModel.backgroundTasksBySession[scope] = tasks
+                }
+                guard backgroundTasks.hasUnresolvedIdentifiedChildren else { return }
+                try? await Task.sleep(for: Self.backgroundRegistryPollInterval)
+            }
+        }
+    }
+
+    /// Fresh child evidence on a chat that is not already asking the registry.
+    @MainActor
+    func startBackgroundRegistryPollingIfIdle() {
+        guard !state.backgroundRegistryPolling else { return }
+        startBackgroundRegistryPolling()
+    }
+
     func visibleBackgroundTasks(now: Int64) -> BackgroundTasks {
         BackgroundTasks(rows: backgroundTasks.rows.filter {
             !($0.isDismissible(now: now) && state.dismissedBackgroundEvidence.contains($0.dismissalKey))

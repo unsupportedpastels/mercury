@@ -2299,6 +2299,34 @@ class HermesConnectionViewModelTest {
     }
 
     @Test
+    fun firstLiveChildEventStartsRegistryPollingAndKeepsSilentChildConfirmed() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        // Connected with no retained rows: only the live child event can start polling.
+        val session = TerminalToolChatSession(withBackgroundTask = true, registryReportsRunning = 2)
+        val client = AuthenticatingHermesConnectionClient()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin)),
+            client = client, tokenStore = FixedTokenStore(),
+            chatConnector = HermesChatConnector { _, _ -> session },
+        )
+        runCurrent()
+        client.probeResponse.complete(authRequiredInfo())
+        runCurrent()
+        client.authenticationResponse.complete(AuthenticatedHermesConnection("user", emptyList()))
+        advanceUntilIdle()
+        val id = viewModel.createNewSession()
+        viewModel.sendMessage(id, "research")
+        advanceUntilIdle()
+
+        // Two "running" answers then an unsupported method: the poll ran after the
+        // first child event, kept going on the interval, and stopped cleanly.
+        assertEquals(3, session.delegationStatusCalls)
+        val row = viewModel.snapshots.value.chatSessions.getValue(id).backgroundTasks.rows.single()
+        assertEquals("own-child", row.id)
+        assertTrue(row.registryConfirmedAtMillis > 0L)
+    }
+
+    @Test
     fun duplicateSendCannotReplacePendingDraftCreateOrItsCanonicalAlias() = runTest(dispatcher) {
         val origin = ServerOrigin.parse("https://hermes.example")
         val first = BlockingCreateProjectDraftChatSession("stale-canonical")
@@ -4692,10 +4720,24 @@ private class CanonicalProjectDraftChatSession(
     }
 }
 
-private class TerminalToolChatSession(private val withBackgroundTask: Boolean = false) : HermesChatSession {
+private class TerminalToolChatSession(
+    private val withBackgroundTask: Boolean = false,
+    /** How many registry polls report the child running before the method disappears. */
+    private val registryReportsRunning: Int = 0,
+) : HermesChatSession {
     private val channel = Channel<HermesChatEvent>(Channel.UNLIMITED)
     private val runtimeSessionId = RuntimeSessionId("runtime-terminal-tools")
     override val events = channel.receiveAsFlow()
+    var delegationStatusCalls = 0
+        private set
+
+    override suspend fun loadDelegationStatus(): DelegationStatus {
+        delegationStatusCalls += 1
+        if (delegationStatusCalls > registryReportsRunning) {
+            throw com.unsupportedpastels.hermesandroid.gateway.HermesChatMethodNotFoundException("delegation.status")
+        }
+        return DelegationStatus(active = listOf(DelegatedSubagent("own-child", "Review tests", "running")))
+    }
 
     override suspend fun resume(
         durableSessionId: DurableSessionId,

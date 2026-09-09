@@ -28,9 +28,22 @@ data class BackgroundTaskRow(
     val observedAtMillis: Long,
     val available: Boolean = true,
     val identityKnown: Boolean = true,
+    /**
+     * When the gateway's own subagent registry last reported this child as
+     * running. Registry polling is not worker activity (it never moves
+     * [observedAtMillis]), but it is authoritative liveness: a reopened app
+     * whose only child evidence is a recovered snapshot has no fresh event to
+     * observe, and the host saying "still running" must count as active.
+     */
+    val registryConfirmedAtMillis: Long = 0L,
 ) {
     val terminal: Boolean get() = status in setOf(BackgroundTaskStatus.Finished, BackgroundTaskStatus.Failed, BackgroundTaskStatus.Stopped)
-    fun recentlyActive(now: Long): Boolean = identityKnown && available && status == BackgroundTaskStatus.Active && now - observedAtMillis < 120_000
+    fun recentlyActive(now: Long): Boolean = identityKnown && available && status == BackgroundTaskStatus.Active &&
+        (observedRecently(now) || registryConfirmedRecently(now))
+    fun observedRecently(now: Long): Boolean =
+        observedAtMillis > 0L && now - observedAtMillis < ACTIVITY_WINDOW_MILLIS
+    fun registryConfirmedRecently(now: Long): Boolean =
+        registryConfirmedAtMillis > 0L && now - registryConfirmedAtMillis < ACTIVITY_WINDOW_MILLIS
     fun label(now: Long): String = when {
         terminal -> when (status) {
             BackgroundTaskStatus.Finished -> "Finished"
@@ -45,6 +58,7 @@ data class BackgroundTaskRow(
         !available -> "Last known · updates unavailable"
         status == BackgroundTaskStatus.Unknown -> "Status unavailable"
         !recentlyActive(now) -> "Last known active · no recent activity"
+        !observedRecently(now) -> "Active · host reports running"
         else -> "Active · observed activity"
     }
 
@@ -54,6 +68,11 @@ data class BackgroundTaskRow(
     fun dismissalKey(): String = BackgroundTaskPresentationPolicy.dismissalKey(this)
 
     fun timeLabel(now: Long): String = BackgroundTaskPresentationPolicy.timeLabel(this, now)
+
+    companion object {
+        /** How long one observation (a child event or a registry confirmation) counts as live. */
+        const val ACTIVITY_WINDOW_MILLIS = 120_000L
+    }
 }
 
 /** Shared summary and dismissal policy for unresolved child-task evidence. */
@@ -156,6 +175,15 @@ object BackgroundTaskPresentationPolicy {
         return timeLabel(rows.maxBy { it.observedAtMillis }, now)
     }
 
+    /**
+     * Rows a host-wide "running" surface may show: identity known, still
+     * observable, and with worker activity inside the recency window. A stale
+     * or unavailable row is evidence for the owning chat's strip, not proof
+     * that anything is running now.
+     */
+    fun runningRows(rows: List<BackgroundTaskRow>, now: Long): List<BackgroundTaskRow> =
+        rows.filter { it.recentlyActive(now) }.sortedByDescending { it.observedAtMillis }
+
     private fun isStatusUnavailable(row: BackgroundTaskRow, now: Long): Boolean =
         !row.available || !row.identityKnown || row.status == BackgroundTaskStatus.Unknown || !row.recentlyActive(now)
 }
@@ -171,21 +199,24 @@ data class BackgroundTasks(
      * [previousRuntime] is opt-in proof from the caller that this is a rebind of the SAME
      * durable session and origin/controller generation, not a different session's runtime.
      * Only exact previously observed, still-active IDs may move to the replacement binding.
-     * Registry polling is not child activity and must not refresh observedAtMillis.
+     * Registry polling is not child activity and must not refresh observedAtMillis; a
+     * "running" report is recorded separately as registry-confirmed liveness at [now].
      */
     fun reconcile(
         active: List<BackgroundTaskRegistryEntry>,
         runtime: String,
         previousRuntime: String = runtime,
+        now: Long = 0L,
     ): BackgroundTasks = copy(rows = rows.map { row ->
         val observed = active.singleOrNull { it.subagentId == row.id }
         val running = observed?.status == "running" || observed?.status == "active"
+        val confirmedAt = if (running) maxOf(now, row.registryConfirmedAtMillis) else row.registryConfirmedAtMillis
         when {
             !row.identityKnown || row.terminal || observed == null -> row
-            row.runtimeId == runtime -> row.copy(available = running)
+            row.runtimeId == runtime -> row.copy(available = running, registryConfirmedAtMillis = confirmedAt)
             row.runtimeId == previousRuntime && running && rows.none {
                 it.runtimeId == runtime && it.id == row.id && it.identityKnown
-            } -> row.copy(runtimeId = runtime, available = true)
+            } -> row.copy(runtimeId = runtime, available = true, registryConfirmedAtMillis = confirmedAt)
             else -> row
         }
     })
@@ -215,7 +246,8 @@ data class BackgroundTasks(
             if (event.historical) {
                 if (event.kind == BackgroundTaskEventKind.Complete) 0L else old?.observedAtMillis ?: 0L
             } else now,
-            available = !event.historical, identityKnown = childId != null)
+            available = !event.historical, identityKnown = childId != null,
+            registryConfirmedAtMillis = old?.registryConfirmedAtMillis ?: 0L)
         if (index < 0 && rows.size >= 64) return this // never evict unresolved work to invent a complete list
         return copy(
             rows = if (index < 0) rows + row else rows.toMutableList().also { it[index] = row },
@@ -270,8 +302,14 @@ internal fun decodeBackgroundTaskEvent(type: String, runtime: String, payload: J
         else -> return null
     }
     if (runtime.isBlank() || runtime.length > 512) return null
+    // Identifiers and enums must be exact: an over-long value is rejected.
     fun text(key: String, max: Int): String? = (payload[key] as? JsonPrimitive)
         ?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() && it.length <= max }
+    // Free text is display evidence: an over-long value is clipped, never
+    // dropped, so a long delegation goal still yields a legible title.
+    fun clipped(key: String, max: Int): String? = (payload[key] as? JsonPrimitive)
+        ?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+        ?.let { clipDisplayText(it, max) }
     val child = text("subagent_id", 256) ?: text("child_session_id", 256)?.let { "session:$it" }
         ?: text("delegation_id", 256)?.let { batch ->
             (payload["task_index"] as? JsonPrimitive)?.intOrNull?.takeIf { it in 0..255 }?.let { "$batch:$it" }
@@ -282,8 +320,26 @@ internal fun decodeBackgroundTaskEvent(type: String, runtime: String, payload: J
         "interrupted", "cancelled", "canceled", "stopped" -> BackgroundTaskStatus.Stopped
         else -> BackgroundTaskStatus.Unknown
     }
-    return BackgroundTaskEvent(runtime, kind, child, text("goal", 240),
-        text("tool_preview", 320) ?: text("text", 320) ?: text("tool_name", 120) ?: text("summary", 320), terminal)
+    return BackgroundTaskEvent(runtime, kind, child, clipped("goal", GOAL_DISPLAY_CHARS),
+        clipped("tool_preview", ACTION_DISPLAY_CHARS) ?: clipped("text", ACTION_DISPLAY_CHARS)
+            ?: text("tool_name", 120) ?: clipped("summary", ACTION_DISPLAY_CHARS), terminal)
+}
+
+internal const val GOAL_DISPLAY_CHARS = 240
+internal const val ACTION_DISPLAY_CHARS = 320
+
+/**
+ * Bounds free text for a one-line native row: only the first line is kept and
+ * anything beyond [max] is cut at a word boundary with an ellipsis.
+ */
+internal fun clipDisplayText(value: String, max: Int = Int.MAX_VALUE): String {
+    val firstLine = value.lineSequence().map(String::trim).firstOrNull(String::isNotEmpty) ?: return ""
+    if (firstLine.length <= max) return firstLine
+    val budget = (max - 1).coerceAtLeast(1)
+    val cut = firstLine.take(budget)
+    val boundary = cut.lastIndexOf(' ')
+    val head = if (boundary >= budget / 2) cut.substring(0, boundary) else cut
+    return head.trimEnd() + "\u2026"
 }
 
 data class BackgroundTaskRegistryEntry(val subagentId: String, val status: String)

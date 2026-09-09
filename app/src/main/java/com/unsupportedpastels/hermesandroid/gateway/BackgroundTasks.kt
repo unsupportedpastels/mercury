@@ -24,6 +24,7 @@ data class BackgroundTaskRow(
     val observedAtMillis: Long,
     val available: Boolean = true,
     val identityKnown: Boolean = true,
+    val registryConfirmedAtMillis: Long = 0L,
 ) {
     val terminal: Boolean get() = shared().terminal
     fun recentlyActive(now: Long): Boolean = shared().recentlyActive(now)
@@ -32,7 +33,7 @@ data class BackgroundTaskRow(
     fun dismissalKey(): String = shared().dismissalKey()
     fun timeLabel(now: Long): String = shared().timeLabel(now)
     internal fun shared() = com.unsupportedpastels.mercury.core.relay.BackgroundTaskRow(
-        runtimeId.value, id, goal, action, status, observedAtMillis, available, identityKnown)
+        runtimeId.value, id, goal, action, status, observedAtMillis, available, identityKnown, registryConfirmedAtMillis)
 }
 
 data class BackgroundTasks(
@@ -58,9 +59,10 @@ data class BackgroundTasks(
         status: com.unsupportedpastels.hermesandroid.app.DelegationStatus,
         runtime: RuntimeSessionId,
         previousRuntime: RuntimeSessionId = runtime,
+        now: Long = 0L,
     ): BackgroundTasks = shared().reconcile(status.active.map {
         com.unsupportedpastels.mercury.core.relay.BackgroundTaskRegistryEntry(it.subagentId, it.status)
-    }, runtime.value, previousRuntime.value).native()
+    }, runtime.value, previousRuntime.value, now).native()
     fun reduce(event: HermesChatEvent, expectedRuntime: RuntimeSessionId, now: Long): BackgroundTasks {
         if (event !is BackgroundTaskEvent) return this
         val current = shared()
@@ -70,7 +72,7 @@ data class BackgroundTasks(
     companion object {
         internal fun fromShared(state: com.unsupportedpastels.mercury.core.relay.BackgroundTasks) = BackgroundTasks(
             state.rows.map { BackgroundTaskRow(RuntimeSessionId(it.runtimeId), it.id, it.goal,
-                it.action, it.status, it.observedAtMillis, it.available, it.identityKnown) },
+                it.action, it.status, it.observedAtMillis, it.available, it.identityKnown, it.registryConfirmedAtMillis) },
             state.processedEventIds,
         )
     }

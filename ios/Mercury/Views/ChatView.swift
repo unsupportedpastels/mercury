@@ -83,9 +83,10 @@ struct ChatView: View {
     @State var state: ChatSessionState
 
     var backgroundTaskScope: String {
-        let origin = appModel.activeRelayTarget.map { "relay:\($0.relayOrigin)|\($0.id)" }
-            ?? "direct:\(appModel.serverOrigin ?? "unconfigured")"
-        return "\(origin)|\(appModel.activeProfile)|\(state.durableID ?? sessionID)"
+        AppModel.backgroundTaskScope(relayTarget: appModel.activeRelayTarget,
+                                     serverOrigin: appModel.serverOrigin,
+                                     profile: appModel.activeProfile,
+                                     durable: state.durableID ?? sessionID)
     }
     var backgroundTasks: BackgroundTasks {
         appModel.backgroundTasksBySession[backgroundTaskScope] ?? BackgroundTasks()
@@ -249,8 +250,13 @@ struct ChatView: View {
             state.readAloud?.stop()
             state.eventTask?.cancel()
             state.eventTask = nil
+            state.backgroundRegistryTask?.cancel()
+            state.backgroundRegistryTask = nil
             let closingConnection = state.connection
-            markBackgroundTasksUnavailable()
+            // A pooled relay reader outlives this screen and keeps applying
+            // child evidence through the pool's task sink; only a direct
+            // connection actually stops observing here.
+            if closingConnection?.relaySocket == nil { markBackgroundTasksUnavailable() }
             state.connectionOwnership.invalidate()
             state.connection = nil
             Task { if let closingConnection { await RelayConnectionPool.release(closingConnection) } }

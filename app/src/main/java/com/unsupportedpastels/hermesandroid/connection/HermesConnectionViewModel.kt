@@ -152,6 +152,9 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
+/** How often a chat re-asks the gateway registry about unresolved delegated children. */
+private const val BACKGROUND_REGISTRY_POLL_MILLIS = 30_000L
+
 class HermesConnectionViewModel(
     settingsStates: Flow<ServerSettingsState>,
     private val client: HermesConnectionClient,
@@ -5304,6 +5307,53 @@ class HermesConnectionViewModel(
         }
     }
 
+    private fun hasUnresolvedIdentifiedChildren(durableSessionId: DurableSessionId): Boolean =
+        mutableSnapshots.value.chatSessions[durableSessionId]?.backgroundTasks?.rows
+            ?.any { !it.terminal && it.identityKnown } == true
+
+    /**
+     * A reopened app's only child evidence is a recovered snapshot with no fresh
+     * event to observe, and a child inside a long tool call emits nothing. The
+     * gateway's subagent registry is the authoritative liveness signal, so keep
+     * asking it while unresolved children remain; each "running" report counts
+     * as activity for one window without pretending to be a worker event.
+     * Idempotent per controller: a running poll is never duplicated.
+     */
+    private fun startBackgroundRegistryPolling(
+        controller: PerSessionController,
+        session: HermesChatSession,
+        durableSessionId: DurableSessionId,
+        runtimeSessionId: RuntimeSessionId,
+        origin: ServerOrigin,
+        originGeneration: Long,
+        operationGeneration: Long,
+        previousRuntimeSessionId: RuntimeSessionId = runtimeSessionId,
+    ) {
+        if (controller.registryJob?.isActive == true) return
+        controller.registryJob = viewModelScope.launch {
+            var previousRuntime = previousRuntimeSessionId
+            while (true) {
+                if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration) ||
+                    liveControllers[durableSessionId]?.session !== session) return@launch
+                try {
+                    val status = session.loadDelegationStatus()
+                    if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration) &&
+                        liveControllers[durableSessionId]?.session === session) {
+                        updateChat(durableSessionId) {
+                            it.copy(backgroundTasks = it.backgroundTasks.reconcile(
+                                status, runtimeSessionId, previousRuntime, System.currentTimeMillis()))
+                        }
+                        previousRuntime = runtimeSessionId
+                    }
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: HermesChatMethodNotFoundException) { return@launch }
+                catch (_: Exception) { /* Retain last known rows; absence is not success. */ }
+                if (!hasUnresolvedIdentifiedChildren(durableSessionId)) return@launch
+                delay(BACKGROUND_REGISTRY_POLL_MILLIS)
+            }
+        }
+    }
+
     private fun collectEvents(
         session: HermesChatSession,
         durableSessionId: DurableSessionId,
@@ -5324,18 +5374,10 @@ class HermesConnectionViewModel(
             }
         }
         if (mutableSnapshots.value.chatSessions[durableSessionId]?.backgroundTasks?.rows?.isNotEmpty() == true) {
-            viewModelScope.launch {
-                try {
-                    val status = session.loadDelegationStatus()
-                    if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration) &&
-                        liveControllers[durableSessionId]?.session === session) {
-                        updateChat(durableSessionId) {
-                            it.copy(backgroundTasks = it.backgroundTasks.reconcile(status, runtimeSessionId, previousRuntimeSessionId))
-                        }
-                    }
-                } catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { /* Retain last known rows; absence is not success. */ }
-            }
+            startBackgroundRegistryPolling(
+                controller, session, durableSessionId, runtimeSessionId,
+                origin, originGeneration, operationGeneration, previousRuntimeSessionId,
+            )
         }
         val eventJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
             session.events.catch { error ->
@@ -5359,6 +5401,15 @@ class HermesConnectionViewModel(
                             it.copy(backgroundTasks = it.backgroundTasks.reduce(event, runtimeSessionId, System.currentTimeMillis()))
                         }
                         session.acknowledgeRelayEvent(event.eventId)
+                        // A chat that connected with no retained rows has no poll yet;
+                        // the first live child must start one or a child inside a long
+                        // silent tool call would vanish after its activity window.
+                        if (hasUnresolvedIdentifiedChildren(durableSessionId)) {
+                            startBackgroundRegistryPolling(
+                                controller, session, durableSessionId, runtimeSessionId,
+                                origin, originGeneration, operationGeneration,
+                            )
+                        }
                     }
                     is HermesChatEvent.MessageStart,
                     is HermesChatEvent.MessageDelta,
@@ -6984,6 +7035,7 @@ class HermesConnectionViewModel(
         clearSlashCompletion(durableSessionId)
         val controller = liveControllers[durableSessionId] ?: return
         controller.eventJob?.cancel()
+        controller.registryJob?.cancel()
         removeActiveRuntime(controller.runtimeSessionId)
         detachController(durableSessionId, controller.session, closeSession = true)
     }

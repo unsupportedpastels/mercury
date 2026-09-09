@@ -133,11 +133,23 @@ final class ChatSessionState {
     var connection: ChatConnection?
     var establishing = false
     var connectionOwnership = ChatConnectionOwnership()
-    var runtimeSessionID: String?
+    var runtimeSessionID: String? {
+        didSet { if let old = oldValue, old != runtimeSessionID { previousRuntimeSessionID = old } }
+    }
+    /// The runtime this durable session was bound to before the current one.
+    /// A resume may replace the runtime while retained children still carry
+    /// the old binding; the registry reconciler needs it to move them over.
+    var previousRuntimeSessionID: String?
     /// Durable session id adopted from `session.create`'s stored_session_id
     /// once the gateway persists the new runtime session.
     var durableID: String?
     var eventTask: Task<Void, Never>?
+    /// Periodic `delegation.status` reconciliation while unresolved children remain.
+    var backgroundRegistryTask: Task<Void, Never>?
+    var backgroundRegistryPolling = false
+    var backgroundRegistryGeneration: UInt64 = 0
+    /// Token of the published live connection, for observers started after connect.
+    var connectionOwnershipToken: ChatConnectionOwnership.Token?
     var pendingRequest: ApprovalSheet.Request?
     /// Batch clarify: qids already answered for the pending request.
     var clarifyAnsweredIDs: Set<String> = []
