@@ -288,7 +288,7 @@ private fun ToolActivityRow(tool: RunToolRow) {
 }
 
 @Composable
-private fun ProcessActivityRow(process: ProcessRow) {
+internal fun ProcessActivityRow(process: ProcessRow) {
     val title = process.command.lineSequence().firstOrNull()?.trim().orEmpty()
         .ifBlank { "background process" }
     val status = process.exitCode?.let { "${process.status} ($it)" } ?: process.status
@@ -305,17 +305,14 @@ private fun ProcessActivityRow(process: ProcessRow) {
             title,
             modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
         Text(
             status,
             style = MaterialTheme.typography.labelSmall,
-            color = if (process.status.equals("running", ignoreCase = true)) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            },
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

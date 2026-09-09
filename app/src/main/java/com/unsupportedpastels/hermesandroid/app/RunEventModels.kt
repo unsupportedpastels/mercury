@@ -35,18 +35,10 @@ data class RunToolRow(
     val state: RunToolState,
 )
 
-enum class RunTodoStatus {
-    Pending,
-    InProgress,
-    Completed,
-    Cancelled,
-}
+/** Milestone shape is a shared decision: the same rows drive Android and iOS. */
+typealias RunTodoStatus = com.unsupportedpastels.mercury.core.progress.RunTodoStatus
 
-data class RunTodoItem(
-    val id: String,
-    val content: String,
-    val status: RunTodoStatus,
-)
+typealias RunTodoItem = com.unsupportedpastels.mercury.core.progress.RunTodoItem
 
 data class RunStatus(
     val kind: String,

@@ -199,16 +199,19 @@ private const val MAX_TODO_PARSE_DEPTH = 2
 private val todoJson = Json { ignoreUnknownKeys = true }
 
 /**
- * `todo` is an ordinary official tool event. Its live list has appeared as
- * `todos`, and older released payloads wrap the same list in `result`/`args`.
+ * The checklist is an ordinary official tool event, named `todo` in older
+ * releases and `todo_list` in current hosts. Its live list has appeared as
+ * `todos`, and older released completions wrap the same list in `result`.
+ * Arguments may be partial merge updates and are never authoritative snapshots.
  * Parse only that bounded, typed shape; never turn arbitrary tool text into
  * activity state.
  */
 internal fun JsonObject.boundedTodoItems(): List<RunTodoItem>? {
     val name = stringValue("name")
-    if (name != "todo" && !(name == null && containsKey("todos"))) return null
+    val todoTool = name == "todo" || name == "todo_list"
+    if (!todoTool && !(name == null && containsKey("todos"))) return null
 
-    for (key in listOf("todos", "result", "args")) {
+    for (key in listOf("todos", "result")) {
         val value = this[key] ?: continue
         parseTodoElement(value, depth = 0)?.let { return it }
     }

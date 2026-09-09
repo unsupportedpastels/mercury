@@ -1,4 +1,5 @@
 import Foundation
+import MercuryCore
 
 // MARK: - Response models
 
@@ -159,6 +160,11 @@ struct SessionsClient {
     /// The server has shipped the array under either `"data"` or
     /// `"messages"`; both are accepted, whichever decodes first.
     func transcript(sessionID: String, limit: Int = 100) async throws -> [TranscriptMessage] {
+        try await transcriptWithProgress(sessionID: sessionID, limit: limit).messages
+    }
+
+    /// Reads the same bounded official page once, retaining tool metadata for progress.
+    func transcriptWithProgress(sessionID: String, limit: Int = 100) async throws -> TranscriptProgressPage {
         let pageLimits = Self.transcriptPageLimits.filter { $0 <= limit }
         let attempts = pageLimits.isEmpty ? [max(1, limit)] : pageLimits
         for (index, pageLimit) in attempts.enumerated() {
@@ -182,7 +188,7 @@ struct SessionsClient {
         let attempts = pageLimits.isEmpty ? [max(1, limit)] : pageLimits
         for (index, pageLimit) in attempts.enumerated() {
             do {
-                return try await transcriptPage(sessionID: sessionID, limit: pageLimit, offset: offset)
+                return try await transcriptPage(sessionID: sessionID, limit: pageLimit, offset: offset).messages
             } catch is ResponseTooLargeError {
                 if index == attempts.indices.last { throw ResponseTooLargeError() }
             }
@@ -190,7 +196,7 @@ struct SessionsClient {
         throw ResponseTooLargeError()
     }
 
-    private func transcriptPage(sessionID: String, limit: Int, offset: Int = 0) async throws -> [TranscriptMessage] {
+    private func transcriptPage(sessionID: String, limit: Int, offset: Int = 0) async throws -> TranscriptProgressPage {
         let query: [URLQueryItem] = [
             URLQueryItem(name: "profile", value: profile),
             URLQueryItem(name: "limit", value: String(limit)),
@@ -207,7 +213,8 @@ struct SessionsClient {
         if let authError = HermesAuthError.classify(response.statusCode) {
             throw authError
         }
-        return try JSONDecoder().decode(TranscriptEnvelope.self, from: data).messages
+        guard (200..<300).contains(response.statusCode) else { throw URLError(.badServerResponse) }
+        return try TranscriptProgressPage.decode(data)
     }
 }
 
@@ -225,6 +232,19 @@ private struct SessionSearchRow: Decodable {
     private enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case id, title, snippet, role
+    }
+}
+
+/// Raw metadata is consumed immediately and never persisted outside the server transcript.
+struct TranscriptProgressPage {
+    let messages: [TranscriptMessage]
+    let progress: MercuryCore.DurableProgress
+
+    static func decode(_ data: Data) throws -> Self {
+        let messages = try JSONDecoder().decode(TranscriptEnvelope.self, from: data).messages
+        let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let rows = envelope?["data"] as? [[String: Any]] ?? envelope?["messages"] as? [[String: Any]] ?? []
+        return Self(messages: messages, progress: SessionProgressBridge.parse(rows))
     }
 }
 

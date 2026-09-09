@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.unsupportedpastels.hermesandroid.app.ComposerAttachment
+import com.unsupportedpastels.hermesandroid.app.DurableProgress
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.ProjectId
 import com.unsupportedpastels.hermesandroid.app.ProjectLoadState
@@ -17,6 +18,7 @@ import com.unsupportedpastels.hermesandroid.app.ProcessRowsState
 import com.unsupportedpastels.hermesandroid.app.RunEventState
 import com.unsupportedpastels.hermesandroid.app.RunInteractionLifecycle
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
+import com.unsupportedpastels.hermesandroid.app.observe
 import com.unsupportedpastels.hermesandroid.app.reconcileProjectSession
 import com.unsupportedpastels.hermesandroid.app.isNoProjectBucket
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
@@ -463,8 +465,17 @@ class HermesConnectionViewModel(
         // the resume-time load), re-run connect() automatically. Deliberate
         // sign-in-required and healthy connected/connecting states are left alone.
         viewModelScope.launch {
+            var wasBackground = false
             appForegroundStates.collect { foreground ->
-                if (foreground) maybeReconnectOnForeground()
+                if (foreground) {
+                    maybeReconnectOnForeground()
+                    if (wasBackground) {
+                        // One bounded read per recently viewed session on actual foreground return;
+                        // never a heartbeat timer or a prompt/controller operation.
+                        mutableSnapshots.value.chatSessions.keys.toList().takeLast(10).forEach(::refreshSessionProgress)
+                    }
+                }
+                wasBackground = !foreground
             }
         }
     }
@@ -3177,11 +3188,11 @@ class HermesConnectionViewModel(
         }
     }
 
-    private suspend fun loadRelayTranscript(
+    private suspend fun loadRelayTranscriptEnvelope(
         target: RelayPairedTarget,
         durableSessionId: DurableSessionId,
         profile: String,
-    ): List<ChatMessage> = withRelayReader(target, profile) { session ->
+    ): TranscriptEnvelope = withRelayReader(target, profile) { session ->
             val expectedGeneration = generation
             val expectedOperation = sessionControllerRegistry.operationGeneration(durableSessionId)
             val result = session.relayRequest(
@@ -3205,7 +3216,7 @@ class HermesConnectionViewModel(
                         snapshot, serverDurableId(durableSessionId).value, profile),
                 ) }
             }
-            parseRelayTranscriptRows(result)
+            parseRelayTranscriptEnvelope(result)
     }
 
     private suspend fun ensureRelayFolderScope(
@@ -3257,11 +3268,11 @@ class HermesConnectionViewModel(
             try {
                 val relayTarget = activeRelayTarget
                 val messages = if (relayTarget != null) {
-                    loadRelayTranscript(relayTarget, durableSessionId, mutableSnapshots.value.selectedProfile)
+                    loadTranscriptWithProgress(origin, originGeneration, "", durableSessionId, profile)
                 } else {
                     val accessToken = accessTokenForRequest(origin, originGeneration)
                     if (!isCurrentOrigin(origin, originGeneration)) return@launch
-                    client.loadTranscript(origin, accessToken, serverDurableId(durableSessionId), profile)
+                    loadTranscriptWithProgress(origin, originGeneration, accessToken, durableSessionId, profile)
                 }
                 if (!isCurrentOrigin(origin, originGeneration)) return@launch
                 updateChat(durableSessionId) {
@@ -3284,6 +3295,86 @@ class HermesConnectionViewModel(
                 }
             }
         }
+    }
+
+    private var progressRefreshSequence = 0L
+
+    /** Reads persisted state only: no prompt, resume, activation, or controller replacement. */
+    fun refreshSessionProgress(durableSessionId: DurableSessionId): Job {
+        pinChatProfile(durableSessionId)
+        val origin = activeOrigin
+        val expectedGeneration = generation
+        val expectedProfileGeneration = profileGeneration
+        val profile = owningProfile(durableSessionId)
+        val relayId = activeRelayTarget?.id
+        val operation = sessionControllerRegistry.operationGeneration(durableSessionId)
+        val before = mutableSnapshots.value.chatSessions[durableSessionId]?.progress
+            ?: com.unsupportedpastels.hermesandroid.app.DurableProgress()
+        if (origin == null || durableSessionId in pendingDraftSessions || before.refreshing) {
+            return viewModelScope.launch { }
+        }
+        val requestId = ++progressRefreshSequence
+        fun sameScope(): Boolean = isCurrentOrigin(origin, expectedGeneration) &&
+            profileGeneration == expectedProfileGeneration && owningProfile(durableSessionId) == profile &&
+            activeRelayTarget?.id == relayId
+        fun current(): Boolean = sameScope() &&
+            sessionControllerRegistry.operationGeneration(durableSessionId) == operation &&
+            mutableSnapshots.value.chatSessions[durableSessionId]?.progress?.refreshRequestId == requestId
+        updateChat(durableSessionId) { it.copy(progress = it.progress.copy(refreshing = true, refreshRequestId = requestId, refreshError = null)) }
+        return viewModelScope.launch {
+            try {
+                if (!current()) return@launch
+                val relayTarget = activeRelayTarget
+                val envelope = if (relayTarget != null) {
+                    loadRelayTranscriptEnvelope(relayTarget, durableSessionId, profile)
+                } else {
+                    val token = accessTokenForRequest(origin, expectedGeneration)
+                    if (!current()) return@launch
+                    client.loadTranscriptEnvelope(origin, token, serverDurableId(durableSessionId), profile)
+                }
+                if (!current()) return@launch
+                updateChat(durableSessionId) { it.copy(progress = it.progress.recover(envelope.progress, before.observationVersion)) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (current()) updateChat(durableSessionId) {
+                    if (it.progress.observationVersion != before.observationVersion) it
+                    else it.copy(progress = it.progress.copy(refreshError = "Could not get progress update. Showing last observed history."))
+                }
+            } finally {
+                // Operation changes discard data, but may not replace the snapshot/spinner.
+                if (sameScope()) updateChat(durableSessionId) {
+                    if (it.progress.refreshRequestId != requestId) it
+                    else it.copy(progress = it.progress.copy(refreshing = false, refreshRequestId = null))
+                }
+            }
+        }
+    }
+
+    private suspend fun loadTranscriptWithProgress(
+        origin: ServerOrigin,
+        expectedGeneration: Long,
+        accessToken: String?,
+        durableSessionId: DurableSessionId,
+        profile: String,
+    ): List<ChatMessage> {
+        val expectedProfileGeneration = profileGeneration
+        val relayTarget = activeRelayTarget
+        val operation = sessionControllerRegistry.operationGeneration(durableSessionId)
+        val version = mutableSnapshots.value.chatSessions[durableSessionId]?.progress?.observationVersion ?: 0
+        val envelope = if (relayTarget != null) {
+            loadRelayTranscriptEnvelope(relayTarget, durableSessionId, profile)
+        } else {
+            client.loadTranscriptEnvelope(origin, accessToken, serverDurableId(durableSessionId), profile)
+        }
+        currentCoroutineContext().ensureActive()
+        if (!isCurrentOrigin(origin, expectedGeneration) || profileGeneration != expectedProfileGeneration ||
+            owningProfile(durableSessionId) != profile || activeRelayTarget?.id != relayTarget?.id ||
+            sessionControllerRegistry.operationGeneration(durableSessionId) != operation) {
+            throw CancellationException("Progress transcript owner changed")
+        }
+        updateChat(durableSessionId) { it.copy(progress = it.progress.recover(envelope.progress, version)) }
+        return envelope.messages
     }
 
     fun openSession(durableSessionId: DurableSessionId): Job {
@@ -3355,17 +3446,14 @@ class HermesConnectionViewModel(
                 var retriedAfterUnauthorized = false
                 if (relayTarget != null) {
                     accessToken = ""
-                    messages = loadRelayTranscript(relayTarget, durableSessionId, profile)
+                    messages = loadTranscriptWithProgress(origin, originGeneration, "", durableSessionId, profile)
                 }
                 while (messages == null && relayTarget == null) {
                     try {
                         accessToken = accessTokenForRequest(origin, originGeneration)
                         if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) return@launch
-                        messages = client.loadTranscript(
-                            origin,
-                            accessToken,
-                            serverDurableId(durableSessionId),
-                            profile = profile,
+                        messages = loadTranscriptWithProgress(
+                            origin, originGeneration, accessToken, durableSessionId, profile,
                         )
                         if (
                             !isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration) ||
@@ -3506,9 +3594,25 @@ class HermesConnectionViewModel(
         sessionControllerRegistry.cancelOperationJob(durableSessionId)
         automaticChatReconnects.remove(durableSessionId)
         clearSendingState(durableSessionId)
+        // The turn reset is speculative until the host accepts the prompt. Keep the
+        // pre-send progress so a rejected send restores recovered milestones and
+        // evidence instead of leaving Activity empty until the next refresh.
+        val progressBeforeTurn = mutableSnapshots.value.chatSessions[durableSessionId]?.progress ?: DurableProgress()
+        val speculativeProgress = progressBeforeTurn.beginTurn(System.currentTimeMillis())
+        fun restoreUnstartedTurnProgress() {
+            updateChat(durableSessionId) {
+                it.copy(
+                    progress = it.progress.restoreUnstartedTurn(
+                        previous = progressBeforeTurn,
+                        resetVersion = speculativeProgress.observationVersion,
+                    ),
+                )
+            }
+        }
         updateChat(durableSessionId) {
             it.copy(
                 runState = RunEventState(),
+                progress = speculativeProgress,
                 connectionPhase = ChatConnectionPhase.Connecting,
                 connectionRecoveryAvailable = false,
             )
@@ -3517,6 +3621,7 @@ class HermesConnectionViewModel(
             val origin = activeOrigin ?: run {
                 sessionControllerRegistry.resolvePromptSubmission(durableSessionId, attempt, accepted = false)
                 updateChat(durableSessionId) { it.copy(connectionPhase = ChatConnectionPhase.Idle, error = "Not connected") }
+                restoreUnstartedTurnProgress()
                 rejectSubmission(durableSessionId, text, "Not connected")
                 return@launch
             }
@@ -3749,6 +3854,9 @@ class HermesConnectionViewModel(
                 ) {
                     updateChat(durableSessionId) { it.copy(connectionPhase = ChatConnectionPhase.Idle) }
                     if (!accepted) {
+                        // No turn was created, so the speculative reset has to give the
+                        // recovered progress back unless newer evidence arrived since.
+                        restoreUnstartedTurnProgress()
                         rejectSubmission(durableSessionId, text,
                             mutableSnapshots.value.chatSessions[durableSessionId]?.error
                                 ?: "Submission was not confirmed. Check the transcript before retrying.")
@@ -5181,7 +5289,7 @@ class HermesConnectionViewModel(
                 reconcileCanonicalSessionMetadata(durableSessionId, canonical)
             }
             val messages = try {
-                client.loadTranscript(origin, accessToken, canonicalId, profile)
+                loadTranscriptWithProgress(origin, originGeneration, accessToken, durableSessionId, profile)
             } catch (_: Exception) {
                 return@launch
             }
@@ -5540,6 +5648,7 @@ class HermesConnectionViewModel(
                     // Missing retained ownership is not permission to take over another
                     // runtime. Reconcile durable evidence; only a later explicit Send
                     // or Open may resume/create control after lease/process loss.
+                    val recoveryProgressVersion = mutableSnapshots.value.chatSessions[durableSessionId]?.progress?.observationVersion ?: 0
                     val transcript = withTimeoutOrNull(30_000L) {
                         candidate.relayRequest(
                             "relay.session.transcript", buildJsonObject {
@@ -5549,7 +5658,8 @@ class HermesConnectionViewModel(
                             },
                         )
                     } ?: throw HermesChatTransportException("Timed out reading recovery transcript")
-                    val messages = parseRelayTranscriptRows(transcript)
+                    val envelope = parseRelayTranscriptEnvelope(transcript)
+                    val messages = envelope.messages
                     if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                         closeChatSessionNonCancellably(candidate)
                         return
@@ -5557,6 +5667,7 @@ class HermesConnectionViewModel(
                     clearSendingState(durableSessionId)
                     updateChat(durableSessionId) { current -> current.copy(
                         messages = messages,
+                        progress = current.progress.recover(envelope.progress, recoveryProgressVersion),
                         backgroundTasks = current.backgroundTasks.recoverRelayTasks(
                             recoverySnapshot, serverDurableId(durableSessionId).value, profile),
                         connectionRecoveryAvailable = true,
@@ -5602,8 +5713,10 @@ class HermesConnectionViewModel(
                         operationGeneration,
                         previousRuntimeSessionId = previous?.runtimeSessionId ?: resumed.runtimeSessionId,
                     )
+                    // Resume projections can omit persisted tool results. Reconcile via the read-only window.
+                    refreshSessionProgress(durableSessionId)
                 } else {
-                    val messages = client.loadTranscript(origin, token, serverDurableId(durableSessionId), profile)
+                    val messages = loadTranscriptWithProgress(origin, originGeneration, token, durableSessionId, profile)
                     if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                         closeChatSessionNonCancellably(candidate)
                         return
@@ -5808,8 +5921,12 @@ class HermesConnectionViewModel(
         durableSessionId: DurableSessionId,
         event: HermesChatEvent,
     ) {
+        val receivedAt = System.currentTimeMillis()
         updateChat(durableSessionId) { current ->
-            current.copy(runState = current.runState.reduce(event))
+            current.copy(
+                runState = current.runState.reduce(event),
+                progress = current.progress.observe(event, receivedAt),
+            )
         }
     }
 

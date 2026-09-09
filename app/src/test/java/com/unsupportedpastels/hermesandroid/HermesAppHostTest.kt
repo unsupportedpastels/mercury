@@ -194,6 +194,40 @@ class HermesAppHostTest {
     }
 
     @Test
+    fun progressRefreshUsesSelectedDurableIdentityWithoutRetryOrSend() {
+        val viewModel = ServerSettingsViewModel(FakeServerSettingsRepository())
+        val id = DurableSessionId("progress-session")
+        var refreshed: DurableSessionId? = null
+        var mutations = 0
+        composeRule.setContent {
+            HermesAndroidTheme {
+                HermesAppHost(
+                    viewModel = viewModel,
+                    snapshot = HermesGatewaySnapshot(
+                        connectionState = ConnectionState.Connected,
+                        durableSessions = listOf(SessionSummary(id, "Progress session")),
+                        chatSessions = mapOf(id to ChatSessionSnapshot(runState = RunEventState(
+                            todos = listOf(com.unsupportedpastels.hermesandroid.app.RunTodoItem(
+                                "step", "Review", com.unsupportedpastels.hermesandroid.app.RunTodoStatus.Pending)),
+                        ))),
+                    ),
+                    requestedSessionId = id,
+                    onGetSessionProgress = { refreshed = it },
+                    onRetrySessionConnection = { mutations++ },
+                    onSendMessage = { _, _ -> mutations++ },
+                )
+            }
+        }
+        composeRule.onNodeWithContentDescription("Open session details").performClick()
+        composeRule.onNodeWithContentDescription("Open activity details").performClick()
+        composeRule.onNodeWithContentDescription("Get progress update (read-only)").performClick()
+        composeRule.runOnIdle {
+            assertEquals(id, refreshed)
+            assertEquals(0, mutations)
+        }
+    }
+
+    @Test
     fun controllerInteractionsFlowThroughHostCallbacksWithExactDurableIdentity() {
         val repository = FakeServerSettingsRepository()
         val viewModel = ServerSettingsViewModel(repository)

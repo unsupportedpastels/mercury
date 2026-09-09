@@ -314,6 +314,7 @@ interface HermesChatEvent {
         val name: String,
         val context: String?,
         val todos: List<RunTodoItem>? = null,
+        val historical: Boolean = false,
     ) : HermesChatEvent
 
     data class ToolComplete(
@@ -322,6 +323,8 @@ interface HermesChatEvent {
         val name: String,
         val summary: String?,
         val todos: List<RunTodoItem>? = null,
+        val progressSnapshot: com.unsupportedpastels.hermesandroid.app.DurableProgress? = null,
+        val historical: Boolean = false,
     ) : HermesChatEvent
 
     data class StatusUpdate(

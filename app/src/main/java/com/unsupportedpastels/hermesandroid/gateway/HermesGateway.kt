@@ -100,6 +100,7 @@ data class ChatSessionSnapshot(
     val notice: String? = null,
     val billingNotice: ChatBillingNotice? = null,
     val runState: RunEventState = RunEventState(),
+    val progress: com.unsupportedpastels.hermesandroid.app.DurableProgress = com.unsupportedpastels.hermesandroid.app.DurableProgress(),
     val backgroundTasks: BackgroundTasks = BackgroundTasks(),
     val processRows: List<ProcessRow> = emptyList(),
     val model: String? = null,

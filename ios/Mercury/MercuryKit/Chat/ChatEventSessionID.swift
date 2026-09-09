@@ -43,10 +43,10 @@ extension ChatEvent {
             return .sessionInfo(sessionID: newID, storedSessionID: storedSessionID, model: model, provider: provider, reasoningEffort: reasoningEffort, fastMode: fastMode, title: title, running: running)
         case .error(_, let message):
             return .error(sessionID: newID, message: message)
-        case .toolStart(_, let toolID, let name, let context):
-            return .toolStart(sessionID: newID, toolID: toolID, name: name, context: context)
-        case .toolComplete(_, let toolID, let name, let summary):
-            return .toolComplete(sessionID: newID, toolID: toolID, name: name, summary: summary)
+        case .toolStart(_, let toolID, let name, let context, let historical):
+            return .toolStart(sessionID: newID, toolID: toolID, name: name, context: context, historical: historical)
+        case .toolComplete(_, let toolID, let name, let summary, let snapshot, let historical):
+            return .toolComplete(sessionID: newID, toolID: toolID, name: name, summary: summary, progressSnapshot: snapshot, historical: historical)
         case .statusUpdate(_, let kind, let text):
             return .statusUpdate(sessionID: newID, kind: kind, text: text)
         case .clarifyRequest(_, let requestID, let question, let choices, let multiSelect, let questions):

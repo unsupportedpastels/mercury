@@ -57,6 +57,17 @@ final class ChatSessionState {
     var readAloud: ReadAloudController?
     var incomingShareApplied = false
     var processRows: [ActivityProcess] = []
+    var progress = MercuryCore.DurableProgressBridge.shared.initial()
+    var progressRefreshing = false
+    var progressRefreshError: String?
+    var progressRefreshID = UUID()
+    var showActivitySheet = false
+    var openActivityAfterContext = false
+    var openInputAfterActivity = false
+    var inputResponseID: UUID?
+    var secureResponseID: UUID?
+    var dismissedBackgroundEvidence: Set<String> = []
+    var latestStatusKind: String?
     var composerNotice: String?
     var isSending = false
     var isStopping = false
@@ -115,6 +126,7 @@ final class ChatSessionState {
     // MARK: Secure blocking input (M5.4)
 
     var pendingSecure: ChatView.SecureRequest?
+    var outstandingSecure: ChatView.SecureRequest?
 
     // MARK: Live connection
 

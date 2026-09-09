@@ -59,12 +59,16 @@ internal fun SessionInsightsSheet(
     onUndo: () -> Unit,
     onBranch: (Int?, String?) -> Unit,
     onDismiss: () -> Unit,
+    onOpenActivity: () -> Unit = {},
 ) {
     var pendingAction by remember { mutableStateOf<SessionMaintenanceAction?>(null) }
     var branchDialogOpen by remember { mutableStateOf(false) }
     var branchName by remember(sessionTitle) { mutableStateOf("$sessionTitle branch") }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -88,6 +92,10 @@ internal fun SessionInsightsSheet(
                     Text("Refresh")
                 }
             }
+            TextButton(
+                onClick = onOpenActivity,
+                modifier = Modifier.semantics { contentDescription = "Open activity details" },
+            ) { Text("Activity") }
             listOfNotNull(
                 provider?.takeIf(String::isNotBlank)?.let { "Provider: $it" },
                 workspaceLabel?.let { "Workspace: $it" },

@@ -1,5 +1,15 @@
 package com.unsupportedpastels.hermesandroid.ui
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.material.icons.outlined.ChevronRight
+import com.unsupportedpastels.mercury.core.transcript.FoldedTranscriptEntry
+import com.unsupportedpastels.mercury.core.transcript.TranscriptRow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -40,6 +50,134 @@ import com.unsupportedpastels.hermesandroid.gateway.ChatSessionSnapshot
 import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
 import com.unsupportedpastels.hermesandroid.theme.LocalHermesSemanticColors
 import com.unsupportedpastels.mercury.core.transcript.TranscriptPresentationPolicy
+
+/** Native identities and payloads retained around the shared turn policy. */
+internal sealed interface FoldedEntry {
+    data class Single(val index: Int, val message: ChatMessage) : FoldedEntry
+    data class TurnActivity(
+        val steps: List<IndexedChatMessage>,
+        val answerReasoning: String?,
+        val answerIndex: Int?,
+    ) : FoldedEntry
+}
+
+internal fun foldTranscriptTurns(messages: List<ChatMessage>, turnActive: Boolean): List<FoldedEntry> {
+    val rows = messages.mapIndexed { index, message ->
+        TranscriptRow(index.toLong(), message.role.name.lowercase(), message.text,
+            completed = !message.isStreaming, reasoningText = message.reasoningText)
+    }
+    val folded = com.unsupportedpastels.mercury.core.transcript.foldTranscriptTurns(rows, turnActive)
+    return folded.mapIndexed { position, entry ->
+        when (entry) {
+            is FoldedTranscriptEntry.Message ->
+                FoldedEntry.Single(entry.row.id.toInt(), messages[entry.row.id.toInt()])
+            is FoldedTranscriptEntry.TurnActivity -> {
+                val preceding = (folded.getOrNull(position - 1) as? FoldedTranscriptEntry.Message)?.row
+                FoldedEntry.TurnActivity(
+                    steps = entry.steps.map { IndexedChatMessage(it.id.toInt(), messages[it.id.toInt()]) },
+                    answerReasoning = entry.answerReasoning,
+                    answerIndex = preceding?.takeIf { it.role == "assistant" }?.id?.toInt(),
+                )
+            }
+        }
+    }
+}
+
+internal fun foldedEntryKey(entry: FoldedEntry, chat: ChatSessionSnapshot): String {
+    val presentation = chat.transcriptPresentation?.takeIf { it.messages === chat.messages }
+    fun rowIdentity(index: Int): String? = presentation?.state?.rows?.getOrNull(index)?.id?.let { "row:$it" }
+    return when (entry) {
+        is FoldedEntry.Single -> "message:${rowIdentity(entry.index) ?: "index:${entry.index}"}"
+        is FoldedEntry.TurnActivity -> {
+            val first = entry.steps.firstOrNull()?.index
+            if (first != null) "turn-activity:${rowIdentity(first) ?: "index:$first"}"
+            else "turn-activity:answer:${entry.answerIndex?.let(::rowIdentity) ?: entry.answerIndex}"
+        }
+    }
+}
+
+@Composable
+internal fun TurnActivityGroup(
+    entry: FoldedEntry.TurnActivity,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    sessionKey: String,
+    loadManagedImage: (suspend (String) -> ByteArray)? = null,
+    loadManagedVideo: (suspend (String) -> Result<ManagedVideoMedia>)? = null,
+    peekManagedVideo: (suspend (String) -> ManagedVideoMedia?)? = null,
+) {
+    val count = entry.steps.size + if (entry.answerReasoning.isNullOrBlank()) 0 else 1
+    val noun = if (count == 1) "step" else "steps"
+    val ruleColor = MaterialTheme.colorScheme.outlineVariant
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth().height(32.dp).testTag("Turn activity")
+                .clickable(onClick = onToggle)
+                .semantics(mergeDescendants = true) {
+                    contentDescription = "Activity, $count $noun, ${if (expanded) "expanded" else "collapsed"}"
+                    stateDescription = if (expanded) "Expanded" else "Collapsed"
+                },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text("Activity · $count $noun", style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Icon(Icons.Outlined.ChevronRight, contentDescription = null,
+                modifier = Modifier.size(16.dp).rotate(if (expanded) 90f else 0f),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (expanded) {
+            Column(
+                modifier = Modifier.fillMaxWidth().drawBehind {
+                    val width = 2.dp.toPx()
+                    val x = if (layoutDirection == LayoutDirection.Ltr) width / 2 else size.width - width / 2
+                    drawLine(ruleColor, Offset(x, 0f), Offset(x, size.height), strokeWidth = width)
+                }.padding(start = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (!entry.answerReasoning.isNullOrBlank()) {
+                    var showAnswerReasoning by rememberSaveable(sessionKey, entry.answerIndex) { mutableStateOf(false) }
+                    ThinkingBlock(entry.answerReasoning, false, showAnswerReasoning, { showAnswerReasoning = !showAnswerReasoning })
+                }
+                // Shared with iOS: the turn is already the disclosure; retain source order.
+                val groups = remember(entry.steps) {
+                    coalesceTranscriptEntries(entry.steps.map { it.message }, withinTurnActivity = true)
+                }
+                groups.forEach { group ->
+                    val localIndex = when (group) {
+                        is TranscriptEntry.Single -> group.index
+                        is TranscriptEntry.ToolRun -> group.tools.first().index
+                        is TranscriptEntry.WorkBurst -> group.reasoning.first().index
+                    }
+                    val index = entry.steps[localIndex].index
+                    key(index) {
+                        var innerExpanded by rememberSaveable(sessionKey, index) { mutableStateOf(false) }
+                        when (group) {
+                            is TranscriptEntry.Single -> {
+                                if (group.message.reasoningText.isNotBlank()) {
+                                    ThinkingBlock(group.message.reasoningText, group.message.isStreaming,
+                                        innerExpanded, { innerExpanded = !innerExpanded })
+                                }
+                                if (group.message.text.isNotBlank()) {
+                                    MarkdownMessage(group.message.text, loadManagedImage = loadManagedImage,
+                                        loadManagedVideo = loadManagedVideo, peekManagedVideo = peekManagedVideo)
+                                }
+                            }
+                            is TranscriptEntry.ToolRun -> TranscriptToolRunGroup(
+                                group.tools.map { entry.steps[it.index] }, innerExpanded,
+                                { innerExpanded = !innerExpanded }, sessionKey,
+                                loadManagedImage, loadManagedVideo, peekManagedVideo)
+                            is TranscriptEntry.WorkBurst -> WorkBurstGroup(
+                                group.reasoning.map { entry.steps[it.index] }, group.tools.map { entry.steps[it.index] },
+                                innerExpanded, { innerExpanded = !innerExpanded }, sessionKey,
+                                loadManagedImage, loadManagedVideo, peekManagedVideo)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 /** A transcript message paired with its stable index in the source list. */
 internal data class IndexedChatMessage(val index: Int, val message: ChatMessage)
@@ -89,7 +227,7 @@ internal fun transcriptEntryKey(entry: TranscriptEntry, chat: ChatSessionSnapsho
  * historical presentation even when a separate live activity card is present;
  * the current DTO does not carry an exact identity for safe suppression.
  */
-internal fun coalesceTranscriptEntries(messages: List<ChatMessage>): List<TranscriptEntry> {
+internal fun coalesceTranscriptEntries(messages: List<ChatMessage>, withinTurnActivity: Boolean = false): List<TranscriptEntry> {
     val rows = messages.mapIndexed { index, message ->
         com.unsupportedpastels.mercury.core.transcript.TranscriptRow(
             id = index.toLong(),
@@ -101,9 +239,12 @@ internal fun coalesceTranscriptEntries(messages: List<ChatMessage>): List<Transc
     }
     fun indexed(row: com.unsupportedpastels.mercury.core.transcript.TranscriptRow) =
         IndexedChatMessage(row.id.toInt(), messages[row.id.toInt()])
-    return com.unsupportedpastels.mercury.core.transcript.coalesceTranscriptEntries(
-        rows,
-    ).map { entry ->
+    val entries = if (withinTurnActivity) {
+        com.unsupportedpastels.mercury.core.transcript.activityTranscriptEntries(rows)
+    } else {
+        com.unsupportedpastels.mercury.core.transcript.coalesceTranscriptEntries(rows)
+    }
+    return entries.map { entry ->
         when (entry) {
             is com.unsupportedpastels.mercury.core.transcript.TranscriptEntry.Message ->
                 TranscriptEntry.Single(entry.row.id.toInt(), messages[entry.row.id.toInt()])

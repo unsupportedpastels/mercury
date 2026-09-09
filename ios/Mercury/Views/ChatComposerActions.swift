@@ -102,6 +102,10 @@ extension ChatView {
             hostReferenceIDs: hostReferences.map(\.id)
         ) else { return }
 
+        let progressBeforeTurn = state.progress
+        state.progress = state.progress.beginTurn(atEpochMillis: Int64(Date().timeIntervalSince1970 * 1000))
+        let resetVersion = state.progress.observationVersion
+        state.latestStatusKind = nil
         let attachments = state.stagedAttachments
         let bytes = state.stagedBytes
         state.draft = ""
@@ -156,8 +160,9 @@ extension ChatView {
                         guard resolution != .stale else { return }
                         state.isSending = false
                         state.isComposerActionPending = false
-                        if case .restoreDraft(let original) = resolution, state.draft.isEmpty {
-                            state.draft = original
+                        if case .restoreDraft(let original) = resolution {
+                            state.progress = state.progress.restoreUnstartedTurn(previous: progressBeforeTurn, resetVersion: resetVersion)
+                            if state.draft.isEmpty { state.draft = original }
                         }
                     }
                     return
@@ -184,6 +189,7 @@ extension ChatView {
                     guard resolution != .stale else { return }
                     switch resolution {
                     case .restoreDraft(let original):
+                        state.progress = state.progress.restoreUnstartedTurn(previous: progressBeforeTurn, resetVersion: resetVersion)
                         state.composerError = "Send failed — check the connection and try again."
                         state.isSending = false
                         state.isComposerActionPending = false

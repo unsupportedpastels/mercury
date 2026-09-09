@@ -211,6 +211,9 @@ class MainActivity : ComponentActivity() {
                     onRetrySessionConnection = { sessionId ->
                         connectionViewModel.retrySessionConnection(sessionId)
                     },
+                    onGetSessionProgress = { sessionId ->
+                        connectionViewModel.refreshSessionProgress(sessionId)
+                    },
                 )
             }
         }
@@ -307,6 +310,7 @@ internal fun HermesAppHost(
     onBlockingResponse: (DurableSessionId, UnsupportedBlockingKind, String, String) -> Unit = { _, _, _, _ -> },
     onStopSession: (DurableSessionId) -> Unit = {},
     onRetrySessionConnection: (DurableSessionId) -> Unit = {},
+    onGetSessionProgress: (DurableSessionId) -> Unit = {},
 ) {
     val serverSettingsState by viewModel.states.collectAsStateWithLifecycle()
     val cloudConnectStateFlow = cloudViewModel?.state
@@ -513,6 +517,7 @@ internal fun HermesAppHost(
         onPasswordSignIn = onPasswordSignIn,
         onRetryConnection = { connectionViewModel?.retryConnection() },
         onRetrySessionConnection = onRetrySessionConnection,
+        onGetSessionProgress = onGetSessionProgress,
         onOpenProject = onOpenProject,
         onCreateProjectSession = onCreateProjectSession,
         onOpenSession = onOpenSession,
