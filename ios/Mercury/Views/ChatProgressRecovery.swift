@@ -58,6 +58,14 @@ extension ChatView {
     /// How often a chat re-asks the gateway registry about unresolved children.
     static let backgroundRegistryPollInterval: Duration = .seconds(30)
 
+    /// A registry poll stops for a definitively unsupported method or a dead
+    /// connection (its reconnect restarts polling); every other failure is
+    /// retried on the next interval, matching the Android loop.
+    static func registryPollContinues(after error: Error, connectionClosed: Bool) -> Bool {
+        if connectionClosed || error is CancellationError || error is ChatMethodNotFoundError { return false }
+        return true
+    }
+
     /// A reopened app's only child evidence is a recovered snapshot with no
     /// fresh event to observe, and a child inside a long tool call emits
     /// nothing. The gateway's `delegation.status` registry is the authoritative
@@ -80,9 +88,17 @@ extension ChatView {
             while !Task.isCancelled {
                 guard let candidate, state.connectionOwnership.isCurrent(ownershipToken), state.connection === candidate,
                       backgroundTaskScope == scope, state.runtimeSessionID == childRuntime else { return }
-                guard let statuses = try? await candidate.backgroundTaskStatuses() else {
-                    // Retain last known rows; an unanswered registry is not success or failure.
-                    return
+                let statuses: [String: String]
+                do {
+                    statuses = try await candidate.backgroundTaskStatuses()
+                } catch {
+                    // Retain last known rows; an unanswered registry is not
+                    // success or failure. Only a host without the method ends
+                    // the poll: a transient RPC failure must not hide a
+                    // still-running silent child once its window expires.
+                    guard Self.registryPollContinues(after: error, connectionClosed: candidate.isClosed) else { return }
+                    try? await Task.sleep(for: Self.backgroundRegistryPollInterval)
+                    continue
                 }
                 guard !Task.isCancelled, state.connectionOwnership.isCurrent(ownershipToken), state.connection === candidate,
                       backgroundTaskScope == scope, state.runtimeSessionID == childRuntime else { return }

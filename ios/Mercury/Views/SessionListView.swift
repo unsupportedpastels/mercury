@@ -130,13 +130,18 @@ struct SessionListView: View {
     }
 
     /// Android Home "Running subagents" parity, from what this phone has
-    /// observed in opened sessions (not a host-wide delegation query).
+    /// observed in opened sessions (not a host-wide delegation query). Only
+    /// rows with recent, still-observable child activity qualify: stale or
+    /// unavailable evidence belongs to the owning chat's strip, not here.
     private var observedRunningSubagents: [BackgroundTaskRow] {
-        appModel.backgroundTasksBySession.values
-            .flatMap(\.rows)
-            .filter { !$0.terminal }
-            .sorted { $0.observedAtMillis > $1.observedAtMillis }
+        BackgroundTasks.runningRows(
+            appModel.backgroundTasksBySession.values.flatMap(\.rows),
+            now: Int64(homeClock.timeIntervalSince1970 * 1000)
+        )
     }
+    /// Re-evaluates the recency window while Home is visible.
+    @State private var homeClock = Date()
+    private let homeClockTicks = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
 
     private var homeSessions: [SessionRow] {
         HomeInboxPolicy.recentSessionPreview(appModel.sessions)
@@ -192,7 +197,7 @@ struct SessionListView: View {
                                     .foregroundStyle(Color.secondary)
                                     .lineLimit(1)
                             }
-                            .listRowBackground(Color.accentContainer.opacity(0.3))
+                            .listRowBackground(Color.accentPrimary.opacity(0.18))
                             .accessibilityElement(children: .combine)
                             .accessibilityLabel("Running subagent: \(row.goal), \(row.action ?? "running")")
                         }
@@ -405,6 +410,7 @@ struct SessionListView: View {
                 await appModel.loadSessions()
                 showShareInbox = !appModel.pendingShareEntries.isEmpty
             }
+            .onReceive(homeClockTicks) { homeClock = $0 }
             .onChange(of: relayChatIsOpen) { _, isOpen in
                 // The relay host keeps one live stream per device: a fresh
                 // connection supersedes the previous lease. While a chat owns

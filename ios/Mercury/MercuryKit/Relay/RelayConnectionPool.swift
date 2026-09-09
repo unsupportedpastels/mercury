@@ -43,6 +43,25 @@ actor RelayConnectionPool {
         routingTokenSink = sink
     }
 
+    /// Receives every durable background-task state a pooled reader rewrites:
+    /// (target, profile, durable session id, state). Delivered off the actor.
+    typealias TaskSink = @Sendable (RelayPairedTarget, String, String, BackgroundTasks) -> Void
+    private var taskSink: TaskSink?
+
+    func setTaskSink(_ sink: TaskSink?) {
+        taskSink = sink
+        for slot in slots.values {
+            guard let scope = slot.scope else { continue }
+            slot.taskOwner.setSink(Self.ownerSink(sink, target: scope.target, profile: scope.profile))
+        }
+    }
+
+    private static func ownerSink(_ sink: TaskSink?, target: RelayPairedTarget, profile: String)
+        -> (@Sendable (String, BackgroundTasks) -> Void)? {
+        guard let sink else { return nil }
+        return { durable, state in sink(target, profile, durable, state) }
+    }
+
     init(socketFactory: any RelayBinarySocketFactorying = URLSessionRelaySocketFactory(),
          selectionRequired: Bool = false) {
         self.selectionRequired = selectionRequired
@@ -105,6 +124,7 @@ actor RelayConnectionPool {
         }
         let checkpoint = slot.checkpoint
         let taskOwner = slot.taskOwner
+        taskOwner.setSink(Self.ownerSink(taskSink, target: target, profile: profile))
         previousOpening?.cancel()
         slot.generation = UUID()
         let token = slot.generation

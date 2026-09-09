@@ -31,6 +31,8 @@ internal data class PerSessionController(
     val runtimeSessionId: RuntimeSessionId,
     var operationGeneration: Long,
     var eventJob: Job? = null,
+    /** Registry liveness polling for unresolved delegated children of this runtime. */
+    var registryJob: Job? = null,
     var recoveryState: ChatRecoveryState? = null,
 )
 
@@ -277,7 +279,7 @@ internal class PerSessionControllerRegistry {
         slashCompletionJobs.values.forEach(Job::cancel)
         slashCompletionJobs.clear()
         slashCompletionGenerations.clear()
-        detached.forEach { it.eventJob?.cancel() }
+        detached.forEach { it.eventJob?.cancel(); it.registryJob?.cancel() }
         activeTurnIds.clear()
         lastPublishedActiveTurnCount = 0
         return detached
