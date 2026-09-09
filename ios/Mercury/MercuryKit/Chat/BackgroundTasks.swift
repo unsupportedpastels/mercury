@@ -141,10 +141,14 @@ struct BackgroundTasks: @unchecked Sendable, Equatable {
     mutating func markUnavailable() { core = core.unavailable() }
     /// `now` stamps a "running" registry answer as confirmed liveness for one
     /// activity window; it never touches the worker-observed timestamp.
-    mutating func reconcile(_ statuses: [String: String], runtime: String, now: Int64 = 0) {
+    /// `previousRuntime` is the caller's proof that rows still bound to an
+    /// earlier runtime of this same durable session may move to `runtime`
+    /// when the registry reports them running (Android parity).
+    mutating func reconcile(_ statuses: [String: String], runtime: String,
+                            previousRuntime: String? = nil, now: Int64 = 0) {
         core = core.reconcile(active: statuses.map {
             MercuryCore.BackgroundTaskRegistryEntry(subagentId: $0.key, status: $0.value)
-        }, runtime: runtime, previousRuntime: runtime, now: now)
+        }, runtime: runtime, previousRuntime: previousRuntime ?? runtime, now: now)
     }
     /// Unresolved children with a known identity: the rows worth asking the host about.
     var hasUnresolvedIdentifiedChildren: Bool {

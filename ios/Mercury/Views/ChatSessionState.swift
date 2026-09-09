@@ -133,7 +133,13 @@ final class ChatSessionState {
     var connection: ChatConnection?
     var establishing = false
     var connectionOwnership = ChatConnectionOwnership()
-    var runtimeSessionID: String?
+    var runtimeSessionID: String? {
+        didSet { if let old = oldValue, old != runtimeSessionID { previousRuntimeSessionID = old } }
+    }
+    /// The runtime this durable session was bound to before the current one.
+    /// A resume may replace the runtime while retained children still carry
+    /// the old binding; the registry reconciler needs it to move them over.
+    var previousRuntimeSessionID: String?
     /// Durable session id adopted from `session.create`'s stored_session_id
     /// once the gateway persists the new runtime session.
     var durableID: String?

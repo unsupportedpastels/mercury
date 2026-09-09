@@ -56,6 +56,26 @@ final class RelayTaskOwnerSinkTests: XCTestCase {
         XCTAssertEqual(count.value, 3)
     }
 
+    func testReopenedChildRebindsToReplacementRuntimeWhenRegistryReportsRunning() {
+        let owner = RelayTaskOwner()
+        let generation = owner.attach(snapshot: snapshot(), profile: "default")
+        XCTAssertTrue(owner.apply(generation: generation, runtime: "runtime", evidence: evidence("subagent.tool")))
+        // session.resume answered with a replacement runtime for the same durable session.
+        owner.bind(generation: generation, runtime: "runtime-b", durable: "durable", profile: "default")
+        let stale = owner.retained(generation: generation, durable: "durable", runtime: "runtime-b")?.rows.first
+        XCTAssertEqual(stale?.runtime, "runtime")
+        XCTAssertEqual(stale?.available, false)
+        let moved = owner.reconcile(generation: generation, durable: "durable", runtime: "runtime-b",
+                                    statuses: ["child": "running"])?.rows.first
+        XCTAssertEqual(moved?.runtime, "runtime-b")
+        XCTAssertEqual(moved?.available, true)
+        XCTAssertTrue(moved?.recentlyActive(now: Int64(Date().timeIntervalSince1970 * 1000)) == true)
+        // A different child, or a non-running answer, never moves anything.
+        let other = owner.reconcile(generation: generation, durable: "durable", runtime: "runtime-b",
+                                    statuses: ["stranger": "running"])?.rows.first
+        XCTAssertEqual(other?.runtime, "runtime-b")
+    }
+
     @MainActor
     func testBackgroundTaskScopeMatchesChatAndSink() {
         let target = RelayPairedTarget(

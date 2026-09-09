@@ -9,6 +9,10 @@ final class RelayTaskOwner: @unchecked Sendable {
     private var profile = ""
     private var bindings: [String: MercuryCore.RelayLeaseBinding] = [:]
     private var tasks: [String: BackgroundTasks] = [:]
+    /// The runtime each durable session was bound to before its current live
+    /// binding. Retained rows keep the old runtime id; the registry reconciler
+    /// may move exact still-running children onto the replacement binding.
+    private var previousRuntimes: [String: String] = [:]
     /// Observes every durable state this owner rewrites, keyed by durable
     /// session id. A Home surface reads it while no chat is subscribed to the
     /// pooled reader, so a child completion never strands a stale row.
@@ -53,6 +57,8 @@ final class RelayTaskOwner: @unchecked Sendable {
             // A new runtime is not fresh activity evidence for the old worker.
             tasks[durable]?.markUnavailable()
             if let state = tasks[durable], !state.rows.isEmpty { changes.append((durable, state)) }
+            let prior = bindings.values.filter { $0.durableId == durable && $0.runtimeId != runtime }
+            if let old = prior.first(where: \.live) ?? prior.first { previousRuntimes[durable] = old.runtimeId }
         }
         for (id, binding) in bindings where binding.durableId == durable && id != runtime {
             bindings[id] = MercuryCore.RelayLeaseBinding(runtimeId: id, durableId: durable,
@@ -92,7 +98,8 @@ final class RelayTaskOwner: @unchecked Sendable {
             return nil
         }
         var state = tasks[durable] ?? BackgroundTasks()
-        state.reconcile(statuses, runtime: runtime, now: Int64(Date().timeIntervalSince1970 * 1000))
+        state.reconcile(statuses, runtime: runtime, previousRuntime: previousRuntimes[durable],
+                        now: Int64(Date().timeIntervalSince1970 * 1000))
         let changed = state != tasks[durable]
         tasks[durable] = state
         lock.unlock()

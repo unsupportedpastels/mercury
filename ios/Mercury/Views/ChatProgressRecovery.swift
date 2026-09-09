@@ -111,7 +111,8 @@ extension ChatView {
                     appModel.backgroundTasksBySession[scope] = tasks
                 } else {
                     var tasks = backgroundTasks
-                    tasks.reconcile(statuses, runtime: childRuntime, now: Int64(Date().timeIntervalSince1970 * 1000))
+                    tasks.reconcile(statuses, runtime: childRuntime, previousRuntime: state.previousRuntimeSessionID,
+                                    now: Int64(Date().timeIntervalSince1970 * 1000))
                     appModel.backgroundTasksBySession[scope] = tasks
                 }
                 guard backgroundTasks.hasUnresolvedIdentifiedChildren else { return }
