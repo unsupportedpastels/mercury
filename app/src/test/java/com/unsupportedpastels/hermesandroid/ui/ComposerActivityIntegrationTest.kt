@@ -80,6 +80,21 @@ class ComposerActivityIntegrationTest {
         compose.onNodeWithText("Old intermediate").assertIsDisplayed()
         compose.onAllNodesWithContentDescription("Running tool latest_tool").assertCountEquals(0)
     }
+    @Test fun restoredHistoryNeverHidesAnAuthoritativelyRunningTurn() {
+        // Reopen / foreground recovery: resume reported running=true and the read-only
+        // history refresh labeled the progress restored. The line must stay live.
+        show(ChatSessionSnapshot(isSending = true,
+            progress = DurableProgress(hasMilestoneSnapshot = true, restored = true,
+                evidence = listOf(ProgressToolEvidence("old", "terminal", "exit 0", true, 1_000L))),
+            messages = listOf(ChatMessage(ChatMessageRole.User, "Question")),
+            runState = RunEventState(tools = listOf(RunToolRow("run", "terminal", state = RunToolState.Running)))))
+        compose.onNodeWithContentDescription("Activity: Running").assertIsDisplayed()
+        compose.onNodeWithTag("Composer activity line").performClick()
+        compose.onNodeWithContentDescription("Running tool terminal").assertIsDisplayed()
+        // The live running tool row animates; restored history only labels saved evidence.
+        compose.onAllNodes(SemanticsMatcher.keyIsDefined(androidx.compose.ui.semantics.SemanticsProperties.ProgressBarRangeInfo)
+            and hasAnyAncestor(hasTestTag("Session activity sheet"))).assertCountEquals(1)
+    }
     @Test fun completedTurnHasAnswerAndDisclosureWithoutLiveLine() {
         show(ChatSessionSnapshot(messages = listOf(ChatMessage(ChatMessageRole.User, "Question"),
             ChatMessage(ChatMessageRole.Assistant, "Intermediate"), ChatMessage(ChatMessageRole.Tool, "Tool output"),

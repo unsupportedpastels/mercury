@@ -302,8 +302,11 @@ internal fun SessionDetailScreen(
     val currentMessages = chat.messages.drop(chat.messages.indexOfLast { it.role == ChatMessageRole.User }.coerceAtLeast(0))
     val streaming = currentMessages.lastOrNull { it.role == ChatMessageRole.Assistant && it.isStreaming }
     val runningTools = observedRun.tools.filter { it.state == RunToolState.Running }
+    // isSending is authoritative (live send or resume `running`). `restored` only
+    // labels recovered evidence as saved; it must never hide a live turn after a
+    // reopen or foreground reconnect, whose history refresh always sets it.
     val line = rememberHeldActivityLine(ActivityLinePolicy.decide(ActivityLineInput(
-        isSending = chat.isSending && !chat.progress.restored,
+        isSending = chat.isSending,
         isStopping = stopping,
         connectionPhase = chat.connectionPhase.name.lowercase(),
         pendingSubmission = pendingSend != null,
@@ -1196,7 +1199,8 @@ internal fun SessionDetailScreen(
             onDismissBackground = { rows -> dismissedBackground = (dismissedBackground + rows.map { it.dismissalKey() }).takeLast(64) },
             evidence = chat.progress.evidence.filter { it.completed && !it.summary.isNullOrBlank() && it.toolName !in setOf("todo", "todo_list") }
                 .map { SessionProgressItem(it.toolName, it.summary) },
-            tools = observedRun.tools, status = observedRun.status?.text, isSending = chat.isSending,
+            // Live only while attached: a reconnecting socket cannot vouch for a tool row.
+            tools = observedRun.tools, status = observedRun.status?.text, isSending = chat.isSending && !connectionBusy,
             currentMessages = if (turnActive) currentMessages else emptyList(),
             loadManagedImage = { path -> onLoadManagedImage(path).getOrThrow() },
             loadManagedVideo = onLoadManagedVideo, peekManagedVideo = onPeekManagedVideo,

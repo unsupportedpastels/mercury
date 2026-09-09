@@ -152,7 +152,8 @@ internal fun SessionActivitySheet(
             }
             if (tools.isNotEmpty()) {
                 item { ProgressSectionLabel("Tools") }
-                items(tools) { tool -> ActivitySheetToolRow(tool, isSending && !connectionLost && !restored) }
+                // Tool rows are live run state, not recovered history: `restored` never stales them.
+                items(tools) { tool -> ActivitySheetToolRow(tool, isSending && !connectionLost) }
             }
             if (summary.completed.isNotEmpty()) {
                 item { ProgressSectionLabel("Done") }
