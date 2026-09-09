@@ -2,6 +2,7 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 import Combine
+import MercuryCore
 
 /// Message composer: vertical-axis text field + send button.
 ///
@@ -55,6 +56,9 @@ struct ComposerBar: View {
     var onReasoningSelected: ((String) -> Void)? = nil
     var onFastSelected: ((Bool) -> Void)? = nil
     var onOpenContext: (() -> Void)? = nil
+    var activity: MercuryCore.ActivityLineState? = nil
+    var activityStartedAtMillis: Int64? = nil
+    var onOpenActivity: (() -> Void)? = nil
 
     @State private var pendingPhotoItem: PhotosPickerItem?
     @State private var showPhotoPicker = false
@@ -96,6 +100,10 @@ struct ComposerBar: View {
                 )
             }
 
+            VStack(spacing: 0) {
+                if let activity, let onOpenActivity {
+                    ComposerActivityLine(candidate: activity, startedAtMillis: activityStartedAtMillis, onOpenDetails: onOpenActivity)
+                }
             HStack(alignment: .center, spacing: 4) {
                 if onAttachmentPicked != nil && attachmentsEnabled && !isSteering {
                     attachmentMenu
@@ -104,6 +112,7 @@ struct ComposerBar: View {
                 TextField("Message Hermes", text: $draft, axis: .vertical)
                     .focused($composerFocused)
                     .lineLimit(1...5)
+                    .accessibilityIdentifier("Message composer input")
                     .padding(.horizontal, 4)
                     .padding(.vertical, 10)
                     .submitLabel(.send)
@@ -131,6 +140,7 @@ struct ComposerBar: View {
                 .accessibilityValue(showStop ? (isStopping ? "Stopping" : "Ready to stop") : "")
             }
             .padding(6)
+            }
             .background(
                 Color.surfaceMid,
                 in: RoundedRectangle(cornerRadius: 30, style: .continuous)

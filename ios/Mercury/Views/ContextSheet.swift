@@ -16,6 +16,7 @@ struct ContextSheet: View {
     let onCompress: () -> Void
     let onUndo: () -> Void
     let onBranch: (String) -> Void
+    var onOpenActivity: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var confirmCompress = false
@@ -75,6 +76,11 @@ struct ContextSheet: View {
                 }
 
                 Section("Session actions") {
+                    if let onOpenActivity {
+                        Button(action: onOpenActivity) {
+                            Label("Session activity", systemImage: "list.bullet.rectangle")
+                        }
+                    }
                     if compressSupported {
                         Button {
                             confirmCompress = true

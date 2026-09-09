@@ -1,4 +1,5 @@
 import SwiftUI
+import MercuryCore
 
 extension ChatView {
     // MARK: Open / resume
@@ -30,6 +31,9 @@ extension ChatView {
         }
         let transcriptID = requestedID ?? sessionID
         guard !transcriptID.isEmpty else { return false }
+        let expectedProgressVersion = state.progress.observationVersion
+        let requestedScope = backgroundTaskScope
+        let requestedSelection = appModel.relaySelectionGeneration
         let turnWasActive = preservingActiveTurn && (state.isSending || state.transcript.hasStreamingAssistant)
         if !preservingActiveTurn, let origin = appModel.serverOrigin {
             let cached = await appModel.cachedTranscript(
@@ -50,6 +54,7 @@ extension ChatView {
         }
         do {
             let fetched: [TranscriptMessage]
+            let recoveredProgress: MercuryCore.DurableProgress
             var relayPage: RelayTranscriptPage?
             if isRelay {
                 // Reads ride the live chat connection when one exists (it
@@ -64,12 +69,18 @@ extension ChatView {
                 )
                 relayPage = page
                 fetched = page.messages
+                recoveredProgress = page.progress
             } else {
                 guard let origin = appModel.serverOrigin else { return false }
                 let client = makeHTTPClient(origin: origin)
                 let sessions = SessionsClient(client: client, profile: appModel.activeProfile)
-                fetched = try await sessions.transcript(sessionID: transcriptID)
+                let page = try await sessions.transcriptWithProgress(sessionID: transcriptID)
+                fetched = page.messages
+                recoveredProgress = page.progress
             }
+            guard !Task.isCancelled, backgroundTaskScope == requestedScope,
+                  appModel.relaySelectionGeneration == requestedSelection else { return false }
+            state.progress = state.progress.recover(history: recoveredProgress, expectedVersion: expectedProgressVersion)
             let history = TranscriptPageOrdering.forDisplay(fetched)
             let restored = history.map { message in
                 TranscriptState.RestoredMessage(
@@ -105,7 +116,7 @@ extension ChatView {
     /// (`relay.session.transcript`, same shape as the REST endpoint). The
     /// live chat connection carries the read on its own lease channel;
     /// before one exists, the pool's default channel serves it.
-    private func relayTranscriptMessages(
+    func relayTranscriptMessages(
         transcriptID: String,
         limit: Int,
         offset: Int,

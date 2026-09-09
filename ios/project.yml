@@ -16,7 +16,7 @@ settings:
     # number, which App Store validation requires. Bump MARKETING_VERSION with
     # each release alongside versionName.
     MARKETING_VERSION: "0.2.5"
-    CURRENT_PROJECT_VERSION: 1
+    CURRENT_PROJECT_VERSION: 2
 
 targets:
   MercuryShareKit:
@@ -80,6 +80,8 @@ targets:
       properties:
         UILaunchScreen: {}
         CFBundleDisplayName: Mercury
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
         NSMicrophoneUsageDescription: Mercury uses the microphone only while you dictate a message draft.
         NSSpeechRecognitionUsageDescription: Mercury uses speech recognition to place dictated words into your message draft.
@@ -119,6 +121,8 @@ targets:
       path: MercuryShare/Info.plist
       properties:
         CFBundleDisplayName: Add to Mercury
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         MercuryAppGroupIdentifier: $(MERCURY_APP_GROUP_IDENTIFIER)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services

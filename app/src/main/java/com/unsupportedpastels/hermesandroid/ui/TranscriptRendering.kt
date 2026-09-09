@@ -139,29 +139,9 @@ internal fun TurnActivityGroup(
                     var showAnswerReasoning by rememberSaveable(sessionKey, entry.answerIndex) { mutableStateOf(false) }
                     ThinkingBlock(entry.answerReasoning, false, showAnswerReasoning, { showAnswerReasoning = !showAnswerReasoning })
                 }
-                // The legacy coalescer bundles interleaved reasoning/tools by type.
-                // Unpack bursts back into source order here; the turn is already the disclosure.
+                // Shared with iOS: the turn is already the disclosure; retain source order.
                 val groups = remember(entry.steps) {
-                    coalesceTranscriptEntries(entry.steps.map { it.message }).flatMap { group ->
-                        when (group) {
-                            is TranscriptEntry.WorkBurst -> {
-                                val ordered = (group.reasoning + group.tools).sortedBy { it.index }
-                                buildList<TranscriptEntry> {
-                                    var tools = mutableListOf<IndexedChatMessage>()
-                                    fun flush() {
-                                        if (tools.isNotEmpty()) add(TranscriptEntry.ToolRun(tools.toList()))
-                                        tools = mutableListOf()
-                                    }
-                                    ordered.forEach { indexed ->
-                                        if (indexed in group.tools) tools += indexed
-                                        else { flush(); add(TranscriptEntry.Single(indexed.index, indexed.message)) }
-                                    }
-                                    flush()
-                                }
-                            }
-                            else -> listOf(group)
-                        }
-                    }
+                    coalesceTranscriptEntries(entry.steps.map { it.message }, withinTurnActivity = true)
                 }
                 groups.forEach { group ->
                     val localIndex = when (group) {
@@ -247,7 +227,7 @@ internal fun transcriptEntryKey(entry: TranscriptEntry, chat: ChatSessionSnapsho
  * historical presentation even when a separate live activity card is present;
  * the current DTO does not carry an exact identity for safe suppression.
  */
-internal fun coalesceTranscriptEntries(messages: List<ChatMessage>): List<TranscriptEntry> {
+internal fun coalesceTranscriptEntries(messages: List<ChatMessage>, withinTurnActivity: Boolean = false): List<TranscriptEntry> {
     val rows = messages.mapIndexed { index, message ->
         com.unsupportedpastels.mercury.core.transcript.TranscriptRow(
             id = index.toLong(),
@@ -259,9 +239,12 @@ internal fun coalesceTranscriptEntries(messages: List<ChatMessage>): List<Transc
     }
     fun indexed(row: com.unsupportedpastels.mercury.core.transcript.TranscriptRow) =
         IndexedChatMessage(row.id.toInt(), messages[row.id.toInt()])
-    return com.unsupportedpastels.mercury.core.transcript.coalesceTranscriptEntries(
-        rows,
-    ).map { entry ->
+    val entries = if (withinTurnActivity) {
+        com.unsupportedpastels.mercury.core.transcript.activityTranscriptEntries(rows)
+    } else {
+        com.unsupportedpastels.mercury.core.transcript.coalesceTranscriptEntries(rows)
+    }
+    return entries.map { entry ->
         when (entry) {
             is com.unsupportedpastels.mercury.core.transcript.TranscriptEntry.Message ->
                 TranscriptEntry.Single(entry.row.id.toInt(), messages[entry.row.id.toInt()])

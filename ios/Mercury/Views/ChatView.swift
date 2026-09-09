@@ -61,6 +61,18 @@ struct ChatView: View {
         )
     }
 
+    #if DEBUG
+    /// Synthetic UI harness uses the real chat hierarchy without opening a socket.
+    init(fixture: ChatSessionState) {
+        sessionID = "fixture"
+        title = "Activity fixture"
+        isNewSession = false
+        newSessionWorkspacePath = nil
+        incomingShare = nil
+        _state = State(initialValue: fixture)
+    }
+    #endif
+
     @Environment(AppModel.self) var appModel
     @Environment(\.scenePhase) var scenePhase
     @AppStorage(VoiceDisplayPreferences.playbackControlsKey)
@@ -106,27 +118,6 @@ struct ChatView: View {
                     .foregroundStyle(Color.statusAlert)
                     .padding(.vertical, 4)
             }
-            switch state.connectionState {
-            case .connecting:
-                Label("Connecting…", systemImage: "bolt.horizontal")
-                    .font(.footnote)
-                    .foregroundStyle(Color.secondary)
-                    .padding(.vertical, 4)
-            case .reconnecting(let attempt):
-                Label("Reconnecting… (attempt \(attempt))", systemImage: "arrow.clockwise")
-                    .font(.footnote)
-                    .foregroundStyle(Color.secondary)
-                    .padding(.vertical, 4)
-            case .offline:
-                Button(action: { retryConnectionNow() }) {
-                    Label("Chat offline — tap to retry", systemImage: "wifi.exclamationmark")
-                        .font(.footnote)
-                        .foregroundStyle(Color.statusAlert)
-                }
-                .padding(.vertical, 4)
-            case .live:
-                EmptyView()
-            }
             if let loadError = state.loadError {
                 Label(loadError, systemImage: "exclamationmark.triangle")
                     .font(.footnote)
@@ -148,8 +139,8 @@ struct ChatView: View {
                     .padding(.horizontal)
             }
 
-            BackgroundTaskStrip(tasks: backgroundTasks)
-                .padding(.horizontal)
+            TimelineView(.periodic(from: .now, by: 1)) { clock in
+            let now = Int64(clock.date.timeIntervalSince1970 * 1000)
             ComposerBar(
                 draft: $state.draft,
                 errorMessage: Binding(get: { state.composerError }, set: { state.composerError = $0 }),
@@ -195,8 +186,12 @@ struct ChatView: View {
                 onOpenModelPicker: state.modelFeatureSupported ? openModelPicker : nil,
                 onReasoningSelected: applyReasoning,
                 onFastSelected: applyFast,
-                onOpenContext: state.contextControlsSupported ? openContextSheet : nil
+                onOpenContext: openContextSheet,
+                activity: state.activityLine(activeChildCount: visibleBackgroundTasks(now: now).activeCount(now: now)),
+                activityStartedAtMillis: state.progress.turnStartedAtEpochMillis?.int64Value,
+                onOpenActivity: { state.showActivitySheet = true }
             )
+            }
         }
         .navigationTitle(state.titleText.isEmpty ? "Session" : state.titleText)
         .navigationBarTitleDisplayMode(.inline)
@@ -271,12 +266,23 @@ struct ChatView: View {
                 onSelectModel: { applyModel($0, confirmed: false) }
             )
         }
-        .sheet(isPresented: $state.showContextSheet) {
+        .sheet(isPresented: $state.showActivitySheet, onDismiss: {
+            if state.openInputAfterActivity {
+                state.openInputAfterActivity = false
+                state.presentPendingInput()
+            }
+        }) { activitySheet }
+        .sheet(isPresented: $state.showContextSheet, onDismiss: {
+            if state.openActivityAfterContext {
+                state.openActivityAfterContext = false
+                state.showActivitySheet = true
+            }
+        }) {
             ContextSheet(
                 usage: state.sessionUsage,
                 breakdown: state.contextBreakdown,
                 isLoading: state.contextLoading,
-                isBusy: state.contextBusy,
+                isBusy: state.contextBusy || state.connectionStateIsNotLive || state.connection == nil,
                 isIdle: !state.turnInFlight,
                 statusMessage: state.contextStatus,
                 errorMessage: state.contextError,
@@ -286,7 +292,11 @@ struct ChatView: View {
                 onRefresh: loadContext,
                 onCompress: compressContext,
                 onUndo: undoLastTurn,
-                onBranch: branchSession
+                onBranch: branchSession,
+                onOpenActivity: {
+                    state.openActivityAfterContext = true
+                    state.showContextSheet = false
+                }
             )
         }
         .alert(item: $state.pendingModelConfirmation) { pending in
@@ -310,7 +320,7 @@ struct ChatView: View {
         .sheet(item: $state.pendingRequest) { request in
             ApprovalSheet(
                 request: request,
-                isBusy: state.isSending,
+                isBusy: state.inputResponseID != nil,
                 onApprovalChoice: { choice in
                     await answerApproval(choice)
                 },

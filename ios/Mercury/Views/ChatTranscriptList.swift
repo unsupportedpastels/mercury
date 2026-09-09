@@ -29,16 +29,10 @@ extension ChatView {
                         .accessibilityLabel(state.historyError.map { _ in "Retry loading earlier messages" } ?? "Load earlier messages")
                         .id(firstRowID)
                     }
-                    ForEach(coalesceTranscriptEntries(state.transcript.rows)) { entry in
+                    ForEach(foldTranscriptTurns(state.transcript.rows, turnActive: state.activityTurnActive)) { entry in
                         switch entry {
                         case .message(let row):
                             VStack(alignment: .leading, spacing: 4) {
-                                if !row.reasoningText.isEmpty {
-                                    ReasoningDisclosure(
-                                        reasoningText: row.reasoningText,
-                                        streaming: !row.completed
-                                    )
-                                }
                                 if TranscriptPresentationPolicy.shouldRenderMessageBubble(
                                     role: row.role,
                                     text: row.text
@@ -62,44 +56,23 @@ extension ChatView {
                                 }
                             }
                             .id(row.id)
-                        case .toolRun(let rows):
-                            TranscriptToolRunView(rows: rows)
-                                .id(entry.id)
-                        case .workBurst(let reasoning, let tools):
-                            WorkBurstView(reasoning: reasoning, tools: tools)
+                        case .activity(_, let steps, let reasoning, let count):
+                            TurnActivityView(steps: steps, answerReasoning: reasoning, stepCount: count,
+                                             media: { AnyView(managedImages(in: $0)) })
                                 .id(entry.id)
                         }
                     }
-                    if !state.transcript.tools.isEmpty || !state.processRows.isEmpty {
-                        ActivityStackView(
-                            state: ActivityStackState(processes: state.processRows),
-                            tools: state.transcript.tools,
-                            turnActive: state.isSending
-                        )
-                    }
-                    if backgroundTasks.rows.contains(where: { !$0.terminal }) {
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            if let notice = missingFinalResponseNotice(
-                                state.transcript.rows,
-                                activeChildCount: backgroundTasks.activeCount(
-                                    now: Int64(context.date.timeIntervalSince1970 * 1000)
-                                ),
-                                parentTurnSending: state.isSending
-                            ) {
-                                Text(notice)
-                                    .font(.caption)
-                                    .foregroundStyle(Color.secondary)
-                                    .accessibilityLabel(notice)
+                    if let request = state.transcript.pendingRequest, state.pendingRequest == nil {
+                        Button("Respond to pending request") {
+                            switch request {
+                            case .approval(let event): state.pendingRequest = .approval(event)
+                            case .clarify(let event): state.pendingRequest = .clarify(event)
                             }
-                        }
+                        }.frame(minHeight: 44)
                     }
-                    if let generating = state.transcript.generatingStatusText {
-                        Label(generating, systemImage: "gearshape")
-                            .font(.caption)
-                            .foregroundStyle(Color.secondary)
-                    }
-                    if state.turnInFlight, let status = state.transcript.latestStatusText, !status.isEmpty {
-                        RunStatusPill(text: status)
+                    if state.outstandingSecure != nil && state.pendingSecure == nil {
+                        Button("Provide requested input") { state.presentPendingInput() }
+                            .frame(minHeight: 44)
                     }
                     Color.clear.frame(height: 1).id(lastRowID)
                 }

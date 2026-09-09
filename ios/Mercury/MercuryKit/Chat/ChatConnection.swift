@@ -982,9 +982,21 @@ final class ChatConnection: @unchecked Sendable {
                 sessionId: sessionID,
                 payloadJson: payloadJSON
               ),
-              let event = ChatEvent(shared: shared)
+              let decodedEvent = ChatEvent(shared: shared)
         else { return }
 
+        let event: ChatEvent
+        let historical = relaySocket != nil && params["relay_replay"] as? Bool == true
+        switch decodedEvent {
+        case .toolStart(let session, let id, let name, let context, _):
+            event = .toolStart(sessionID: session, toolID: id, name: name, context: context, historical: historical)
+        case .toolComplete(let session, let id, let name, let summary, _, _):
+            event = .toolComplete(sessionID: session, toolID: id, name: name, summary: summary,
+                progressSnapshot: MercuryCore.DurableProgressBridge.shared.liveSnapshotJson(payloadJson: payloadJSON),
+                historical: historical)
+        default:
+            event = decodedEvent
+        }
         switch event {
         case .approvalRequest(_, let requestID, let command, let description, let choices):
             stateLock.lock()

@@ -203,7 +203,8 @@ extension ChatView {
     }
 
     func openContextSheet() {
-        guard state.connection != nil, state.runtimeSessionID != nil else { return }
+        // Saved activity is available even without a live controller. Only the
+        // usage/maintenance requests below require a connected runtime.
         state.showContextSheet = true
         state.contextStatus = nil
         loadContext()

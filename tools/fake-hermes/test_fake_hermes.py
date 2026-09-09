@@ -405,6 +405,19 @@ class ProgressScenarioTest(unittest.TestCase):
         fake_hermes.reset_synthetic_state()
         self.addCleanup(self.env.stop)
 
+    def test_rejected_progress_prompt_never_starts_a_turn(self):
+        with FakeHermesServer() as server:
+            sock = _startup_chat_socket(server.origin)
+            try:
+                before = fake_hermes.transcript_messages()
+                _send_websocket_json(sock, {"jsonrpc": "2.0", "id": 20, "method": "prompt.submit",
+                    "params": {"session_id": fake_hermes.RUNTIME_SESSION_ID, "text": "synthetic-reject-send"}})
+                response = _receive_websocket_json(sock)
+                self.assertEqual(response.get("error", {}).get("code"), -32001)
+                self.assertEqual(fake_hermes.transcript_messages(), before)
+            finally:
+                sock.close()
+
     def test_history_uses_official_tool_result_rows_and_separate_evidence(self):
         rows = fake_hermes.transcript_messages()
         todo = next(row for row in rows if row.get("tool_name") == "todo_list")

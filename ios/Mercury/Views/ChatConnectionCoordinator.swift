@@ -156,6 +156,9 @@ extension ChatView {
                 // Android applies this snapshot before reconciling in-flight
                 // state; Mercury must do the same to show replies after a
                 // terminate/relaunch cycle.
+                state.progress = state.progress.recover(
+                    history: SessionProgressBridge.parse(resumed.messages),
+                    expectedVersion: state.progress.observationVersion)
                 let resumedRows = transcriptRows(from: resumed.messages)
                 if !resumedRows.isEmpty {
                     state.transcript.loadTranscript(resumedRows)

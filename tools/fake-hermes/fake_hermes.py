@@ -1026,6 +1026,9 @@ class WsSession:
                 },
             })
         elif method == "prompt.submit":
+            if progress_scenario_enabled() and params.get("text") == "synthetic-reject-send":
+                self.respond_error(request_id, -32001, "Synthetic prompt rejected before acceptance")
+                return
             self.interrupt_event.clear()
             if startup_scenario_enabled():
                 self.startup_turn_count += 1

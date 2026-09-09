@@ -103,6 +103,13 @@ object TranscriptEngine {
     fun initial(isNewSession: Boolean = false): TranscriptSnapshot =
         TranscriptSnapshot(adoptsLiveTitles = isNewSession)
 
+    fun matchesPendingRequest(state: TranscriptSnapshot, expected: PendingTranscriptRequest?): Boolean =
+        expected != null && state.pendingRequest == expected
+
+    /** A native RPC acknowledgement resolves only the exact request it answered. */
+    fun resolvePendingRequest(state: TranscriptSnapshot, expected: PendingTranscriptRequest?): TranscriptSnapshot =
+        if (matchesPendingRequest(state, expected)) state.copy(pendingRequest = null) else state
+
     fun apply(state: TranscriptSnapshot, event: ChatEvent): TranscriptSnapshot = when (event) {
         is ChatEvent.MessageStart -> {
             val last = state.lastOpenAssistantIndex()
@@ -163,7 +170,7 @@ object TranscriptEngine {
                     state.appendRow(role = "assistant", text = "", completed = true, reasoningText = finalReasoning)
                 else -> state
             }
-            next.finishRunningTools()
+            next.finishRunningTools().copy(pendingRequest = null)
         }
 
         is ChatEvent.ReasoningDelta -> {
@@ -203,7 +210,7 @@ object TranscriptEngine {
         }
 
         is ChatEvent.Error ->
-            finishStreamingAssistant(state.copy(lastError = event.message))
+            finishStreamingAssistant(state.copy(lastError = event.message, pendingRequest = null))
 
         is ChatEvent.ToolStart -> {
             val boundedId = event.toolId.take(MAX_TOOL_FIELD_LENGTH)
@@ -414,7 +421,12 @@ object TranscriptEngine {
 
     /** Optimistic local echo of a submitted user prompt. */
     fun appendUserMessage(state: TranscriptSnapshot, text: String): TranscriptSnapshot =
-        state.appendRow(role = "user", text = text, completed = true)
+        state.copy(
+            tools = emptyList(),
+            latestStatusText = null,
+            statusUpdateCount = 0,
+            generatingStatusText = null,
+        ).appendRow(role = "user", text = text, completed = true)
 
     // MARK: Internal helpers
 

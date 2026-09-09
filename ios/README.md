@@ -59,6 +59,16 @@ Version numbers come from `project.yml` (`MARKETING_VERSION`,
 
 ## Notes
 
+- Active chat work has one slim activity line inside the composer, with a ticking
+  right-aligned timer when the turn start is known. Tap it for current reasoning,
+  tools, reported milestones, background tasks, and process observations. Completed
+  turns fold their intermediate activity beneath the final answer; the model picker
+  and context ring stay visible. Saved activity remains reachable through the context
+  ring → Session activity, including while disconnected. Read-only progress updates
+  read a bounded transcript page without resuming, interrupting, or submitting work.
+  Activity priorities, quiet-label hold, turn folding, and progress reconciliation
+  use the same shared core as Android.
+
 - Startup restores the last successfully used direct server or relay. With no
   saved choice, one usable configured connection starts automatically; multiple
   configured connections show a picker. A failed or unavailable saved choice

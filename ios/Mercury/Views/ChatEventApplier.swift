@@ -24,6 +24,7 @@ extension ChatView {
             }
             return
         }
+        state.observeProgress(event, atMillis: Int64(Date().timeIntervalSince1970 * 1000))
         // Pure transcript mutation lives in the reducer.
         state.transcript.apply(event)
 
@@ -51,6 +52,7 @@ extension ChatView {
             state.isSending = true
 
         case .messageComplete:
+            state.finishInputRequests()
             if case .releasedPending(let referenceIDs) = state.promptSubmission.observeTerminal() {
                 clearStagedHostReferences(referenceIDs)
                 // The terminal event is authoritative even if prompt.submit's
@@ -64,6 +66,7 @@ extension ChatView {
             loadContext()
 
         case .error(_, let message):
+            state.finishInputRequests()
             if case .releasedPending(let referenceIDs) = state.promptSubmission.observeTerminal() {
                 clearStagedHostReferences(referenceIDs)
                 state.isComposerActionPending = false
@@ -117,7 +120,9 @@ extension ChatView {
         case .unsupportedBlockingRequest(_, let kind, let requestID, let prompt):
             switch kind {
             case .secret, .sudo:
-                state.pendingSecure = SecureRequest(kind: kind, requestID: requestID, prompt: prompt)
+                let request = SecureRequest(kind: kind, requestID: requestID, prompt: prompt)
+                state.outstandingSecure = request
+                state.pendingSecure = request
             case .terminalRead, .previewRead, .windowRead:
                 // Mercury owns none of Desktop's terminal/preview/window
                 // surfaces. The released bridge contract defines an empty
@@ -127,6 +132,7 @@ extension ChatView {
 
         case .unsupportedBlockingExpire(_, _, let requestID):
             if state.pendingSecure?.requestID == requestID { state.pendingSecure = nil }
+            if state.outstandingSecure?.requestID == requestID { state.outstandingSecure = nil }
 
         default:
             break

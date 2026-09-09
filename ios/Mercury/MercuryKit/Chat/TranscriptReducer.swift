@@ -137,6 +137,16 @@ struct TranscriptState: Sendable, Equatable {
     var rows: [Row] { core.rows.map(Row.init) }
     var lastError: String? { core.lastError }
     var pendingRequest: PendingRequest? { pendingSwiftRequest }
+    var pendingRequestSnapshot: MercuryCore.PendingTranscriptRequest? { core.pendingRequest }
+
+    func matchesPendingRequest(_ expected: MercuryCore.PendingTranscriptRequest?) -> Bool {
+        MercuryCore.TranscriptEngine.shared.matchesPendingRequest(state: core, expected: expected)
+    }
+
+    mutating func resolvePendingRequest(_ expected: MercuryCore.PendingTranscriptRequest?) {
+        core = MercuryCore.TranscriptEngine.shared.resolvePendingRequest(state: core, expected: expected)
+        if core.pendingRequest == nil { pendingSwiftRequest = nil }
+    }
     var adoptedTitle: String? { core.adoptedTitle }
     var latestStatusText: String? { core.latestStatusText }
     var statusUpdateCount: Int { Int(core.statusUpdateCount) }
@@ -252,9 +262,11 @@ enum TranscriptEntry: Identifiable, Equatable {
     }
 }
 
-func coalesceTranscriptEntries(_ rows: [TranscriptState.Row]) -> [TranscriptEntry] {
-    MercuryCore.TranscriptEngineKt.coalesceTranscriptEntries(rows: rows.map(\.core))
-        .compactMap { entry -> TranscriptEntry? in
+func coalesceTranscriptEntries(_ rows: [TranscriptState.Row], withinTurnActivity: Bool = false) -> [TranscriptEntry] {
+    let entries = withinTurnActivity
+        ? MercuryCore.ActivityTranscriptEntriesKt.activityTranscriptEntries(rows: rows.map(\.core))
+        : MercuryCore.TranscriptEngineKt.coalesceTranscriptEntries(rows: rows.map(\.core))
+    return entries.compactMap { entry -> TranscriptEntry? in
             switch entry {
             case let message as MercuryCore.TranscriptEntryMessage:
                 return .message(TranscriptState.Row(message.row))
@@ -321,11 +333,11 @@ private extension ChatEvent {
             return MercuryCore.ChatEventSessionTitle(sessionId: sessionID, title: title)
         case .error(let sessionID, let message):
             return MercuryCore.ChatEventError(sessionId: sessionID, message: message)
-        case .toolStart(let sessionID, let toolID, let name, let context):
+        case .toolStart(let sessionID, let toolID, let name, let context, _):
             return MercuryCore.ChatEventToolStart(
                 sessionId: sessionID, toolId: toolID, name: name, context: context
             )
-        case .toolComplete(let sessionID, let toolID, let name, let summary):
+        case .toolComplete(let sessionID, let toolID, let name, let summary, _, _):
             return MercuryCore.ChatEventToolComplete(
                 sessionId: sessionID, toolId: toolID, name: name, summary: summary
             )

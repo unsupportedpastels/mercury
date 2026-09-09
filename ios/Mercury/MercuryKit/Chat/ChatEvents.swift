@@ -1,4 +1,5 @@
 import Foundation
+import MercuryCore
 
 // MARK: - Chat event hierarchy
 //
@@ -83,8 +84,8 @@ enum ChatEvent: Sendable, Equatable {
         running: Bool?
     )
     case error(sessionID: String, message: String)
-    case toolStart(sessionID: String, toolID: String, name: String, context: String?)
-    case toolComplete(sessionID: String, toolID: String, name: String, summary: String?)
+    case toolStart(sessionID: String, toolID: String, name: String, context: String?, historical: Bool = false)
+    case toolComplete(sessionID: String, toolID: String, name: String, summary: String?, progressSnapshot: MercuryCore.DurableProgress? = nil, historical: Bool = false)
     case statusUpdate(sessionID: String, kind: String, text: String)
     /// A batch request carries `questions`; the top-level fields mirror the
     /// first question so single-question code paths keep working.
@@ -103,7 +104,7 @@ enum ChatEvent: Sendable, Equatable {
              .reasoningDelta(let s, _, _), .messageInterim(let s, _, _),
              .toolGenerating(let s, _), .sessionTitle(let s, _),
              .sessionInfo(let s, _, _, _, _, _, _, _), .error(let s, _),
-             .toolStart(let s, _, _, _), .toolComplete(let s, _, _, _),
+             .toolStart(let s, _, _, _, _), .toolComplete(let s, _, _, _, _, _),
              .statusUpdate(let s, _, _), .clarifyRequest(let s, _, _, _, _, _),
              .clarifyExpire(let s, _), .approvalRequest(let s, _, _, _, _),
              .approvalExpire(let s, _),
