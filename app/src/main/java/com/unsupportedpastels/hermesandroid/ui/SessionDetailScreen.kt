@@ -319,7 +319,9 @@ internal fun SessionDetailScreen(
         streamingAnswer = streaming?.text?.isNotBlank() == true,
         streamingReasoning = streaming?.reasoningText?.isNotBlank() == true,
         inProgressTodo = summary.inProgress.firstOrNull()?.label,
-        activeChildCount = if (connectionLost || connectionBusy || chat.progress.restored) 0
+        // Child evidence is live run state too: a reopen's history refresh sets
+        // `restored`, which must not hide children the host still reports running.
+        activeChildCount = if (connectionLost || connectionBusy) 0
             else chat.backgroundTasks.presentation(visibleBackground, activityNow).activeCount,
     )))
 

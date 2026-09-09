@@ -16,11 +16,13 @@ extension ChatView {
                     guard state.connection === candidate, backgroundTaskScope == scope,
                           state.runtimeSessionID == runtimeSessionID, let tasks else { return }
                     appModel.backgroundTasksBySession[scope] = tasks
+                    startBackgroundRegistryPollingIfIdle()
                 }
             } else {
                 var tasks = backgroundTasks
                 tasks.apply(event, runtime: runtimeSessionID, now: Int64(Date().timeIntervalSince1970 * 1000))
                 appModel.backgroundTasksBySession[backgroundTaskScope] = tasks
+                startBackgroundRegistryPollingIfIdle()
             }
             return
         }

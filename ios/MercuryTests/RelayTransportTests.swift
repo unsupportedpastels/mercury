@@ -435,6 +435,73 @@ final class RelayTransportTests: XCTestCase {
         XCTAssertEqual(observed.visible, ["B"])
     }
 
+    func testColdReopenRecoveredChildBecomesActiveViaRegistryAndLiveEvents() async throws {
+        // Parent turn already finished on the host (resume running=false); the relay
+        // snapshot carries the child's start, the registry says it still runs, and a
+        // live subagent.tool frame arrives after the reattach.
+        let (device, hostSocket) = InMemoryRelayTransport.pair()
+        let pool = RelayConnectionPool(socketFactory: FakeRelaySocketFactory(sockets: [device]))
+        let host = Task {
+            let admitted = try await admit(socket: hostSocket)
+            let binding: [String: Any] = ["runtime_session_id": "A", "durable_session_id": "durable-A",
+                                          "profile": "default", "live": true]
+            try await sendFrame(["jsonrpc": "2.0", "method": "relay.lease.attached", "params": [
+                "recovery_version": 1, "lease_id": "reopen", "last_seq": 0,
+                "resume_cursor": 0, "replay_gap": false, "recovery_reset": false,
+                "bindings": [binding],
+                "task_snapshot": [["jsonrpc": "2.0", "method": "event", "params": [
+                    "session_id": "A", "type": "subagent.start", "recovery_revision": 1,
+                    "payload": ["subagent_id": "child-A", "goal": "Write a poem", "status": "running"],
+                    "recovery_binding": binding]]]
+            ]], socket: hostSocket, channel: admitted.channel)
+            try await sendFrame(["jsonrpc": "2.0", "method": "relay.lease.replay_complete",
+                                 "params": ["lease_id": "reopen", "last_seq": 0]],
+                                socket: hostSocket, channel: admitted.channel)
+            let request = try await readFrame(socket: hostSocket, channel: admitted.channel,
+                                              reassembler: admitted.reassembler)
+            func send(_ seq: Int, _ frame: [String: Any]) async throws {
+                let text = String(decoding: try JSONSerialization.data(withJSONObject: frame), as: UTF8.self)
+                try await sendFrame(["jsonrpc": "2.0", "method": "relay.lease.frame", "params": [
+                    "lease_id": "reopen", "seq": seq, "replay": false, "frame": text
+                ]], socket: hostSocket, channel: admitted.channel)
+            }
+            try await send(1, ["jsonrpc": "2.0", "id": try XCTUnwrap(request["id"]), "result": ["ok": true]])
+            let second = try await readFrame(socket: hostSocket, channel: admitted.channel,
+                                             reassembler: admitted.reassembler)
+            try await send(2, ["jsonrpc": "2.0", "method": "event", "params": [
+                "session_id": "A", "type": "subagent.tool",
+                "payload": ["subagent_id": "child-A", "tool_name": "execute_code", "tool_preview": "python poem.py"]]])
+            try await send(3, ["jsonrpc": "2.0", "id": try XCTUnwrap(second["id"]), "result": ["ok": true]])
+        }
+        let connection = try await pool.acquire(target: makeTarget(), profile: "default")
+        _ = connection.start(replayBuffered: false)
+        _ = try await connection.relayRequest("relay.sessions.list", params: [:])
+        let relay = try XCTUnwrap(connection.relaySocket)
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let recoveredTasks = await relay.retainedTasks(durable: "durable-A", runtime: "A")
+        let recovered = try XCTUnwrap(recoveredTasks)
+        XCTAssertEqual(recovered.rows.map(\.childID), ["child-A"])
+        XCTAssertEqual(recovered.rows.first?.status, .active)
+        XCTAssertEqual(recovered.activeCount(now: now), 0, "a recovered snapshot alone is not live evidence")
+        XCTAssertTrue(recovered.hasUnresolvedIdentifiedChildren)
+        let confirmedTasks = await relay.reconcileRetainedTasks(durable: "durable-A", runtime: "A",
+                                                                statuses: ["child-A": "running"])
+        let confirmed = try XCTUnwrap(confirmedTasks)
+        XCTAssertEqual(confirmed.activeCount(now: now + 1), 1, "the host registry confirming the child counts as live")
+        XCTAssertEqual(confirmed.rows.first?.observedAtMillis, 0, "registry polling is not worker activity")
+        // The live tool frame rides the second request's turn on the host side.
+        _ = try await connection.relayRequest("relay.sessions.list", params: [:])
+        let observedTasks = await relay.retainedTasks(durable: "durable-A", runtime: "A")
+        let observed = try XCTUnwrap(observedTasks)
+        XCTAssertEqual(observed.rows.first?.action, "python poem.py")
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(observed.rows.first?.observedAtMillis), now)
+        XCTAssertEqual(observed.rows.first?.registryConfirmedAtMillis, confirmed.rows.first?.registryConfirmedAtMillis)
+        XCTAssertEqual(observed.activeCount(now: now + 1), 1)
+        try await host.value
+        await connection.close()
+        await hostSocket.close()
+    }
+
     func testAutomaticRecoveryAfterResetDoesNotResumeUntilExplicitRetry() async throws {
         let (device, hostSocket) = InMemoryRelayTransport.pair()
         let pool = RelayConnectionPool(socketFactory: FakeRelaySocketFactory(sockets: [device]))

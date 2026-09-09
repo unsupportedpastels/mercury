@@ -59,7 +59,7 @@ final class RelayTaskOwner: @unchecked Sendable {
         guard self.generation == generation, let binding = bindings[runtime],
               binding.live, binding.durableId == durable, binding.profile == profile else { return nil }
         var state = tasks[durable] ?? BackgroundTasks()
-        state.reconcile(statuses, runtime: runtime)
+        state.reconcile(statuses, runtime: runtime, now: Int64(Date().timeIntervalSince1970 * 1000))
         tasks[durable] = state
         return state
     }

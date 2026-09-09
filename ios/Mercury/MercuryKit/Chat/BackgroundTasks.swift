@@ -61,11 +61,14 @@ struct BackgroundTaskRow: Sendable, Equatable, Identifiable {
     var observedAtMillis: Int64
     var available = true
     var identityKnown = true
+    /// Last time the gateway's subagent registry reported this child running.
+    var registryConfirmedAtMillis: Int64 = 0
     var id: String { runtime + "/" + childID }
     var core: MercuryCore.BackgroundTaskRow {
         MercuryCore.BackgroundTaskRow(runtimeId: runtime, id: childID, goal: goal,
             action: action, status: status.core, observedAtMillis: observedAtMillis,
-            available: available, identityKnown: identityKnown)
+            available: available, identityKnown: identityKnown,
+            registryConfirmedAtMillis: registryConfirmedAtMillis)
     }
     var terminal: Bool { core.terminal }
     func recentlyActive(now: Int64) -> Bool { core.recentlyActive(now: now) }
@@ -96,7 +99,8 @@ struct BackgroundTasks: @unchecked Sendable, Equatable {
             BackgroundTaskRow(runtime: row.runtimeId, childID: row.id, goal: row.goal,
                 action: row.action, status: BackgroundTaskStatus(row.status),
                 observedAtMillis: row.observedAtMillis, available: row.available,
-                identityKnown: row.identityKnown)
+                identityKnown: row.identityKnown,
+                registryConfirmedAtMillis: row.registryConfirmedAtMillis)
         }
     }
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.core == rhs.core }
@@ -125,10 +129,16 @@ struct BackgroundTasks: @unchecked Sendable, Equatable {
         )
     }
     mutating func markUnavailable() { core = core.unavailable() }
-    mutating func reconcile(_ statuses: [String: String], runtime: String) {
+    /// `now` stamps a "running" registry answer as confirmed liveness for one
+    /// activity window; it never touches the worker-observed timestamp.
+    mutating func reconcile(_ statuses: [String: String], runtime: String, now: Int64 = 0) {
         core = core.reconcile(active: statuses.map {
             MercuryCore.BackgroundTaskRegistryEntry(subagentId: $0.key, status: $0.value)
-        }, runtime: runtime, previousRuntime: runtime)
+        }, runtime: runtime, previousRuntime: runtime, now: now)
+    }
+    /// Unresolved children with a known identity: the rows worth asking the host about.
+    var hasUnresolvedIdentifiedChildren: Bool {
+        rows.contains { !$0.terminal && $0.identityKnown }
     }
     mutating func recover(snapshot: MercuryCore.RelayLeaseSnapshot, durableID: String,
                           profile: String, runtime: String?) {
