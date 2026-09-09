@@ -200,6 +200,7 @@ extension ChatView {
                 return false
             }
             state.connection = candidate
+            state.connectionOwnershipToken = ownershipToken
             let childScope = backgroundTaskScope
             if let relay = candidate.relaySocket,
                let tasks = await relay.retainedTasks(durable: state.durableID ?? sessionID, runtime: state.runtimeSessionID) {
@@ -211,26 +212,7 @@ extension ChatView {
                 appModel.backgroundTasksBySession[childScope] = tasks
             }
             state.eventTask?.cancel()
-            if !backgroundTasks.rows.isEmpty, let childRuntime = state.runtimeSessionID {
-                Task {
-                    if let statuses = try? await candidate.backgroundTaskStatuses(),
-                       state.connectionOwnership.isCurrent(ownershipToken), state.connection === candidate,
-                       backgroundTaskScope == childScope {
-                        if let relay = candidate.relaySocket {
-                            let tasks = await relay.reconcileRetainedTasks(durable: state.durableID ?? sessionID,
-                                                                          runtime: childRuntime, statuses: statuses)
-                            guard state.connectionOwnership.isCurrent(ownershipToken), state.connection === candidate,
-                                  backgroundTaskScope == childScope, state.runtimeSessionID == childRuntime,
-                                  let tasks else { return }
-                            appModel.backgroundTasksBySession[childScope] = tasks
-                        } else {
-                            var tasks = backgroundTasks
-                            tasks.reconcile(statuses, runtime: childRuntime)
-                            appModel.backgroundTasksBySession[childScope] = tasks
-                        }
-                    }
-                }
-            }
+            startBackgroundRegistryPolling()
             state.eventTask = Task { [weak candidate] in
                 guard let candidate else { return }
                 for await event in stream {

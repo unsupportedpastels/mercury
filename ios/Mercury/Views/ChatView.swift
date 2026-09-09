@@ -249,6 +249,8 @@ struct ChatView: View {
             state.readAloud?.stop()
             state.eventTask?.cancel()
             state.eventTask = nil
+            state.backgroundRegistryTask?.cancel()
+            state.backgroundRegistryTask = nil
             let closingConnection = state.connection
             markBackgroundTasksUnavailable()
             state.connectionOwnership.invalidate()

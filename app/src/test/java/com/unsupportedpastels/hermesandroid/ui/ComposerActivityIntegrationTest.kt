@@ -95,6 +95,20 @@ class ComposerActivityIntegrationTest {
         compose.onAllNodes(SemanticsMatcher.keyIsDefined(androidx.compose.ui.semantics.SemanticsProperties.ProgressBarRangeInfo)
             and hasAnyAncestor(hasTestTag("Session activity sheet"))).assertCountEquals(1)
     }
+    @Test fun restoredHistoryNeverHidesHostConfirmedBackgroundChildren() {
+        // Cold reopen mid-delegation: the parent turn already finished (resume running=false),
+        // the history refresh labeled progress restored, and the only child evidence is a
+        // recovered snapshot the gateway registry just confirmed as running.
+        show(ChatSessionSnapshot(
+            progress = DurableProgress(hasMilestoneSnapshot = true, restored = true),
+            messages = listOf(ChatMessage(ChatMessageRole.User, "Write 4 poems. Use subagents."),
+                ChatMessage(ChatMessageRole.Assistant, "Four subagents are each writing a poem.")),
+            backgroundTasks = BackgroundTasks(listOf(BackgroundTaskRow(RuntimeSessionId("runtime"), "sa-0", "Write a poem",
+                null, BackgroundTaskStatus.Active, observedAtMillis = 0L, registryConfirmedAtMillis = System.currentTimeMillis())))))
+        compose.onNodeWithContentDescription("Activity: 1 background task").assertIsDisplayed()
+        compose.onNodeWithTag("Composer activity line").performClick()
+        compose.onNodeWithText("Active · host reports running").assertIsDisplayed()
+    }
     @Test fun completedTurnHasAnswerAndDisclosureWithoutLiveLine() {
         show(ChatSessionSnapshot(messages = listOf(ChatMessage(ChatMessageRole.User, "Question"),
             ChatMessage(ChatMessageRole.Assistant, "Intermediate"), ChatMessage(ChatMessageRole.Tool, "Tool output"),

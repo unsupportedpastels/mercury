@@ -16,7 +16,7 @@ settings:
     # number, which App Store validation requires. Bump MARKETING_VERSION with
     # each release alongside versionName.
     MARKETING_VERSION: "0.2.5"
-    CURRENT_PROJECT_VERSION: 2
+    CURRENT_PROJECT_VERSION: 3
 
 targets:
   MercuryShareKit:

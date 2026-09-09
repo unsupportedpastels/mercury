@@ -152,6 +152,9 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
+/** How often a chat re-asks the gateway registry about unresolved delegated children. */
+private const val BACKGROUND_REGISTRY_POLL_MILLIS = 30_000L
+
 class HermesConnectionViewModel(
     settingsStates: Flow<ServerSettingsState>,
     private val client: HermesConnectionClient,
@@ -5325,16 +5328,33 @@ class HermesConnectionViewModel(
         }
         if (mutableSnapshots.value.chatSessions[durableSessionId]?.backgroundTasks?.rows?.isNotEmpty() == true) {
             viewModelScope.launch {
-                try {
-                    val status = session.loadDelegationStatus()
-                    if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration) &&
-                        liveControllers[durableSessionId]?.session === session) {
-                        updateChat(durableSessionId) {
-                            it.copy(backgroundTasks = it.backgroundTasks.reconcile(status, runtimeSessionId, previousRuntimeSessionId))
+                // A reopened app's only child evidence is a recovered snapshot with no
+                // fresh event to observe. The gateway's subagent registry is the
+                // authoritative liveness signal, so keep asking it while unresolved
+                // children remain; each "running" report counts as activity for one
+                // window without pretending to be a worker event.
+                var previousRuntime = previousRuntimeSessionId
+                while (true) {
+                    if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration) ||
+                        liveControllers[durableSessionId]?.session !== session) return@launch
+                    try {
+                        val status = session.loadDelegationStatus()
+                        if (isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration) &&
+                            liveControllers[durableSessionId]?.session === session) {
+                            updateChat(durableSessionId) {
+                                it.copy(backgroundTasks = it.backgroundTasks.reconcile(
+                                    status, runtimeSessionId, previousRuntime, System.currentTimeMillis()))
+                            }
+                            previousRuntime = runtimeSessionId
                         }
-                    }
-                } catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { /* Retain last known rows; absence is not success. */ }
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: HermesChatMethodNotFoundException) { return@launch }
+                    catch (_: Exception) { /* Retain last known rows; absence is not success. */ }
+                    val unresolved = mutableSnapshots.value.chatSessions[durableSessionId]?.backgroundTasks?.rows
+                        ?.any { !it.terminal && it.identityKnown } == true
+                    if (!unresolved) return@launch
+                    delay(BACKGROUND_REGISTRY_POLL_MILLIS)
+                }
             }
         }
         val eventJob = viewModelScope.launch(start = CoroutineStart.LAZY) {

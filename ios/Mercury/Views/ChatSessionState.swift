@@ -138,6 +138,12 @@ final class ChatSessionState {
     /// once the gateway persists the new runtime session.
     var durableID: String?
     var eventTask: Task<Void, Never>?
+    /// Periodic `delegation.status` reconciliation while unresolved children remain.
+    var backgroundRegistryTask: Task<Void, Never>?
+    var backgroundRegistryPolling = false
+    var backgroundRegistryGeneration: UInt64 = 0
+    /// Token of the published live connection, for observers started after connect.
+    var connectionOwnershipToken: ChatConnectionOwnership.Token?
     var pendingRequest: ApprovalSheet.Request?
     /// Batch clarify: qids already answered for the pending request.
     var clarifyAnsweredIDs: Set<String> = []

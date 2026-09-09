@@ -159,6 +159,10 @@ extension ChatView {
         }
         if state.connection == nil {
             retryConnectionNow(automatic: true)
+        } else if !state.closedByUs {
+            // The socket survived the background; ask the registry now rather
+            // than waiting out the poll interval for children's liveness.
+            startBackgroundRegistryPolling()
         }
     }
 
