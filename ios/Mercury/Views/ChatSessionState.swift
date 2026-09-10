@@ -191,6 +191,8 @@ final class ChatSessionState {
     // MARK: Follow-scroll intent
 
     var followBottom = true
+    var transcriptTailMaxY: CGFloat?
+    var transcriptViewportHeight: CGFloat = 0
     var initialScrollDone = false
     var loadedTranscriptCount = 0
     var hasMoreHistory = false
