@@ -926,6 +926,7 @@ internal fun SessionDetailScreen(
                             onDraftChanged = currentOnDraftChanged,
                             onError = { message -> attachmentError = message },
                             modifier = Modifier.size(40.dp),
+                            requestIdentity = voiceInputScopeKey,
                         )
                         if (voiceHost != null) {
                             VoiceConversationToggleButton(
