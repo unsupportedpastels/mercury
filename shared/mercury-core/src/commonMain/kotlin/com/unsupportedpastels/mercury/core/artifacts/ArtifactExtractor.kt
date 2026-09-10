@@ -94,6 +94,108 @@ object ArtifactExtractor {
         }
     }
 
+    /**
+     * Splits completed message text into deterministic prose/image slices.
+     * Every accepted image syntax is removed from prose; the first occurrence
+     * of each canonical identity emits an image slice at its actual position.
+     */
+    fun orderedManagedImageSegments(
+        text: String,
+        formatPolicy: ManagedImageFormatPolicy,
+        limits: ArtifactExtractionLimits = ArtifactExtractionLimits(),
+    ): List<ManagedImageContentSegment> {
+        val bounded = text.take(limits.maxTranscriptChars)
+        if (bounded.isEmpty()) return emptyList()
+        val occurrences = ArrayList<ManagedImageOccurrence>()
+
+        explicitLocalMarkdownImages(bounded, limits, formatPolicy).forEach { reference ->
+            occurrences += ManagedImageOccurrence(
+                start = reference.startOffset,
+                end = reference.endOffsetExclusive,
+                source = reference.source,
+                identity = reference.stableIdentity,
+            )
+        }
+
+        val exclusions = markdownCodeExclusions(bounded)
+        var lineStart = 0
+        while (lineStart <= bounded.length) {
+            val newline = bounded.indexOf('\n', lineStart)
+            val lineEnd = if (newline < 0) bounded.length else newline
+            if (lineStart < bounded.length && !exclusions.fenced[lineStart]) {
+                val source = standaloneMediaSource(bounded.substring(lineStart, lineEnd).removeSuffix("\r"))
+                if (source != null && ManagedImagePolicy.isManagedImagePath(source, formatPolicy)) {
+                    val resolved = resolveSource(source)
+                    if (resolved?.origin == ArtifactOrigin.ManagedPath) {
+                        occurrences += ManagedImageOccurrence(lineStart, lineEnd, resolved.location, resolved.identity)
+                    }
+                }
+            }
+            if (newline < 0) break
+            lineStart = newline + 1
+        }
+
+        if (occurrences.isEmpty()) {
+            return listOf(ManagedImageContentSegment(ManagedImageContentSegmentKind.Text, text = text))
+        }
+        occurrences.sortBy { it.start }
+        val segments = ArrayList<ManagedImageContentSegment>(occurrences.size * 2 + 1)
+        val rendered = HashSet<String>()
+        var collapseDuplicateBoundary = false
+        fun appendText(value: String) {
+            val adjusted = if (
+                collapseDuplicateBoundary &&
+                segments.lastOrNull()?.text?.lastOrNull()?.let { it == ' ' || it == '\t' } == true
+            ) {
+                value.trimStart(' ', '\t')
+            } else {
+                value
+            }
+            collapseDuplicateBoundary = false
+            if (adjusted.isEmpty()) return
+            val previous = segments.lastOrNull()
+            if (previous?.kind == ManagedImageContentSegmentKind.Text) {
+                segments[segments.lastIndex] = previous.copy(text = previous.text.orEmpty() + adjusted)
+            } else {
+                segments += ManagedImageContentSegment(
+                    kind = ManagedImageContentSegmentKind.Text,
+                    text = adjusted,
+                )
+            }
+        }
+        var cursor = 0
+        occurrences.forEach { occurrence ->
+            if (occurrence.start < cursor) return@forEach
+            if (occurrence.start > cursor) {
+                appendText(bounded.substring(cursor, occurrence.start))
+            }
+            if (rendered.size < limits.maxItems && rendered.add(occurrence.identity)) {
+                segments += ManagedImageContentSegment(
+                    kind = ManagedImageContentSegmentKind.Image,
+                    source = occurrence.source,
+                    stableIdentity = occurrence.identity,
+                )
+            } else {
+                collapseDuplicateBoundary = true
+            }
+            cursor = occurrence.end
+        }
+        if (cursor < bounded.length) {
+            appendText(bounded.substring(cursor))
+        }
+        if (bounded.length < text.length) {
+            appendText(text.substring(bounded.length))
+        }
+        return segments
+    }
+
+    private data class ManagedImageOccurrence(
+        val start: Int,
+        val end: Int,
+        val source: String,
+        val identity: String,
+    )
+
     private fun explicitLocalMarkdownImages(
         bounded: String,
         limits: ArtifactExtractionLimits,
@@ -123,67 +225,61 @@ object ArtifactExtractor {
     }
 
     private data class CodeExclusions(val all: BooleanArray, val fenced: BooleanArray)
-    private data class Fence(val marker: Char, val length: Int)
 
     private fun markdownCodeExclusions(text: String): CodeExclusions {
         val excluded = BooleanArray(text.length)
         val fenced = BooleanArray(text.length)
-        var openFence: Fence? = null
+        var openFence: MarkdownFence? = null
         var lineStart = 0
         while (lineStart < text.length) {
             val newline = text.indexOf('\n', lineStart)
             val lineEnd = if (newline < 0) text.length else newline
             val line = text.substring(lineStart, lineEnd).removeSuffix("\r")
-            val fence = fenceAtLineStart(line)
-            val isClosing = openFence?.let { current ->
-                fence?.marker == current.marker && fence.length >= current.length &&
-                    line.dropWhile { it == ' ' }.drop(fence.length).all { it == ' ' || it == '\t' }
-            } == true
+            val fence = markdownFenceAtLineStart(line)
+            val isClosing = openFence?.closes(line, fence) == true
             val isOpening = openFence == null && fence != null
             if (openFence != null || isOpening) {
                 for (index in lineStart until lineEnd) {
                     excluded[index] = true
                     fenced[index] = true
                 }
-            } else {
-                var cursor = lineStart
-                while (cursor < lineEnd) {
-                    if (text[cursor] != '`' || isEscaped(text, cursor)) {
-                        cursor += 1
-                        continue
-                    }
-                    val runLength = markerRunLength(text, cursor, '`', lineEnd)
-                    var close = cursor + runLength
-                    while (close < lineEnd) {
-                        close = text.indexOf('`', close).takeIf { it in 0 until lineEnd } ?: break
-                        val closeLength = markerRunLength(text, close, '`', lineEnd)
-                        if (!isEscaped(text, close) && closeLength == runLength) break
-                        close += closeLength
-                    }
-                    if (close < lineEnd) {
-                        val end = close + runLength
-                        for (index in cursor until end) excluded[index] = true
-                        cursor = end
-                    } else {
-                        cursor += runLength
-                    }
-                }
             }
             if (isClosing) openFence = null else if (isOpening) openFence = fence
             if (newline < 0) break
             lineStart = newline + 1
         }
-        return CodeExclusions(excluded, fenced)
-    }
 
-    private fun fenceAtLineStart(line: String): Fence? {
-        val indent = line.takeWhile { it == ' ' }.length
-        if (indent > 3 || indent >= line.length) return null
-        val marker = line[indent].takeIf { it == '`' || it == '~' } ?: return null
-        val length = markerRunLength(line, indent, marker, line.length)
-        if (length < 3) return null
-        if (marker == '`' && line.drop(indent + length).contains('`')) return null
-        return Fence(marker, length)
+        // Code spans may cross line endings. Mark a span only after finding an
+        // equal-length closing run, so an unmatched opener cannot hide later
+        // prose. A block fence ends the candidate rather than being crossed.
+        var cursor = 0
+        while (cursor < text.length) {
+            if (fenced[cursor] || text[cursor] != '`' || isEscaped(text, cursor)) {
+                cursor += 1
+                continue
+            }
+            val runLength = markerRunLength(text, cursor, '`', text.length)
+            var close = cursor + runLength
+            var matched = -1
+            while (close < text.length) {
+                close = text.indexOf('`', close)
+                if (close < 0 || fenced[close]) break
+                val closeLength = markerRunLength(text, close, '`', text.length)
+                if (!isEscaped(text, close) && closeLength == runLength) {
+                    matched = close
+                    break
+                }
+                close += closeLength
+            }
+            if (matched >= 0) {
+                val end = matched + runLength
+                for (index in cursor until end) excluded[index] = true
+                cursor = end
+            } else {
+                cursor += runLength
+            }
+        }
+        return CodeExclusions(excluded, fenced)
     }
 
     private fun markerRunLength(text: String, start: Int, marker: Char, end: Int): Int {

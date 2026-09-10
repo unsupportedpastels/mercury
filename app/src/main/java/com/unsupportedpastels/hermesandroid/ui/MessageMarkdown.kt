@@ -46,6 +46,11 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
+import com.unsupportedpastels.mercury.core.artifacts.ArtifactExtractor
+import com.unsupportedpastels.mercury.core.artifacts.ManagedImageContentSegmentKind
+import com.unsupportedpastels.mercury.core.artifacts.ManagedImageFormatPolicy
+import com.unsupportedpastels.mercury.core.artifacts.MarkdownFenceSegmentKind
+import com.unsupportedpastels.mercury.core.artifacts.MarkdownPresentationPolicy
 
 internal sealed interface MarkdownBlock
 
@@ -271,64 +276,29 @@ private fun Char.isBase64PayloadCharacter(): Boolean =
  * must render as plain text until more of the stream arrives.
  */
 internal fun stableMarkdownPrefixLength(text: String): Int {
-    var stableEnd = 0
-    var openFence: MarkdownFence? = null
-    var cursor = 0
-    while (cursor < text.length) {
-        val newline = text.indexOf('\n', cursor)
-        val lineEnd = if (newline < 0) text.length else newline
-        val line = text.substring(cursor, lineEnd)
-        val fence = markdownFenceAtLineStart(line)
-        if (openFence?.isClosedBy(line, fence) == true) {
-            openFence = null
-        } else if (openFence == null && fence != null) {
-            openFence = fence
-        } else if (openFence == null && line.isBlank() && newline >= 0) {
-            stableEnd = newline + 1
+    return MarkdownPresentationPolicy.stablePrefixLength(text)
+}
+
+internal fun parseMessageMarkdown(source: String): List<MarkdownBlock> =
+    ArtifactExtractor.orderedManagedImageSegments(source, ManagedImageFormatPolicy.Android).flatMap { content ->
+        when (content.kind) {
+            ManagedImageContentSegmentKind.Image -> listOfNotNull(content.source?.let(::MarkdownImageBlock))
+            ManagedImageContentSegmentKind.Text -> MarkdownPresentationPolicy.fencedSegments(content.text.orEmpty())
+                .flatMap { fence ->
+                    when (fence.kind) {
+                        MarkdownFenceSegmentKind.Code -> listOf(
+                            MarkdownCodeBlock(code = fence.text, language = fence.language),
+                        )
+                        MarkdownFenceSegmentKind.Text -> parseMessageMarkdownText(fence.text)
+                    }
+                }
         }
-        if (newline < 0) break
-        cursor = newline + 1
     }
-    return stableEnd
-}
 
-private data class MarkdownFence(val marker: Char, val length: Int, val info: String) {
-    fun isClosedBy(line: String, candidate: MarkdownFence?): Boolean =
-        candidate?.marker == marker && candidate.length >= length &&
-            line.dropWhile { it == ' ' }.drop(candidate.length).all { it == ' ' || it == '\t' }
-}
-
-private fun markdownFenceAtLineStart(line: String): MarkdownFence? {
-    val indent = line.takeWhile { it == ' ' }.length
-    if (indent > 3 || indent >= line.length) return null
-    val marker = line[indent].takeIf { it == '`' || it == '~' } ?: return null
-    var end = indent
-    while (end < line.length && line[end] == marker) end += 1
-    val length = end - indent
-    if (length < 3) return null
-    val info = line.substring(end).trim()
-    if (marker == '`' && info.contains('`')) return null
-    return MarkdownFence(marker, length, info)
-}
-
-internal fun parseMessageMarkdown(source: String): List<MarkdownBlock> {
+private fun parseMessageMarkdownText(source: String): List<MarkdownBlock> {
     if (source.isEmpty()) return emptyList()
     val normalizedSource = source.replace("\r\n", "\n").replace('\r', '\n')
     val lines = normalizedSource.split('\n')
-    val lineOffsets = ArrayList<Int>(lines.size)
-    var nextLineOffset = 0
-    lines.forEach { line ->
-        lineOffsets += nextLineOffset
-        nextLineOffset += line.length + 1
-    }
-    val explicitImagesByLine =
-        com.unsupportedpastels.mercury.core.artifacts.ArtifactExtractor
-            .explicitLocalMarkdownImages(normalizedSource)
-            .groupBy { reference ->
-                lineOffsets.binarySearch(reference.startOffset).let { exactOrInsertion ->
-                    if (exactOrInsertion >= 0) exactOrInsertion else -exactOrInsertion - 2
-                }
-            }
     val blocks = mutableListOf<MarkdownBlock>()
     val renderedImageSources = mutableSetOf<String>()
     val paragraph = mutableListOf<String>()
@@ -362,45 +332,7 @@ internal fun parseMessageMarkdown(source: String): List<MarkdownBlock> {
                 continue
             }
         }
-        val openingFence = markdownFenceAtLineStart(line)
-        if (openingFence != null) {
-            flushParagraph()
-            val language = openingFence.info
-                .take(32)
-                .ifBlank { null }
-            val codeLines = mutableListOf<String>()
-            index += 1
-            while (index < lines.size && !openingFence.isClosedBy(lines[index], markdownFenceAtLineStart(lines[index]))) {
-                codeLines += lines[index]
-                index += 1
-            }
-            blocks += MarkdownCodeBlock(
-                code = codeLines.joinToString("\n").trimEnd('\n'),
-                language = language,
-            )
-            if (index < lines.size) index += 1
-            continue
-        }
-        val explicitImages = explicitImagesByLine[index].orEmpty()
-        if (explicitImages.isNotEmpty()) {
-            val lineOffset = lineOffsets[index]
-            var cursor = 0
-            explicitImages.forEach { reference ->
-                val imageStart = reference.startOffset - lineOffset
-                val imageEnd = reference.endOffsetExclusive - lineOffset
-                val before = line.substring(cursor, imageStart)
-                if (before.isNotEmpty()) paragraph += before
-                flushParagraph()
-                if (reference.shouldRender && renderedImageSources.add(reference.source)) {
-                    blocks += MarkdownImageBlock(reference.source)
-                }
-                cursor = imageEnd
-            }
-            val after = line.substring(cursor)
-            if (after.isNotEmpty()) paragraph += after
-            index += 1
-            continue
-        }
+
         if (line.isBlank()) {
             flushParagraph()
             index += 1

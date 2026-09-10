@@ -95,6 +95,11 @@ struct ChatView: View {
     /// See ChatSessionState for the property inventory.
     @State var state: ChatSessionState
 
+    #if DEBUG
+    /// Synthetic production-transcript fixture hook; never set by app flows.
+    var fixtureManagedImageLoader: ((String) async throws -> Data)? = nil
+    #endif
+
     var backgroundTaskScope: String {
         AppModel.backgroundTaskScope(relayTarget: appModel.activeRelayTarget,
                                      serverOrigin: appModel.serverOrigin,

@@ -28,6 +28,30 @@ enum ManagedImageLoader {
 extension ChatView {
     // MARK: Managed images
 
+    @ViewBuilder
+    func completedAssistantMessage(in text: String) -> some View {
+        OrderedManagedMessageView(text: text) { source in
+            AnyView(
+                RemoteManagedImage(path: source, scope: managedImageScope) { path in
+                    try await loadManagedImage(path: path)
+                }
+            )
+        }
+        ForEach(ChatManagedImagePolicy.artifacts(in: text).filter { $0.type == .video }, id: \.stableIdentity) { artifact in
+            if artifact.origin == .remoteURL,
+               let url = URL(string: artifact.source), url.scheme?.lowercased() == "https" {
+                Link(destination: url) {
+                    Label("Open video: \(artifact.displayName)", systemImage: "arrow.up.right.video")
+                }
+            } else if artifact.origin == .managedPath {
+                RemoteManagedVideo(path: artifact.source, scope: managedImageScope,
+                                   available: appModel.activeRelayTarget == nil) { path in
+                    try await loadManagedVideo(path: path)
+                }
+            }
+        }
+    }
+
     /// Managed MEDIA:/markdown image artifacts in a completed assistant
     /// message, rendered as authenticated inline images (M6.4). Only
     /// server-managed absolute paths render; remote URLs stay links.
@@ -61,6 +85,9 @@ extension ChatView {
     /// with the bearer token; image/* content type required; 10 MiB cap
     /// (Android downloadManagedImage parity).
     private var managedImageScope: String {
+        #if DEBUG
+        if fixtureManagedImageLoader != nil { return "synthetic-managed-image-fixture" }
+        #endif
         let transport = appModel.activeRelayTarget.map { "relay:\($0.relayOrigin)|\($0.id)" }
             ?? "direct:\(appModel.serverOrigin ?? "unconfigured")"
         return "\(transport)|\(appModel.activeProfile)|\(state.connection.map { String(describing: ObjectIdentifier($0)) } ?? "disconnected")"
@@ -82,6 +109,11 @@ extension ChatView {
     }
 
     private func loadManagedImage(path: String) async throws -> Data {
+        #if DEBUG
+        if let fixtureManagedImageLoader {
+            return try await fixtureManagedImageLoader(path)
+        }
+        #endif
         let scope = managedImageScope
         if appModel.activeRelayTarget != nil {
             guard let live = state.connection else { throw ChatError.transport("Connect the Relay chat to load images") }

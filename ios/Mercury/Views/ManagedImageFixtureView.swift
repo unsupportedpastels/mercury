@@ -5,37 +5,46 @@ import UIKit
 /// Synthetic simulator fixture for the production artifact policy and image
 /// renderer. It performs no network, credential, or private transcript access.
 struct ManagedImageFixtureView: View {
-    private let message = """
-    Standalone MEDIA and local Markdown images should both render below.
+    @State private var state = ChatSessionState(
+        sessionID: "managed-image-fixture",
+        title: "Inline images",
+        isNewSession: false,
+        incomingShare: nil
+    )
+    @State private var loaded = false
 
-    MEDIA:/tmp/fixture-media.png
+    private let message = """
+    PROSE BEFORE
     ![Local Markdown image](/tmp/fixture-markdown.png)
+    PROSE BETWEEN
+    MEDIA:/tmp/fixture-media.png
+    PROSE AFTER
+    ``multiline code starts
+    ![Code image must not render](/tmp/fixture-code.png)
+    and ends``
+    !\\[example](/tmp/synthetic.png)
     /tmp/bare-path-must-not-render.png
     ![Remote image stays a link](https://cdn.example/remote.png)
     """
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Synthetic image fixture")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    MessageBubble(role: "assistant", text: message, isStreaming: false)
-                    ForEach(ChatManagedImagePolicy.artifacts(in: message), id: \.stableIdentity) { artifact in
-                        if artifact.origin == .managedPath, artifact.type == .image {
-                            RemoteManagedImage(path: artifact.source, scope: "synthetic-inline-images") { path in
-                                Self.png(for: path)
-                            }
-                        }
-                    }
-                }
-                .padding()
-            }
+            productionTranscript
             .navigationTitle("Inline images")
             .navigationBarTitleDisplayMode(.inline)
         }
         .preferredColorScheme(.dark)
+        .task {
+            guard !loaded else { return }
+            loaded = true
+            state.transcript.loadTranscript([(role: "assistant", content: message)])
+        }
+    }
+
+    private var productionTranscript: some View {
+        var chat = ChatView(fixtureState: state)
+        chat.fixtureManagedImageLoader = { path in Self.png(for: path) }
+        return chat.transcriptList(backgroundTasks: BackgroundTasks())
     }
 
     private static func png(for path: String) -> Data {

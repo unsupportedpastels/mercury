@@ -1,4 +1,5 @@
 import SwiftUI
+import MercuryCore
 
 enum MessageMarkdownTableAlignment: Equatable {
     case leading
@@ -101,6 +102,15 @@ private func orderedListParts(_ content: String) -> (marker: String, text: Strin
 /// Parses the block structure that Foundation's inline markdown mode omits.
 /// Inline emphasis and links remain Foundation-owned at render time.
 func parseMessageMarkdown(_ source: String) -> [MessageMarkdownBlock] {
+    MercuryCore.MarkdownPresentationPolicy.shared.fencedSegments(source: source).flatMap { segment -> [MessageMarkdownBlock] in
+        if segment.kind == MercuryCore.MarkdownFenceSegmentKind.code {
+            return [.code(language: segment.language, code: segment.text)]
+        }
+        return parseMessageMarkdownText(segment.text)
+    }
+}
+
+private func parseMessageMarkdownText(_ source: String) -> [MessageMarkdownBlock] {
     guard !source.isEmpty else { return [] }
     let lines = source.replacingOccurrences(of: "\r\n", with: "\n")
         .replacingOccurrences(of: "\r", with: "\n")
@@ -122,23 +132,6 @@ func parseMessageMarkdown(_ source: String) -> [MessageMarkdownBlock] {
         let line = lines[index]
         let trimmed = line.trimmingCharacters(in: .whitespaces)
 
-        if trimmed.hasPrefix("```") {
-            flushParagraph()
-            let language = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-            var codeLines: [String] = []
-            index += 1
-            while index < lines.count,
-                  !lines[index].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-                codeLines.append(lines[index])
-                index += 1
-            }
-            blocks.append(.code(
-                language: language.isEmpty ? nil : String(language.prefix(32)),
-                code: codeLines.joined(separator: "\n")
-            ))
-            if index < lines.count { index += 1 }
-            continue
-        }
 
         if line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             flushParagraph()

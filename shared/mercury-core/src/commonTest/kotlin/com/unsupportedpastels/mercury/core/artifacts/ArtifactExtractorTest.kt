@@ -137,6 +137,75 @@ class ArtifactExtractorTest {
     }
 
     @Test
+    fun explicitLocalMarkdownImagesIgnoreMultilineInlineCodeSpans() {
+        val text = """
+            Before ``code starts
+            ![not visible](/runs/code.png)
+            and ends`` after
+            ![visible](/runs/visible.png)
+        """.trimIndent()
+
+        assertEquals(
+            listOf("/runs/visible.png"),
+            ArtifactExtractor.explicitLocalMarkdownImages(text).map { it.source },
+        )
+    }
+
+    @Test
+    fun escapedOpeningBracketNeverBecomesAnImage() {
+        assertTrue(
+            ArtifactExtractor.explicitLocalMarkdownImages("!\\[example](/tmp/synthetic.png)").isEmpty(),
+        )
+    }
+
+    @Test
+    fun orderedManagedImageSegmentsPreserveDocumentOrderAndRemoveDuplicateSyntax() {
+        val text = "Before ![one](/runs/one.png) middle\nMEDIA:/runs/two.png\nafter ![again](/runs/one.png)."
+
+        val segments = ArtifactExtractor.orderedManagedImageSegments(text, ManagedImageFormatPolicy.Android)
+
+        assertEquals(
+            listOf(
+                ManagedImageContentSegmentKind.Text,
+                ManagedImageContentSegmentKind.Image,
+                ManagedImageContentSegmentKind.Text,
+                ManagedImageContentSegmentKind.Image,
+                ManagedImageContentSegmentKind.Text,
+            ),
+            segments.map { it.kind },
+        )
+        assertEquals(listOf("/runs/one.png", "/runs/two.png"), segments.mapNotNull { it.source })
+        assertEquals("Before  middle\n\nafter .", segments.mapNotNull { it.text }.joinToString(""))
+    }
+
+    @Test
+    fun orderedManagedImageSegmentsPreserveTextBeyondExtractionBudget() {
+        val text = "![one](/a/one.png)" + "x".repeat(40)
+        val segments = ArtifactExtractor.orderedManagedImageSegments(
+            text,
+            ManagedImageFormatPolicy.Android,
+            ArtifactExtractionLimits(maxTranscriptChars = 24),
+        )
+
+        assertEquals("x".repeat(40), segments.mapNotNull { it.text }.joinToString(""))
+        assertEquals(listOf("/a/one.png"), segments.mapNotNull { it.source })
+    }
+
+    @Test
+    fun sharedFenceSegmentsSupportTildesAndVariableLengthClosers() {
+        val segments = MarkdownPresentationPolicy.fencedSegments(
+            "before\n~~~~swift\nlet value = 1\n~~~\nstill code\n~~~~~\nafter",
+        )
+
+        assertEquals(
+            listOf(MarkdownFenceSegmentKind.Text, MarkdownFenceSegmentKind.Code, MarkdownFenceSegmentKind.Text),
+            segments.map { it.kind },
+        )
+        assertEquals("swift", segments[1].language)
+        assertEquals("let value = 1\n~~~\nstill code", segments[1].text)
+    }
+
+    @Test
     fun explicitLocalMarkdownImagesRespectMarkdownCodeEscapesAndLineBounds() {
         val text = """
             ``![double tick](/runs/double.png)``

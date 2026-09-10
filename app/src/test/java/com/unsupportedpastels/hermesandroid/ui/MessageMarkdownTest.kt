@@ -125,6 +125,32 @@ class MessageMarkdownTest {
     }
 
     @Test
+    fun orderedImagesStayBetweenTheirSurroundingProseAndMultilineCodeIsExcluded() {
+        val blocks = parseMessageMarkdown(
+            "Before ![first](/workspace/first.png) middle ``code\n" +
+                "![hidden](/workspace/hidden.png)`` after ![second](/workspace/second.png) end",
+        )
+
+        assertEquals(
+            listOf("text:Before", "image:/workspace/first.png", "text:middle", "image:/workspace/second.png", "text:end"),
+            blocks.mapNotNull { block ->
+                when (block) {
+                    is MarkdownTextBlock -> "text:${block.plainText.trim().substringBefore(' ')}"
+                    is MarkdownImageBlock -> "image:${block.url}"
+                    else -> null
+                }
+            },
+        )
+    }
+
+    @Test
+    fun escapedOpeningBracketImageExampleRemainsText() {
+        val blocks = parseMessageMarkdown("!\\[example](/tmp/synthetic.png)")
+        assertTrue(blocks.filterIsInstance<MarkdownImageBlock>().isEmpty())
+        assertTrue(blocks.filterIsInstance<MarkdownTextBlock>().single().plainText.contains("example"))
+    }
+
+    @Test
     fun parsesGatewayLocalVideoMediaDirectiveAsVideoBlockInsteadOfRawPath() {
         val path = "/workspace/project/scene-00/preview.mp4"
 
