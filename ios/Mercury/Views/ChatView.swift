@@ -44,6 +44,19 @@ struct ChatView: View {
         ))
     }
 
+    #if DEBUG
+    /// Synthetic UI-test entry point. It renders the production transcript
+    /// without starting ChatView's connection-owning body/task lifecycle.
+    init(fixtureState: ChatSessionState) {
+        sessionID = "fixture"
+        title = "Transcript scroll fixture"
+        isNewSession = false
+        newSessionWorkspacePath = nil
+        incomingShare = nil
+        _state = State(initialValue: fixtureState)
+    }
+    #endif
+
     /// Entry point for SessionListView's new-chat flow: empty session id,
     /// placeholder title, lazy runtime creation on first connect.
     static func newSession(incomingShare: IncomingShareDraft? = nil) -> ChatView {

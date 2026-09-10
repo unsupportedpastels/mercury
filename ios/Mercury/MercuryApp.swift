@@ -76,6 +76,8 @@ struct MercuryApp: App {
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("-uitest-background-tasks") {
                     BackgroundTaskFixtureView()
+                } else if ProcessInfo.processInfo.arguments.contains("-uitest-chat-scroll") {
+                    ChatTranscriptScrollFixtureView()
                 } else { RootView() }
                 #else
                 RootView()
@@ -84,7 +86,8 @@ struct MercuryApp: App {
                 .environment(appModel)
                 .task {
                     #if DEBUG
-                    if ProcessInfo.processInfo.arguments.contains("-uitest-background-tasks") { return }
+                    if ProcessInfo.processInfo.arguments.contains("-uitest-background-tasks")
+                        || ProcessInfo.processInfo.arguments.contains("-uitest-chat-scroll") { return }
                     if ProcessInfo.processInfo.arguments.contains("-uitest-reset-local-state") {
                         await appModel.resetLocalStateForUITest()
                     }
