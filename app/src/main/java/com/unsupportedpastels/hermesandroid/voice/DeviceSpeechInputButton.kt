@@ -16,7 +16,12 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
@@ -45,6 +50,7 @@ fun DeviceSpeechInputButton(
             currentDraft = currentDraft,
             onDraftChanged = onDraftChanged,
             onError = onError,
+            requestIdentity = requestIdentity,
             modifier = modifier,
         )
     }
@@ -58,18 +64,16 @@ private fun DeviceSpeechInputButtonForRequestScope(
     currentDraft: String,
     onDraftChanged: (String) -> Unit,
     onError: (String) -> Unit,
+    requestIdentity: String,
     modifier: Modifier,
 ) {
     val context = LocalContext.current
     val state by controller.state.collectAsState()
     val active = state != DeviceSpeechRecognizerState.Idle
     val description = if (active) "Stop voice input" else "Voice input"
-    val coordinator = remember(controller) { DeviceSpeechPermissionCoordinator(controller) }
+    val coordinator = rememberDeviceSpeechPermissionCoordinator(controller, requestIdentity)
     SideEffect {
         coordinator.update(available, enabled, currentDraft, onDraftChanged, onError)
-    }
-    DisposableEffect(coordinator) {
-        onDispose { coordinator.dispose() }
     }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -107,11 +111,60 @@ private fun DeviceSpeechInputButtonForRequestScope(
     }
 }
 
+// Saved permission continuations are valid across Activity recreation only. A
+// fresh process gets a different identity and must not revive an old request.
+private val deviceSpeechPermissionProcessIdentity = java.util.UUID.randomUUID().toString()
+
+internal class DeviceSpeechPermissionRequestState(
+    pending: Boolean = false,
+) {
+    var pending by mutableStateOf(pending)
+}
+
+internal fun deviceSpeechPermissionRequestStateSaver(
+    requestIdentity: String,
+    processIdentity: String,
+): Saver<DeviceSpeechPermissionRequestState, Any> = listSaver(
+    save = { state -> listOf(requestIdentity, processIdentity, state.pending) },
+    restore = { saved ->
+        DeviceSpeechPermissionRequestState(
+            pending = saved.size == 3 &&
+                saved[0] == requestIdentity &&
+                saved[1] == processIdentity &&
+                saved[2] == true,
+        )
+    },
+)
+
+@Composable
+internal fun rememberDeviceSpeechPermissionCoordinator(
+    controller: DeviceSpeechRecognizer,
+    requestIdentity: String,
+): DeviceSpeechPermissionCoordinator {
+    val requestState = rememberSaveable(
+        requestIdentity,
+        saver = deviceSpeechPermissionRequestStateSaver(
+            requestIdentity = requestIdentity,
+            processIdentity = deviceSpeechPermissionProcessIdentity,
+        ),
+    ) {
+        DeviceSpeechPermissionRequestState()
+    }
+    val coordinator = remember(controller, requestState) {
+        DeviceSpeechPermissionCoordinator(controller, requestState)
+    }
+    DisposableEffect(coordinator) {
+        onDispose { coordinator.dispose() }
+    }
+    return coordinator
+}
+
 internal class DeviceSpeechPermissionCoordinator(
     private val controller: DeviceSpeechRecognizer,
+    private val requestState: DeviceSpeechPermissionRequestState =
+        DeviceSpeechPermissionRequestState(),
 ) {
     private var alive = true
-    private var permissionPending = false
     private var available = false
     private var enabled = false
     private var currentDraft = ""
@@ -143,15 +196,15 @@ internal class DeviceSpeechPermissionCoordinator(
         if (!alive || !available || !enabled) return
         if (hasRecordAudioPermission) {
             start()
-        } else if (!permissionPending) {
-            permissionPending = true
+        } else if (!requestState.pending) {
+            requestState.pending = true
             requestRecordAudioPermission()
         }
     }
 
     fun onPermissionResult(granted: Boolean) {
-        if (!permissionPending) return
-        permissionPending = false
+        if (!requestState.pending) return
+        requestState.pending = false
         if (!alive || !available || !enabled || controller.isActive) return
         if (granted) {
             start()
@@ -161,14 +214,14 @@ internal class DeviceSpeechPermissionCoordinator(
     }
 
     fun onPermissionRequestFailed() {
-        if (!permissionPending) return
-        permissionPending = false
+        if (!requestState.pending) return
+        requestState.pending = false
         if (alive && available && enabled) onError(RECORD_AUDIO_DENIED_MESSAGE)
     }
 
     fun dispose() {
         alive = false
-        permissionPending = false
+        requestState.pending = false
     }
 
     private fun start() {

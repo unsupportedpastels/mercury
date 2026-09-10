@@ -67,6 +67,16 @@ class DeviceSpeechInputButtonTest {
     }
 
     @Test
+    fun permissionGrantWithoutMatchingRequestDoesNotStart() {
+        val recognizer = FakeRecognizer()
+        val coordinator = coordinator(recognizer)
+
+        coordinator.onPermissionResult(granted = true)
+
+        assertEquals(0, recognizer.starts)
+    }
+
+    @Test
     fun permissionGrantStartsWithCurrentDraftAndCallbacks() {
         val recognizer = FakeRecognizer()
         var changedDraft: String? = null
