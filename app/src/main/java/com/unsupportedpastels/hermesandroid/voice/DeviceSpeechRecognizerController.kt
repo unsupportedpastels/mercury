@@ -18,6 +18,19 @@ enum class DeviceSpeechRecognizerState {
     Restarting,
 }
 
+internal interface DeviceSpeechRecognizer {
+    val state: StateFlow<DeviceSpeechRecognizerState>
+    val isActive: Boolean
+
+    fun start(
+        currentDraft: String,
+        onDraftChanged: (String) -> Unit,
+        onError: (String) -> Unit,
+    ): Boolean
+
+    fun finish()
+}
+
 /**
  * App-owned wrapper around the installed Android recognition service. Unlike
  * ACTION_RECOGNIZE_SPEECH, this keeps control of the recognition session and
@@ -25,10 +38,10 @@ enum class DeviceSpeechRecognizerState {
  */
 class DeviceSpeechRecognizerController(
     private val context: Context,
-) {
+) : DeviceSpeechRecognizer {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val _state = MutableStateFlow(DeviceSpeechRecognizerState.Idle)
-    val state: StateFlow<DeviceSpeechRecognizerState> = _state.asStateFlow()
+    override val state: StateFlow<DeviceSpeechRecognizerState> = _state.asStateFlow()
 
     private var recognizer: SpeechRecognizer? = null
     private var generation = 0L
@@ -37,10 +50,10 @@ class DeviceSpeechRecognizerController(
     private var onDraftChanged: ((String) -> Unit)? = null
     private var onError: ((String) -> Unit)? = null
 
-    val isActive: Boolean
+    override val isActive: Boolean
         get() = _state.value != DeviceSpeechRecognizerState.Idle
 
-    fun start(
+    override fun start(
         currentDraft: String,
         onDraftChanged: (String) -> Unit,
         onError: (String) -> Unit,
@@ -69,7 +82,7 @@ class DeviceSpeechRecognizerController(
     }
 
     /** Finish and keep all recognized text currently in the draft. */
-    fun finish() {
+    override fun finish() {
         stop(keepDraft = true)
     }
 
