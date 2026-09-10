@@ -110,6 +110,19 @@ enum MediaDirectiveExtractor {
     ) -> [Artifact] {
         extract(messages: [MediaExtractionMessage(text: text)], limits: limits)
     }
+
+    static func managedImageArtifacts(
+        _ text: String,
+        limits: ArtifactExtractionLimits = ArtifactExtractionLimits()
+    ) -> [Artifact] {
+        MercuryCore.ArtifactExtractor.shared
+            .managedImageArtifacts(
+                text: text,
+                formatPolicy: MercuryCore.ManagedImageFormatPolicy.ios,
+                limits: limits.core
+            )
+            .map(Artifact.init)
+    }
 }
 
 func extractArtifacts(

@@ -18,9 +18,6 @@ object ArtifactExtractor {
     private const val MEDIA_PREFIX = "MEDIA:"
     private const val MANAGED_ID_PREFIX = "managed:"
     private const val REMOTE_ID_PREFIX = "remote:"
-    private val markdownLinkPattern = Regex(
-        """(!?)\[([^]\r\n]{1,512})\]\(\s*(<[^>\r\n]{1,4096}>|[^()\s\r\n]+)\s*\)""",
-    )
     private val typePrefixPattern = Regex("(?i)^(image|audio|file|video)\\s*:\\s*")
     private val imageExtensions = setOf("bmp", "gif", "heic", "jpeg", "jpg", "png", "tif", "tiff", "webp")
     private val audioExtensions = setOf("aac", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav")
@@ -49,6 +46,162 @@ object ArtifactExtractor {
         limits: ArtifactExtractionLimits = ArtifactExtractionLimits(),
     ): List<Artifact> = extract(listOf(text), limits)
 
+    /**
+     * Returns only explicit `![label](/absolute/image.png)` occurrences that are
+     * safe managed-image paths. Remote destinations and references inside inline
+     * or fenced code are deliberately excluded so a renderer cannot turn prose,
+     * links, or code into a fetch.
+     */
+    fun explicitLocalMarkdownImages(
+        text: String,
+        limits: ArtifactExtractionLimits = ArtifactExtractionLimits(),
+    ): List<ExplicitLocalMarkdownImage> {
+        val bounded = text.take(limits.maxTranscriptChars)
+        return explicitLocalMarkdownImages(bounded, limits, ManagedImageFormatPolicy.Android)
+    }
+
+    /** Selects only explicit, code-safe managed images for a native decoder. */
+    fun managedImageArtifacts(
+        text: String,
+        formatPolicy: ManagedImageFormatPolicy,
+        limits: ArtifactExtractionLimits = ArtifactExtractionLimits(),
+    ): List<Artifact> {
+        val bounded = text.take(limits.maxTranscriptChars)
+        val exclusions = markdownCodeExclusions(bounded)
+        val selectedIdentities = LinkedHashSet<String>()
+
+        explicitLocalMarkdownImages(bounded, limits, formatPolicy)
+            .filter { it.shouldRender }
+            .forEach { selectedIdentities += it.stableIdentity }
+
+        var lineStart = 0
+        while (lineStart <= bounded.length) {
+            val newline = bounded.indexOf('\n', lineStart)
+            val lineEnd = if (newline < 0) bounded.length else newline
+            if (lineStart >= bounded.length || !exclusions.fenced.getOrElse(lineStart) { false }) {
+                val source = standaloneMediaSource(bounded.substring(lineStart, lineEnd).removeSuffix("\r"))
+                if (source != null && ManagedImagePolicy.isManagedImagePath(source, formatPolicy)) {
+                    resolveSource(source)?.let { selectedIdentities += it.identity }
+                }
+            }
+            if (newline < 0) break
+            lineStart = newline + 1
+        }
+
+        return extract(bounded, limits).filter {
+            it.origin == ArtifactOrigin.ManagedPath && it.type == ArtifactType.Image &&
+                it.stableIdentity in selectedIdentities
+        }
+    }
+
+    private fun explicitLocalMarkdownImages(
+        bounded: String,
+        limits: ArtifactExtractionLimits,
+        formatPolicy: ManagedImageFormatPolicy,
+    ): List<ExplicitLocalMarkdownImage> {
+        val excluded = markdownCodeExclusions(bounded).all
+        val identities = HashSet<String>(limits.maxItems)
+        val references = ArrayList<ExplicitLocalMarkdownImage>(limits.maxItems)
+
+        for (match in scanMarkdownLinks(bounded)) {
+            if (references.size >= limits.maxItems) break
+            if (!match.isImage || excluded.getOrElse(match.startOffset) { true }) continue
+            if ((match.startOffset until match.endOffsetExclusive).any { excluded[it] }) continue
+            val destination = match.destination
+            if (!ManagedImagePolicy.isManagedImagePath(destination, formatPolicy)) continue
+            val resolved = resolveSource(destination) ?: continue
+            if (resolved.origin != ArtifactOrigin.ManagedPath) continue
+            references += ExplicitLocalMarkdownImage(
+                source = resolved.location,
+                stableIdentity = resolved.identity,
+                startOffset = match.startOffset,
+                endOffsetExclusive = match.endOffsetExclusive,
+                shouldRender = identities.add(resolved.identity),
+            )
+        }
+        return references
+    }
+
+    private data class CodeExclusions(val all: BooleanArray, val fenced: BooleanArray)
+    private data class Fence(val marker: Char, val length: Int)
+
+    private fun markdownCodeExclusions(text: String): CodeExclusions {
+        val excluded = BooleanArray(text.length)
+        val fenced = BooleanArray(text.length)
+        var openFence: Fence? = null
+        var lineStart = 0
+        while (lineStart < text.length) {
+            val newline = text.indexOf('\n', lineStart)
+            val lineEnd = if (newline < 0) text.length else newline
+            val line = text.substring(lineStart, lineEnd).removeSuffix("\r")
+            val fence = fenceAtLineStart(line)
+            val isClosing = openFence?.let { current ->
+                fence?.marker == current.marker && fence.length >= current.length &&
+                    line.dropWhile { it == ' ' }.drop(fence.length).all { it == ' ' || it == '\t' }
+            } == true
+            val isOpening = openFence == null && fence != null
+            if (openFence != null || isOpening) {
+                for (index in lineStart until lineEnd) {
+                    excluded[index] = true
+                    fenced[index] = true
+                }
+            } else {
+                var cursor = lineStart
+                while (cursor < lineEnd) {
+                    if (text[cursor] != '`' || isEscaped(text, cursor)) {
+                        cursor += 1
+                        continue
+                    }
+                    val runLength = markerRunLength(text, cursor, '`', lineEnd)
+                    var close = cursor + runLength
+                    while (close < lineEnd) {
+                        close = text.indexOf('`', close).takeIf { it in 0 until lineEnd } ?: break
+                        val closeLength = markerRunLength(text, close, '`', lineEnd)
+                        if (!isEscaped(text, close) && closeLength == runLength) break
+                        close += closeLength
+                    }
+                    if (close < lineEnd) {
+                        val end = close + runLength
+                        for (index in cursor until end) excluded[index] = true
+                        cursor = end
+                    } else {
+                        cursor += runLength
+                    }
+                }
+            }
+            if (isClosing) openFence = null else if (isOpening) openFence = fence
+            if (newline < 0) break
+            lineStart = newline + 1
+        }
+        return CodeExclusions(excluded, fenced)
+    }
+
+    private fun fenceAtLineStart(line: String): Fence? {
+        val indent = line.takeWhile { it == ' ' }.length
+        if (indent > 3 || indent >= line.length) return null
+        val marker = line[indent].takeIf { it == '`' || it == '~' } ?: return null
+        val length = markerRunLength(line, indent, marker, line.length)
+        if (length < 3) return null
+        if (marker == '`' && line.drop(indent + length).contains('`')) return null
+        return Fence(marker, length)
+    }
+
+    private fun markerRunLength(text: String, start: Int, marker: Char, end: Int): Int {
+        var cursor = start
+        while (cursor < end && text[cursor] == marker) cursor += 1
+        return cursor - start
+    }
+
+    private fun isEscaped(text: String, index: Int): Boolean {
+        var backslashes = 0
+        var cursor = index - 1
+        while (cursor >= 0 && text[cursor] == '\\') {
+            backslashes += 1
+            cursor -= 1
+        }
+        return backslashes % 2 == 1
+    }
+
     private fun extractFromText(
         text: String,
         limits: ArtifactExtractionLimits,
@@ -72,21 +225,12 @@ object ArtifactExtractor {
             lineOffset += rawLine.length + 1
         }
 
-        markdownLinkPattern.findAll(text).forEach { match ->
-            val isImageLink = match.groupValues[1] == "!"
-            val label = match.groupValues[2]
-            val destination = match.groupValues[3].let { token ->
-                if (token.length >= 2 && token.startsWith('<') && token.endsWith('>')) {
-                    token.substring(1, token.length - 1)
-                } else {
-                    token
-                }
-            }
+        scanMarkdownLinks(text).forEach { match ->
             candidates += Candidate(
-                offset = match.range.first,
-                source = destination,
-                labelHint = label,
-                forcedType = if (isImageLink) ArtifactType.Image else null,
+                offset = match.startOffset,
+                source = match.destination,
+                labelHint = match.label,
+                forcedType = if (match.isImage) ArtifactType.Image else null,
             )
         }
 
@@ -113,6 +257,79 @@ object ArtifactExtractor {
         val labelHint: String?,
         val forcedType: ArtifactType?,
     )
+
+    private data class MarkdownLink(
+        val startOffset: Int,
+        val endOffsetExclusive: Int,
+        val isImage: Boolean,
+        val label: String,
+        val destination: String,
+    )
+
+    /** A deliberately bounded, single-line scanner for the supported Markdown link subset. */
+    private fun scanMarkdownLinks(text: String): List<MarkdownLink> {
+        val matches = ArrayList<MarkdownLink>()
+        var cursor = 0
+        while (cursor < text.length) {
+            val isImage = text[cursor] == '!' && cursor + 1 < text.length && text[cursor + 1] == '['
+            val bracket = if (isImage) cursor + 1 else cursor
+            if (text[bracket] != '[' || isEscaped(text, cursor)) {
+                cursor += 1
+                continue
+            }
+            val lineEnd = text.indexOfAny(charArrayOf('\r', '\n'), bracket + 1)
+                .let { if (it < 0) text.length else it }
+            var labelEnd = bracket + 1
+            while (labelEnd < lineEnd && (text[labelEnd] != ']' || isEscaped(text, labelEnd))) labelEnd += 1
+            val labelLength = labelEnd - bracket - 1
+            if (labelEnd >= lineEnd || labelLength > 512 || labelEnd + 1 >= lineEnd || text[labelEnd + 1] != '(') {
+                cursor += 1
+                continue
+            }
+            var destinationStart = labelEnd + 2
+            while (destinationStart < lineEnd && (text[destinationStart] == ' ' || text[destinationStart] == '\t')) {
+                destinationStart += 1
+            }
+            var destinationEnd = destinationStart
+            val destination: String
+            if (destinationStart < lineEnd && text[destinationStart] == '<') {
+                destinationEnd += 1
+                while (destinationEnd < lineEnd && (text[destinationEnd] != '>' || isEscaped(text, destinationEnd))) {
+                    destinationEnd += 1
+                }
+                if (destinationEnd >= lineEnd || destinationEnd - destinationStart - 1 !in 1..4096) {
+                    cursor += 1
+                    continue
+                }
+                destination = text.substring(destinationStart + 1, destinationEnd)
+                destinationEnd += 1
+            } else {
+                while (destinationEnd < lineEnd && text[destinationEnd] !in charArrayOf(' ', '\t', '(', ')')) {
+                    destinationEnd += 1
+                }
+                if (destinationEnd - destinationStart !in 1..4096) {
+                    cursor += 1
+                    continue
+                }
+                destination = text.substring(destinationStart, destinationEnd)
+            }
+            var close = destinationEnd
+            while (close < lineEnd && (text[close] == ' ' || text[close] == '\t')) close += 1
+            if (close >= lineEnd || text[close] != ')') {
+                cursor += 1
+                continue
+            }
+            matches += MarkdownLink(
+                startOffset = cursor,
+                endOffsetExclusive = close + 1,
+                isImage = isImage,
+                label = text.substring(bracket + 1, labelEnd),
+                destination = destination,
+            )
+            cursor = close + 1
+        }
+        return matches
+    }
 
     /** Parses only the standalone directive grammar; callers must validate the returned source before fetching it. */
     fun standaloneMediaSource(line: String): String? {

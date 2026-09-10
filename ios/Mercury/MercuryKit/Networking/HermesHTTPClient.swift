@@ -17,6 +17,7 @@ final class HermesHTTPClient {
 
     /// Hard cap on response body size (64 KiB).
     static let maxResponseBytes = 65_536
+    static let maxManagedImageBytes = 10 * 1024 * 1024
 
     /// Normalized origin, e.g. "https://hermes.example.com" (no trailing slash).
     let origin: String
@@ -142,6 +143,33 @@ final class HermesHTTPClient {
         request.httpMethod = "DELETE"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         return try await run(request)
+    }
+
+    /// Fetches one authenticated image from the unchanged Hermes managed-file
+    /// route. Images have their own 10 MiB bound: the generic JSON cap remains
+    /// 64 KiB, but ordinary PNG previews are frequently larger than that.
+    func downloadManagedImage(path: String) async throws -> Data {
+        guard Self.isCanonicalManagedPath(path) else { throw URLError(.badURL) }
+        var components = try urlComponents(path: "/api/files/download")
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        guard let url = components.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("image/*", forHTTPHeaderField: "Accept")
+        let (data, response) = try await run(request, maximumResponseBytes: Self.maxManagedImageBytes)
+        guard (200..<300).contains(response.statusCode),
+              (response.value(forHTTPHeaderField: "Content-Type") ?? "")
+                .lowercased().hasPrefix("image/") else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        return data
+    }
+
+    private static func isCanonicalManagedPath(_ path: String) -> Bool {
+        MercuryCore.ManagedImagePolicy.shared.isManagedImagePath(
+            path: path,
+            formatPolicy: MercuryCore.ManagedImageFormatPolicy.ios
+        )
     }
 
     /// Video uses the same origin-scoped credentials, but a bounded disk stream

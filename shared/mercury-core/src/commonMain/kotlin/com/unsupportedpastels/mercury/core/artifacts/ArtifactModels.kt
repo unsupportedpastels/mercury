@@ -14,6 +14,12 @@ enum class ArtifactOrigin {
     RemoteUrl,
 }
 
+/** Native image decoder formats intentionally supported by each client. */
+enum class ManagedImageFormatPolicy {
+    Android,
+    Ios,
+}
+
 /**
  * Bounded metadata for one transcript-delivered artifact.
  *
@@ -37,6 +43,20 @@ data class Artifact(
     val location: String
         get() = source
 }
+
+/**
+ * One validated explicit Markdown image occurrence backed by a managed host path.
+ * Offsets are UTF-16 indices into the input string. Duplicate occurrences remain
+ * present so renderers can remove their syntax while [shouldRender] preserves the
+ * artifact extractor's first-identity-wins policy.
+ */
+data class ExplicitLocalMarkdownImage(
+    val source: String,
+    val stableIdentity: String,
+    val startOffset: Int,
+    val endOffsetExclusive: Int,
+    val shouldRender: Boolean,
+)
 
 /** Input and output bounds for the pure transcript extractor. */
 data class ArtifactExtractionLimits(
