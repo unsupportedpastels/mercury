@@ -116,11 +116,7 @@ internal fun validateGatewayVideoPath(value: String): Boolean =
     com.unsupportedpastels.mercury.core.artifacts.ManagedVideoPolicy.isManagedVideoPath(value)
 
 internal fun validateGatewayMediaPath(value: String): Boolean =
-    value.startsWith('/') &&
-        '\u0000' !in value &&
-        value.length in 2..4_096 &&
-        value.substringAfterLast('.', missingDelimiterValue = "")
-            .lowercase() in setOf("png", "jpg", "jpeg", "webp", "gif", "bmp")
+    com.unsupportedpastels.mercury.core.artifacts.ManagedImagePolicy.isManagedImagePath(value)
 
 internal fun HttpClientConfig<*>.configureRemoteImageHttpClient() {
     followRedirects = false

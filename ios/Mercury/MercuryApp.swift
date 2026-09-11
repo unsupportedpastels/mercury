@@ -94,6 +94,8 @@ struct MercuryApp: App {
                     BackgroundTaskFixtureView()
                 } else if ProcessInfo.processInfo.arguments.contains("-uitest-chat-scroll") {
                     ChatTranscriptScrollFixtureView()
+                } else if ProcessInfo.processInfo.arguments.contains("-uitest-managed-images") {
+                    ManagedImageFixtureView()
                 } else { RootView() }
                 #else
                 RootView()
@@ -104,7 +106,8 @@ struct MercuryApp: App {
                     #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("-uitest-push")
                         || ProcessInfo.processInfo.arguments.contains("-uitest-background-tasks")
-                        || ProcessInfo.processInfo.arguments.contains("-uitest-chat-scroll") { return }
+                        || ProcessInfo.processInfo.arguments.contains("-uitest-chat-scroll")
+                        || ProcessInfo.processInfo.arguments.contains("-uitest-managed-images") { return }
                     if ProcessInfo.processInfo.arguments.contains("-uitest-reset-local-state") {
                         await appModel.resetLocalStateForUITest()
                     }

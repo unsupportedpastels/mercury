@@ -38,6 +38,8 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,6 +50,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.dropUnlessResumed
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.ProjectSessionLoadState
 import com.unsupportedpastels.hermesandroid.app.ProjectSummary
@@ -55,6 +60,7 @@ import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
 import com.unsupportedpastels.hermesandroid.theme.LocalHermesSemanticColors
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -257,7 +263,7 @@ internal fun ProjectDetailScreen(
 }
 
 @Composable
-private fun SessionInboxRow(
+internal fun SessionInboxRow(
     session: SessionSummary,
     projectLabel: String,
     isWorking: Boolean,
@@ -265,12 +271,14 @@ private fun SessionInboxRow(
     activeColor: androidx.compose.ui.graphics.Color,
     completedColor: androidx.compose.ui.graphics.Color,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    ownerLabel: String = session.profile ?: projectLabel,
+    nowMillis: Long = rememberSessionRecencyTime(),
 ) {
     val workspace = validProjectWorkspacePath(session.workspacePath)
     val workspaceLabel = workspace ?: "No workspace"
-    val ownerLabel = session.profile ?: projectLabel
     val preview = session.preview?.trim()?.takeIf(String::isNotEmpty)
-    val recency = session.lastActiveEpochSeconds?.let(::formatSessionRecency)
+    val recency = session.lastActiveEpochSeconds?.let { formatSessionRecency(it, nowMillis) }
     val metadata = listOfNotNull(
         session.model?.trim()?.takeIf(String::isNotEmpty),
         session.messageCount?.let { count -> "$count ${if (count == 1) "message" else "messages"}" },
@@ -281,7 +289,7 @@ private fun SessionInboxRow(
         if (isUnreadComplete) append(", completed unread")
     }
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = dropUnlessResumed { onClick() })
             .padding(horizontal = 16.dp, vertical = 12.dp)
@@ -395,11 +403,29 @@ private fun SessionInboxRow(
     }
 }
 
-private fun formatSessionRecency(epochSeconds: Double): String {
+// Age-only UI clock: one minute resolution, no snapshot writes or transport work.
+// Suspension below STARTED and composition disposal both cancel the ticking loop.
+@Composable
+internal fun rememberSessionRecencyTime(clock: () -> Long = System::currentTimeMillis): Long {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val currentClock by rememberUpdatedState(clock)
+    val now by produceState(initialValue = remember { clock() }, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            value = currentClock()
+            while (true) {
+                delay(60_000)
+                value = currentClock()
+            }
+        }
+    }
+    return now
+}
+
+private fun formatSessionRecency(epochSeconds: Double, nowMillis: Long): String {
     val timestampMillis = (epochSeconds * 1_000.0).toLong()
     return DateUtils.getRelativeTimeSpanString(
         timestampMillis,
-        System.currentTimeMillis(),
+        nowMillis,
         DateUtils.MINUTE_IN_MILLIS,
         DateUtils.FORMAT_ABBREV_RELATIVE,
     ).toString()

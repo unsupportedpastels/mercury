@@ -26,6 +26,33 @@ Mercury ships the same product on **Android** and **iOS** over one shared Kotlin
 - Preserves a Mercury-started live turn when you navigate away; it does not take over or close another client's runtime.
 - Speaks and listens through your server's audited voice stack: app-owned dictation into the composer with a stop control, per-message read-aloud, streaming speech that overlaps generation, and a hands-free voice conversation with spoken stop phrases and barge-in. Voice controls appear only when the connected server exposes the official `/api/audio/…` routes, audio is never persisted on the device, and the microphone permission is requested only when you first use voice.
 
+## Inline screenshots and images
+
+For host-local images, ask the agent to return a standalone directive using the
+verified file's actual absolute path:
+
+```text
+MEDIA:/absolute/path/screenshot.png
+```
+
+Both native clients also render explicit local Markdown images such as
+`![Screenshot](/absolute/path/screenshot.png)`. Bare paths and ordinary file links
+are not inline image requests. Code examples and escaped image syntax do not
+trigger image downloads. Local image requests use the same authenticated loader
+and host file-access rules as `MEDIA:`; this does not expose files publicly.
+
+Direct image responses are bounded to 10 MiB. Relay image reads require the host's
+advertised image-read capability and are bounded to 2 MiB. PNG, JPEG, GIF, WebP,
+and BMP are portable choices; iOS direct mode also retains HEIC and TIFF support.
+The file must exist on the connected host and be readable under its file policy.
+
+The optional [Mercury Relay host plugin](https://github.com/unsupportedpastels/mercury-relay-plugin)
+can supply media-delivery guidance to new sessions on compatible Hermes hosts.
+This is profile-wide guidance, not a guarantee of model compliance, and it does
+not retrofit existing frozen session prompts. Direct mode and native rendering
+remain usable without the plugin. Installing the mobile app alone does not
+rewrite the host's system prompt.
+
 ## Real screens, real agent
 
 Real captures from a live session on device — no mockups, no staged data.

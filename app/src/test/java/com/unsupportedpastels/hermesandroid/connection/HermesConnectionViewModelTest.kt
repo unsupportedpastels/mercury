@@ -136,6 +136,39 @@ class HermesConnectionViewModelTest {
     }
 
     @Test
+    fun managedImageUsesDirectAuthenticatedFileTransportWhenRelayIsNotSelected() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val requests = mutableListOf<Triple<ServerOrigin, String?, String>>()
+        val client = object : HermesConnectionClient {
+            override suspend fun probe(serverOrigin: ServerOrigin) = HermesConnectionInfo(
+                version = "0.20.0",
+                authRequired = false,
+                nativeOAuthSupported = false,
+                providers = emptyList(),
+            )
+
+            override suspend fun downloadManagedImage(
+                serverOrigin: ServerOrigin,
+                accessToken: String?,
+                path: String,
+            ): ByteArray {
+                requests += Triple(serverOrigin, accessToken, path)
+                return byteArrayOf(1, 2, 3)
+            }
+        }
+        val viewModel = HermesConnectionViewModel(
+            MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin)),
+            client,
+        )
+        advanceUntilIdle()
+
+        val bytes = viewModel.downloadManagedImage("/workspace/inline.png")
+
+        assertTrue(bytes.contentEquals(byteArrayOf(1, 2, 3)))
+        assertEquals(listOf(Triple(origin, null, "/workspace/inline.png")), requests)
+    }
+
+    @Test
     fun videoDownloadCannotReturnOldOriginMediaAfterSettingsChange() = runTest(dispatcher) {
         val origin = ServerOrigin.parse("https://hermes.example")
         val other = ServerOrigin.parse("https://other.example")

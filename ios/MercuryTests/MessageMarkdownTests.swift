@@ -68,4 +68,22 @@ final class MessageMarkdownTests: XCTestCase {
             .code(language: "python", code: "def greet(name):\n    return name"),
         ])
     }
+
+    func testTildeFenceRequiresMatchingLengthAndAcceptsLongerCloser() {
+        let blocks = parseMessageMarkdown("""
+        Before
+        ~~~~swift
+        let value = 1
+        ~~~
+        still code
+        ~~~~~
+        After
+        """)
+
+        XCTAssertEqual(blocks, [
+            .paragraph("Before"),
+            .code(language: "swift", code: "let value = 1\n~~~\nstill code"),
+            .paragraph("After"),
+        ])
+    }
 }

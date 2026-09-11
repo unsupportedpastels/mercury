@@ -96,6 +96,163 @@ class ArtifactExtractorTest {
     }
 
     @Test
+    fun explicitLocalMarkdownImagesPreserveRangesRejectUnsafeSourcesAndDedupe() {
+        val text = "Before ![one](/runs/one.png) middle ![two](/runs/two.jpg) " +
+            "again ![duplicate](/runs/one.png) after"
+
+        val references = ArtifactExtractor.explicitLocalMarkdownImages(text)
+
+        assertEquals(listOf("/runs/one.png", "/runs/two.jpg", "/runs/one.png"), references.map { it.source })
+        assertEquals(listOf(true, true, false), references.map { it.shouldRender })
+        assertEquals(
+            listOf("![one](/runs/one.png)", "![two](/runs/two.jpg)", "![duplicate](/runs/one.png)"),
+            references.map { text.substring(it.startOffset, it.endOffsetExclusive) },
+        )
+
+        for (invalid in listOf(
+            "![remote](https://example.com/image.png)",
+            "![traversal](/runs/../secret.png)",
+            "![double slash](/runs//image.png)",
+            "![backslash](/runs\\image.png)",
+            "![control](/runs/ima\u0000ge.png)",
+        )) {
+            assertTrue(ArtifactExtractor.explicitLocalMarkdownImages(invalid).isEmpty(), invalid)
+        }
+    }
+
+    @Test
+    fun explicitLocalMarkdownImagesIgnoreInlineAndFencedCode() {
+        val text = """
+            `![inline](/runs/inline.png)`
+            ```markdown
+            ![fenced](/runs/fenced.png)
+            ```
+            ![visible](/runs/visible.png)
+        """.trimIndent()
+
+        assertEquals(
+            listOf("/runs/visible.png"),
+            ArtifactExtractor.explicitLocalMarkdownImages(text).map { it.source },
+        )
+    }
+
+    @Test
+    fun explicitLocalMarkdownImagesIgnoreMultilineInlineCodeSpans() {
+        val text = """
+            Before ``code starts
+            ![not visible](/runs/code.png)
+            and ends`` after
+            ![visible](/runs/visible.png)
+        """.trimIndent()
+
+        assertEquals(
+            listOf("/runs/visible.png"),
+            ArtifactExtractor.explicitLocalMarkdownImages(text).map { it.source },
+        )
+    }
+
+    @Test
+    fun escapedOpeningBracketNeverBecomesAnImage() {
+        assertTrue(
+            ArtifactExtractor.explicitLocalMarkdownImages("!\\[example](/tmp/synthetic.png)").isEmpty(),
+        )
+    }
+
+    @Test
+    fun orderedManagedImageSegmentsPreserveDocumentOrderAndRemoveDuplicateSyntax() {
+        val text = "Before ![one](/runs/one.png) middle\nMEDIA:/runs/two.png\nafter ![again](/runs/one.png)."
+
+        val segments = ArtifactExtractor.orderedManagedImageSegments(text, ManagedImageFormatPolicy.Android)
+
+        assertEquals(
+            listOf(
+                ManagedImageContentSegmentKind.Text,
+                ManagedImageContentSegmentKind.Image,
+                ManagedImageContentSegmentKind.Text,
+                ManagedImageContentSegmentKind.Image,
+                ManagedImageContentSegmentKind.Text,
+            ),
+            segments.map { it.kind },
+        )
+        assertEquals(listOf("/runs/one.png", "/runs/two.png"), segments.mapNotNull { it.source })
+        assertEquals("Before  middle\n\nafter .", segments.mapNotNull { it.text }.joinToString(""))
+    }
+
+    @Test
+    fun orderedManagedImageSegmentsPreserveTextBeyondExtractionBudget() {
+        val text = "![one](/a/one.png)" + "x".repeat(40)
+        val segments = ArtifactExtractor.orderedManagedImageSegments(
+            text,
+            ManagedImageFormatPolicy.Android,
+            ArtifactExtractionLimits(maxTranscriptChars = 24),
+        )
+
+        assertEquals("x".repeat(40), segments.mapNotNull { it.text }.joinToString(""))
+        assertEquals(listOf("/a/one.png"), segments.mapNotNull { it.source })
+    }
+
+    @Test
+    fun sharedFenceSegmentsSupportTildesAndVariableLengthClosers() {
+        val segments = MarkdownPresentationPolicy.fencedSegments(
+            "before\n~~~~swift\nlet value = 1\n~~~\nstill code\n~~~~~\nafter",
+        )
+
+        assertEquals(
+            listOf(MarkdownFenceSegmentKind.Text, MarkdownFenceSegmentKind.Code, MarkdownFenceSegmentKind.Text),
+            segments.map { it.kind },
+        )
+        assertEquals("swift", segments[1].language)
+        assertEquals("let value = 1\n~~~\nstill code", segments[1].text)
+    }
+
+    @Test
+    fun explicitLocalMarkdownImagesRespectMarkdownCodeEscapesAndLineBounds() {
+        val text = """
+            ``![double tick](/runs/double.png)``
+            ~~~~markdown
+            ![tilde fenced](/runs/tilde.png)
+            ~~~
+            ![still fenced](/runs/still-fenced.png)
+            ~~~~
+            \![escaped](/runs/escaped.png)
+            ![line break](
+            /runs/cross-line.png)
+            ![](/runs/empty-alt.png)
+            ![visible](/runs/visible.png)
+        """.trimIndent()
+
+        assertEquals(
+            listOf("/runs/empty-alt.png", "/runs/visible.png"),
+            ArtifactExtractor.explicitLocalMarkdownImages(text).map { it.source },
+        )
+    }
+
+    @Test
+    fun managedImageSelectionExcludesFencedMediaAndPreservesPlatformFormats() {
+        val text = """
+            ~~~text
+            MEDIA:/runs/fenced.heic
+            ~~~
+            MEDIA:/runs/photo.heic
+            MEDIA:/runs/scan.tif
+            ![](/runs/page.tiff)
+            MEDIA:/runs/portable.png
+            /runs/bare.jpg
+            [ordinary](/runs/link.jpg)
+            ![remote](https://example.com/remote.jpg)
+        """.trimIndent()
+
+        assertEquals(
+            listOf("/runs/portable.png"),
+            ArtifactExtractor.managedImageArtifacts(text, ManagedImageFormatPolicy.Android).map { it.source },
+        )
+        assertEquals(
+            listOf("/runs/photo.heic", "/runs/scan.tif", "/runs/page.tiff", "/runs/portable.png"),
+            ArtifactExtractor.managedImageArtifacts(text, ManagedImageFormatPolicy.Ios).map { it.source },
+        )
+    }
+
+    @Test
     fun angleBracketDestinationsAllowSpaces() {
         val artifacts = extract("[report](</files/quarterly report.pdf>)")
         assertEquals("/files/quarterly report.pdf", artifacts.single().source)
@@ -166,9 +323,9 @@ class ArtifactExtractorTest {
 
     @Test
     fun displayNameSanitizesHostileCharacters() {
-        val artifacts = extract("[file: badname](/a/x)")
+        val artifacts = extract("[file: bad\u0007name](/a/x)")
         assertEquals("x", artifacts.single().displayName)
-        val hinted = extract("[file: weird   name](https://example.com/)")
+        val hinted = extract("[file: we\u0007ird   name](https://example.com/)")
         assertEquals("we_ird name", hinted.single().displayName)
     }
 
