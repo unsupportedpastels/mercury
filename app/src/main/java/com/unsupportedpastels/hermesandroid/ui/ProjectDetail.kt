@@ -257,7 +257,7 @@ internal fun ProjectDetailScreen(
 }
 
 @Composable
-private fun SessionInboxRow(
+internal fun SessionInboxRow(
     session: SessionSummary,
     projectLabel: String,
     isWorking: Boolean,
@@ -265,10 +265,11 @@ private fun SessionInboxRow(
     activeColor: androidx.compose.ui.graphics.Color,
     completedColor: androidx.compose.ui.graphics.Color,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    ownerLabel: String = session.profile ?: projectLabel,
 ) {
     val workspace = validProjectWorkspacePath(session.workspacePath)
     val workspaceLabel = workspace ?: "No workspace"
-    val ownerLabel = session.profile ?: projectLabel
     val preview = session.preview?.trim()?.takeIf(String::isNotEmpty)
     val recency = session.lastActiveEpochSeconds?.let(::formatSessionRecency)
     val metadata = listOfNotNull(
@@ -281,7 +282,7 @@ private fun SessionInboxRow(
         if (isUnreadComplete) append(", completed unread")
     }
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = dropUnlessResumed { onClick() })
             .padding(horizontal = 16.dp, vertical = 12.dp)
