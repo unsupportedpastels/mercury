@@ -90,6 +90,8 @@ struct MercuryApp: App {
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("-uitest-push") {
                     RelayPushFixtureView()
+                } else if ProcessInfo.processInfo.arguments.contains("-uitest-dictation-send") {
+                    DictationSendFixtureView()
                 } else if ProcessInfo.processInfo.arguments.contains("-uitest-background-tasks") {
                     BackgroundTaskFixtureView()
                 } else if ProcessInfo.processInfo.arguments.contains("-uitest-chat-scroll") {
@@ -105,6 +107,7 @@ struct MercuryApp: App {
                 .task {
                     #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("-uitest-push")
+                        || ProcessInfo.processInfo.arguments.contains("-uitest-dictation-send")
                         || ProcessInfo.processInfo.arguments.contains("-uitest-background-tasks")
                         || ProcessInfo.processInfo.arguments.contains("-uitest-chat-scroll")
                         || ProcessInfo.processInfo.arguments.contains("-uitest-managed-images") { return }

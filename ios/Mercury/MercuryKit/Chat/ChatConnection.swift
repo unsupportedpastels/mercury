@@ -198,13 +198,19 @@ final class ChatConnection: @unchecked Sendable {
         )
     }
 
-    func submitPrompt(runtimeSessionID: String, text: String) async throws -> PromptSubmission {
+    func submitPrompt(
+        runtimeSessionID: String,
+        text: String,
+        queued: Bool = false
+    ) async throws -> PromptSubmission {
         let boundedText = try boundedRPCInput(text, maxChars: maxMessageTextChars, label: "prompt text")
         let sessionKey = try boundedRPCInput(runtimeSessionID, maxChars: maxEventIDChars, label: "runtime session ID")
-        let result = try await request("prompt.submit", [
+        var params: [String: Any] = [
             "session_id": sessionKey,
             "text": boundedText,
-        ])
+        ]
+        if queued { params["queued"] = true }
+        let result = try await request("prompt.submit", params)
         guard let status = stringField("status", in: result) else {
             throw ChatError.protocolError("Prompt response was incomplete")
         }

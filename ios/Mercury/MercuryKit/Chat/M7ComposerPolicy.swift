@@ -2,8 +2,9 @@ import Foundation
 import MercuryCore
 
 /// Deterministic composer routing for M7. The view performs RPCs, while this
-/// policy guarantees that local commands never leak into `prompt.submit` and
-/// active-turn text always uses `session.steer`.
+/// policy guarantees that local commands never leak into `prompt.submit`.
+/// Plain active-turn text is queued as a distinct next turn; explicit
+/// `/steer` retains the in-turn guidance contract.
 struct M7ComposerPolicy {
     enum Rejection: Equatable, Sendable {
         case blankPrompt
@@ -14,6 +15,7 @@ struct M7ComposerPolicy {
 
     enum Action: Equatable, Sendable {
         case submit(text: String)
+        case queue(text: String)
         case steer(text: String)
         case openModelPicker
         case setReasoning(effort: String)
@@ -23,6 +25,12 @@ struct M7ComposerPolicy {
     /// Routing is the shared decision (`MercuryCore.ComposerRoutingPolicy`);
     /// this maps its sealed result onto the Swift action.
     static func route(draft: String, turnActive: Bool, hasAttachments: Bool) -> Action {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let explicitSteer = trimmed.split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).first == "/steer"
+        if turnActive, !explicitSteer {
+            if hasAttachments { return .reject(.attachmentsUnavailableWhileSteering) }
+            return trimmed.isEmpty ? .reject(.blankPrompt) : .queue(text: trimmed)
+        }
         let action = MercuryCore.ComposerRoutingPolicy.shared.route(
             draft: draft, turnActive: turnActive, hasAttachments: hasAttachments
         )

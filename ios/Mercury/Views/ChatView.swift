@@ -175,7 +175,12 @@ struct ChatView: View {
                 ),
                 isStopping: state.isStopping,
                 onStop: interruptTurn,
-                isSteering: state.turnInFlight && state.steerSupported,
+                isSteering: state.turnInFlight && state.draft
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).first == "/steer",
+                isQueueing: state.turnInFlight && state.draft
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).first != "/steer",
                 attachmentsEnabled: !state.turnInFlight,
                 attachments: state.stagedAttachments,
                 onAttachmentPicked: { filename, mimeType, data in

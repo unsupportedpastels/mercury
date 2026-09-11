@@ -14,6 +14,7 @@ final class M11DictationTests: XCTestCase {
         var startCalls = 0
         var stopCalls = 0
         var cancelCalls = 0
+        var onStop: (() -> Void)?
         private var transcript: ((String, Bool) -> Void)?
         private var failure: ((DictationFailure) -> Void)?
 
@@ -26,7 +27,12 @@ final class M11DictationTests: XCTestCase {
             transcript = onTranscript
             failure = onFailure
         }
-        func stop() { stopCalls += 1 }
+        func stop() {
+            stopCalls += 1
+            let callback = onStop
+            onStop = nil
+            callback?()
+        }
         func cancel() { cancelCalls += 1 }
         func emit(_ text: String, final: Bool = false) { transcript?(text, final) }
         func fail(_ reason: DictationFailure) { failure?(reason) }
@@ -69,7 +75,7 @@ final class M11DictationTests: XCTestCase {
         XCTAssertEqual(engine.stopCalls, 1)
     }
 
-    func testExplicitStopAfterPartialTranscriptMakesDraftSendableWithoutAnotherKeystroke() async {
+    func testPartialTranscriptIsSendableWhileDictationRemainsActive() async {
         let engine = FakeEngine()
         var draft = ""
         let coordinator = ComposerDictationCoordinator(
@@ -81,18 +87,59 @@ final class M11DictationTests: XCTestCase {
 
         await coordinator.start()
         engine.emit("send this draft")
-        XCTAssertFalse(ComposerSendPolicy.canSend(
-            draft: draft, isSending: false, dictationActive: coordinator.isActive,
-            isSteering: false, hasAttachments: false, hasHostReferences: false
-        ))
 
-        coordinator.stop()
-
-        XCTAssertEqual(draft, "send this draft")
+        XCTAssertTrue(coordinator.isActive)
         XCTAssertTrue(ComposerSendPolicy.canSend(
             draft: draft, isSending: false, dictationActive: coordinator.isActive,
             isSteering: false, hasAttachments: false, hasHostReferences: false
         ))
+        XCTAssertTrue(ComposerSendPolicy.canSend(
+            draft: draft, isSending: false, dictationActive: coordinator.isActive,
+            isSteering: true, hasAttachments: false, hasHostReferences: false
+        ), "active-turn queueing must not disable app-owned dictation Send")
+    }
+
+    func testStoppingForSendFreezesLatestTranscriptAndRejectsLateCallbacks() async {
+        let engine = FakeEngine()
+        var draft = ""
+        let coordinator = ComposerDictationCoordinator(
+            permissions: FakePermissions(.authorized),
+            recognizer: engine,
+            getDraft: { draft },
+            setDraft: { draft = $0 }
+        )
+
+        await coordinator.start()
+        engine.emit("send this draft")
+        coordinator.stop()
+        engine.emit("late replacement", final: true)
+        engine.fail(.recognitionFailed)
+
+        XCTAssertEqual(draft, "send this draft")
+        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(engine.stopCalls, 1)
+    }
+
+    func testFinishForSubmissionAcceptsFinalTranscriptBeforeFreezing() async {
+        let engine = FakeEngine()
+        var draft = ""
+        let coordinator = ComposerDictationCoordinator(
+            permissions: FakePermissions(.authorized),
+            recognizer: engine,
+            getDraft: { draft },
+            setDraft: { draft = $0 }
+        )
+
+        await coordinator.start()
+        engine.emit("send this")
+        engine.onStop = { engine.emit("send this final word", final: true) }
+
+        await coordinator.finishForSubmission()
+        engine.emit("too late", final: true)
+
+        XCTAssertEqual(draft, "send this final word")
+        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(engine.stopCalls, 2) // boundary stop, then final-result cleanup
     }
 
     func testPermissionAndAvailabilityFailuresAreExplicitAndRetryable() async {

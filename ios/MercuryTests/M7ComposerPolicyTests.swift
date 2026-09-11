@@ -9,10 +9,10 @@ final class M7ComposerPolicyTests: XCTestCase {
         )
     }
 
-    func testActiveTurnRoutesPlainGuidanceToSteer() {
+    func testActiveTurnRoutesPlainMessageToQueueWithoutSteering() {
         XCTAssertEqual(
             M7ComposerPolicy.route(draft: "  Focus on the failing test  ", turnActive: true, hasAttachments: false),
-            .steer(text: "Focus on the failing test")
+            .queue(text: "Focus on the failing test")
         )
     }
 
@@ -35,6 +35,17 @@ final class M7ComposerPolicyTests: XCTestCase {
             M7ComposerPolicy.route(draft: "Use this", turnActive: true, hasAttachments: true),
             .reject(.attachmentsUnavailableWhileSteering)
         )
+    }
+
+    func testQueuedPromptLifecycleRestoresOnlyTheFailedOwnedDraft() throws {
+        var lifecycle = QueuedPromptLifecycle()
+        let first = try XCTUnwrap(lifecycle.begin(draft: "queued follow-up"))
+        XCTAssertNil(lifecycle.begin(draft: "duplicate"))
+        XCTAssertEqual(lifecycle.resolve(attempt: first, accepted: false), .restoreDraft("queued follow-up"))
+
+        let second = try XCTUnwrap(lifecycle.begin(draft: "accepted follow-up"))
+        XCTAssertEqual(lifecycle.resolve(attempt: second, accepted: true), .accepted)
+        XCTAssertEqual(lifecycle.resolve(attempt: first, accepted: false), .stale)
     }
 
     func testExactModelCommandOpensPickerLocally() {

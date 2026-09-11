@@ -26,6 +26,9 @@ extension ChatView {
         case .steer(let text):
             steerActiveTurn(text)
 
+        case .queue(let text):
+            queueAfterActiveTurn(text)
+
         case .submit(let text):
             submitPrompt(text)
 
@@ -39,6 +42,41 @@ extension ChatView {
                 state.composerError = "There is no active turn to steer."
             case .attachmentsUnavailableWhileSteering:
                 state.composerError = "Attachments are unavailable while steering an active turn."
+            }
+        }
+    }
+
+    private func queueAfterActiveTurn(_ text: String) {
+        guard let connection = state.connection, let runtimeSessionID = state.runtimeSessionID else {
+            state.composerError = "Not connected — reopen this session to queue a message."
+            return
+        }
+        guard let attempt = state.queuedPromptSubmission.begin(draft: text) else { return }
+
+        state.draft = ""
+        clearSlashCompletion()
+        state.composerError = nil
+        state.isComposerActionPending = true
+        Task {
+            do {
+                _ = try await connection.submitPrompt(
+                    runtimeSessionID: runtimeSessionID,
+                    text: text,
+                    queued: true
+                )
+                await MainActor.run {
+                    guard state.queuedPromptSubmission.resolve(attempt: attempt, accepted: true) != .stale else { return }
+                    state.isComposerActionPending = false
+                    state.composerNotice = "Message queued for after the active turn."
+                }
+            } catch {
+                await MainActor.run {
+                    let resolution = state.queuedPromptSubmission.resolve(attempt: attempt, accepted: false)
+                    guard case .restoreDraft(let original) = resolution else { return }
+                    state.isComposerActionPending = false
+                    state.composerError = "Could not queue message — check the connection and try again."
+                    if state.draft.isEmpty { state.draft = original }
+                }
             }
         }
     }

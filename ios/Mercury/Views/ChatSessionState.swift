@@ -73,6 +73,7 @@ final class ChatSessionState {
     var isStopping = false
     var isComposerActionPending = false
     var promptSubmission = PromptSubmissionLifecycle()
+    var queuedPromptSubmission = QueuedPromptLifecycle()
     var userMessageScrollGeneration = 0
     var connectionNote: String?
 
@@ -281,10 +282,11 @@ final class ChatSessionState {
         transcript.hasStreamingAssistant
     }
 
-    /// A running turn is intentionally not busy: its composer steers. Only a
-    /// transport outage, a local RPC, or pre-stream prompt submission blocks it.
+    /// A running turn is intentionally not busy: its composer can queue a
+    /// follow-up (or explicitly steer). Only a transport outage, a local RPC,
+    /// or pre-stream prompt submission blocks it.
     var composerIsBusy: Bool {
-        isConnectionDown || isComposerActionPending || (isSending && (!turnInFlight || !steerSupported))
+        isConnectionDown || isComposerActionPending || (isSending && !turnInFlight)
     }
 
     /// The request id of the currently presented sheet, extracted from the event.
