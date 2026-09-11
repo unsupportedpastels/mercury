@@ -15,7 +15,11 @@ extension ChatView {
             GeometryReader { viewport in
                 ZStack(alignment: .bottomTrailing) {
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 12) {
+                        // Programmatic tail jumps require measured row heights. A
+                        // LazyVStack estimates heterogeneous off-screen Markdown
+                        // rows, so scrollTo can stop short (or correct backward)
+                        // as those estimates are replaced during the jump.
+                        VStack(alignment: .leading, spacing: 12) {
                     if state.hasMoreHistory || state.historyError != nil {
                         Button {
                             Task { await loadEarlierHistory() }

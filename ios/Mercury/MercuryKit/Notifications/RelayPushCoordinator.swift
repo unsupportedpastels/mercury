@@ -6,6 +6,10 @@ import CoreFoundation
 @MainActor @Observable
 final class RelayPushCoordinator {
     typealias Request = @MainActor (String, [String: Any]) async throws -> [String: Any]
+    struct ResolvedSessionRoute: Equatable, Sendable {
+        let durableSessionID: String
+        let profile: String
+    }
     struct Scope: Codable, Equatable {
         let id: UUID
         let origin: String
@@ -59,6 +63,37 @@ final class RelayPushCoordinator {
               let value = caps["push_notifications_v1"] as? NSNumber,
               CFGetTypeID(value) == CFBooleanGetTypeID() else { return false }
         return value.boolValue
+    }
+    nonisolated static func supportsSessionResolution(_ status: [String: Any]) -> Bool {
+        guard let caps = status["capabilities"] as? [String: Any],
+              let value = caps["push_notifications_v2"] as? NSNumber,
+              CFGetTypeID(value) == CFBooleanGetTypeID() else { return false }
+        return value.boolValue
+    }
+    nonisolated static func resolvedSessionRoute(_ result: [String: Any]) -> ResolvedSessionRoute? {
+        guard let resolved = result["resolved"] as? NSNumber,
+              CFGetTypeID(resolved) == CFBooleanGetTypeID(), resolved.boolValue,
+              let durable = result["durable_session_id"] as? String,
+              (1...256).contains(durable.utf8.count),
+              let profile = result["profile"] as? String,
+              (1...64).contains(profile.utf8.count),
+              !durable.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              !profile.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+        else { return nil }
+        return ResolvedSessionRoute(durableSessionID: durable, profile: profile)
+    }
+    static func resolveSessionRoute(wake: String, request: Request) async -> ResolvedSessionRoute? {
+        guard validWake(wake) else { return nil }
+        do {
+            let status = try await request("relay.status", [:])
+            guard supportsSessionResolution(status) else { return nil }
+            let result = try await request("relay.push.resolve", ["wake_handle": wake])
+            return resolvedSessionRoute(result)
+        } catch {
+            // V1/older or temporarily unavailable hosts retain the existing
+            // safe fallback: select the mapped Relay host's Home screen.
+            return nil
+        }
     }
     nonisolated static func genericPushEnabled(_ preferences: MercuryNotificationPreferences, authorized: Bool) -> Bool {
         // This first delivery contract is intentionally content-free and cannot

@@ -49,8 +49,13 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     func handlePayload(_ userInfo: [AnyHashable: Any], completionHandler: @escaping () -> Void) {
         if userInfo["mercury_wake"] != nil {
             if let wake = RelayPushCoordinator.wake(from: userInfo), let onWake {
-                Task { @MainActor in await onWake(wake) }
-                completionHandler()
+                // Keep the notification response alive until the bounded wake
+                // routing work completes; cold launches otherwise lose their
+                // execution window immediately after merely opening the app.
+                Task { @MainActor in
+                    await onWake(wake)
+                    completionHandler()
+                }
             } else { completionHandler() }
             return
         }

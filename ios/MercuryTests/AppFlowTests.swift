@@ -48,17 +48,26 @@ final class AppFlowTests: XCTestCase {
     private func makeModel(
         session: URLSession,
         credentialStore: CredentialStoring = KeychainCredentialStore(),
+        catalogPersistence: ServerCatalogPersisting = AppFlowCatalogPersistence(),
+        relayTargetStore: RelayTargetStore = RelayTargetStore(
+            persistence: InMemoryRelayTargetPersistence()
+        ),
+        startupChoiceStore: StartupConnectionChoiceStore = StartupConnectionChoiceStore(
+            persistence: AppFlowStartupChoicePersistence()
+        ),
         signInFlowFactory: @escaping @MainActor (String) -> SelfHostedSignInFlowing = { NativePKCEFlow(origin: $0) }
     ) -> AppModel {
         let model = AppModel(
             serverCatalogStore: ServerCatalogStore(
-                persistence: AppFlowCatalogPersistence(),
+                persistence: catalogPersistence,
                 legacyOrigin: nil
             ),
             offlineCacheStore: OfflineCacheStore(
                 backend: AppFlowCacheBackend(),
                 cipher: AppFlowCacheCipher()
-            )
+            ),
+            relayTargetStore: relayTargetStore,
+            startupChoiceStore: startupChoiceStore
         )
         let controller = ConnectionController(
             appModel: model,
@@ -113,6 +122,50 @@ final class AppFlowTests: XCTestCase {
             .failed("Enter a valid server address, e.g. hermes.example.com")
         )
         XCTAssertNil(model.serverOrigin)
+    }
+
+    // MARK: - Notification route startup
+
+    func testColdLaunchNotificationRouteWaitsForCatalogBootstrap() {
+        let model = makeModel(session: makeSession())
+        let route = SessionOpenRoute(
+            durableSessionID: "notification-session",
+            serverID: UUID(uuidString: "00000000-0000-0000-0000-000000000042")!,
+            profile: "default"
+        )
+
+        model.handleSessionRoute(route)
+
+        XCTAssertEqual(model.pendingSessionRoute, route)
+        XCTAssertNil(model.localSettingsError)
+        XCTAssertNil(model.notificationOpenRequest)
+    }
+
+    func testColdLaunchNotificationRouteReplaysAfterCatalogBootstrap() async throws {
+        let persistence = AppFlowCatalogPersistence()
+        let store = ServerCatalogStore(persistence: persistence, legacyOrigin: nil)
+        let entry = try await store.add(origin: origin, label: "Notification host")
+        MockURLProtocol.handler = jsonHandler([
+            "/api/status": (200, #"{"version":"v0.9.3","auth_required":false}"#),
+        ])
+        let model = makeModel(session: makeSession(), catalogPersistence: persistence)
+        let route = SessionOpenRoute(
+            durableSessionID: "notification-session",
+            serverID: entry.id,
+            profile: "default"
+        )
+
+        model.handleSessionRoute(route)
+        await model.bootstrapSavedServer()
+        for _ in 0..<100 where model.notificationOpenRequest == nil {
+            await Task.yield()
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        XCTAssertEqual(model.connectionPhase, .connected)
+        XCTAssertEqual(model.notificationOpenRequest?.sessionID, "notification-session")
+        XCTAssertNil(model.pendingSessionRoute)
+        XCTAssertNil(model.localSettingsError)
     }
 
     // MARK: - Successful probes
@@ -889,6 +942,13 @@ private final class AppFlowCatalogPersistence: ServerCatalogPersisting, @uncheck
     private var data: Data?
     func readCatalogData() throws -> Data? { data }
     func writeCatalogData(_ data: Data) throws { self.data = data }
+}
+
+private final class AppFlowStartupChoicePersistence: StartupConnectionChoicePersisting, @unchecked Sendable {
+    private var data: Data?
+    func readStartupChoiceData() throws -> Data? { data }
+    func writeStartupChoiceData(_ data: Data) throws { self.data = data }
+    func clearStartupChoiceData() { data = nil }
 }
 
 private final class AppFlowCacheBackend: OfflineCacheBacking, @unchecked Sendable {

@@ -196,6 +196,43 @@ final class RelayPushTests: XCTestCase {
         }
         XCTAssertFalse(RelayPushCoordinator.supports([:]))
     }
+    func testSessionResolutionRequiresV2AndUsesExactEncryptedRPC() async {
+        var calls: [(String, [String: Any])] = []
+        let route = await RelayPushCoordinator.resolveSessionRoute(wake: wake) { method, params in
+            calls.append((method, params))
+            if method == "relay.status" {
+                return ["capabilities": ["push_notifications_v1": true, "push_notifications_v2": true]]
+            }
+            return ["resolved": true, "durable_session_id": "durable-session", "profile": "researcher"]
+        }
+        XCTAssertEqual(route, .init(durableSessionID: "durable-session", profile: "researcher"))
+        XCTAssertEqual(calls.map(\.0), ["relay.status", "relay.push.resolve"])
+        XCTAssertTrue(calls[0].1.isEmpty)
+        XCTAssertEqual(calls[1].1 as NSDictionary, ["wake_handle": wake] as NSDictionary)
+
+        calls.removeAll()
+        let legacy = await RelayPushCoordinator.resolveSessionRoute(wake: wake) { method, params in
+            calls.append((method, params))
+            return ["capabilities": ["push_notifications_v1": true]]
+        }
+        XCTAssertNil(legacy)
+        XCTAssertEqual(calls.map(\.0), ["relay.status"])
+    }
+    func testSessionResolutionRejectsMalformedOrUnresolvedResponses() {
+        XCTAssertNil(RelayPushCoordinator.resolvedSessionRoute(["resolved": false]))
+        XCTAssertNil(RelayPushCoordinator.resolvedSessionRoute([
+            "resolved": true, "durable_session_id": "session", "profile": String(repeating: "p", count: 65)
+        ]))
+        XCTAssertNil(RelayPushCoordinator.resolvedSessionRoute([
+            "resolved": true, "durable_session_id": "bad\n", "profile": "default"
+        ]))
+        XCTAssertTrue(RelayPushCoordinator.supportsSessionResolution([
+            "capabilities": ["push_notifications_v2": true]
+        ]))
+        XCTAssertFalse(RelayPushCoordinator.supportsSessionResolution([
+            "capabilities": ["push_notifications_v2": 1]
+        ]))
+    }
     func testRegistrationWireAndScopedTap() async {
         let c = coordinator(), t = target(), owner = NSObject()
         var calls: [String] = []

@@ -100,6 +100,9 @@ final class AppModel {
     private var serverSwitchGeneration: UInt64 = 0
     private var startupDecisionGeneration: UInt64 = 0
     private var startupBootstrapStarted = false
+    /// Distinguishes a genuinely empty saved-server catalog from the initial
+    /// placeholder used before asynchronous startup restoration completes.
+    private var startupCatalogsLoaded = false
     #if DEBUG
     private var startupUIFixtureActive = false
     #endif
@@ -242,6 +245,13 @@ final class AppModel {
     /// unknown server surfaces an honest error instead of opening the same
     /// session ID on the wrong origin.
     func handleSessionRoute(_ route: SessionOpenRoute) {
+        // During a cold launch `.empty` is only a placeholder, not evidence
+        // that the route's server was removed. Retain the route for bootstrap.
+        guard startupCatalogsLoaded else {
+            pendingSessionRoute = route
+            localSettingsError = nil
+            return
+        }
         if let active = serverCatalog.activeEntry,
            active.id == route.serverID,
            case .connected = connectionPhase {
@@ -430,12 +440,30 @@ final class AppModel {
 
             serverCatalog = catalog ?? .empty
             relayTargets = relays ?? []
+            startupCatalogsLoaded = true
             relayTargetsError = relays == nil ? "Saved relay pairings could not be read." : nil
             transcriptCachingEnabled = caching
             startupLastSuccessfulChoice = choice
             guard catalog != nil, relays != nil else {
                 localSettingsError = "Some saved connections could not be loaded. Choose an available connection or add one."
                 startupState = .chooseTarget(savedChoiceUnavailable: choice != nil)
+                return
+            }
+
+            // A notification can launch the process before SwiftUI's startup
+            // task restores either catalog. Its explicit destination outranks
+            // ordinary last-used auto-selection once the catalogs are ready.
+            if let route = pendingSessionRoute {
+                guard let entry = serverCatalog.entries.first(where: { $0.id == route.serverID }) else {
+                    handleSessionRoute(route)
+                    return
+                }
+                let identity = StartupConnectionIdentity(kind: .direct, id: entry.id)
+                startupAttemptIdentity = identity
+                startupState = .connecting(identity)
+                let task = launchConnectionAttempt(identity, userInitiated: false)
+                await task.value
+                completePendingRouteIfReady()
                 return
             }
 
@@ -1479,6 +1507,26 @@ final class AppModel {
         clearOpenSessionRequest()
         pushHomeRevision = UUID()
         await connectRelay(target)
+        guard activeRelayTarget?.id == target.id,
+              case .connected = connectionPhase,
+              let connection = try? await RelayConnectionPool.shared.acquire(
+                  target: target,
+                  profile: activeProfile
+              ) else { return }
+        let route = await RelayPushCoordinator.resolveSessionRoute(
+            wake: wake,
+            request: { method, params in
+                try await connection.relayRequest(method, params: params)
+            }
+        )
+        guard let route else { return }
+        if route.profile != activeProfile {
+            await switchProfile(route.profile)
+            guard activeRelayTarget?.id == target.id,
+                  activeProfile == route.profile,
+                  case .connected = connectionPhase else { return }
+        }
+        requestOpenSession(route.durableSessionID)
     }
     func setHermesVersion(_ version: String?) { hermesVersion = version }
     func setSessionsError(_ message: String?) { sessionsError = message }
