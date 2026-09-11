@@ -21,6 +21,7 @@ final class RelayPushCoordinator {
     private(set) var status = "Relay push is off. Direct notifications remain best effort."
     private(set) var enabled = false
     private var token: String?
+    private var appleRegistrationUnavailable = false
     private var scope: Scope?
     private var request: Request?
     private var connectionID: ObjectIdentifier?
@@ -93,11 +94,19 @@ final class RelayPushCoordinator {
         // The first callback after a cold launch is not evidence of rotation.
         // Preserve the persisted handle so an arriving notification can still route.
         if token != nil { bindings.removeAll(); persist() }
-        token = next
+        token = next; appleRegistrationUnavailable = false
         generation = UUID(); reconcile(); writeDiagnostic()
     }
     func registrationFailed() {
+        // Apple invalidated this registration. Restore local delivery immediately,
+        // including persisted cold-launch routes, and reject any pending RPC result.
+        token = nil; generation = UUID()
+        appleRegistrationUnavailable = true
+        bindings.removeAll(); persist()
         status = "Apple push is unavailable. Notifications remain best effort."
+        // Do not cancel/replace the pending-task chain: cleanup must follow an
+        // in-flight register, and a fresh callback must register after cleanup.
+        for request in requests.values { enqueueUnregister(request) }
         writeDiagnostic()
     }
     func select(_ target: RelayPairedTarget?) {
@@ -110,7 +119,8 @@ final class RelayPushCoordinator {
         guard scope == Scope(target), target.status == .approved else { return }
         guard connectionID != identity else { return }
         connectionID = identity; self.request = request; requests[target.id] = request; generation = UUID()
-        if enabled { reconcile() } else { enqueueUnregister(request) }
+        if !enabled || appleRegistrationUnavailable { enqueueUnregister(request) }
+        if enabled { reconcile() }
     }
     func target(for wake: String, targets: [RelayPairedTarget]) -> RelayPairedTarget? {
         guard enabled, Self.validWake(wake), let binding = bindings.first(where: { $0.wake == wake }) else { return nil }
@@ -136,7 +146,12 @@ final class RelayPushCoordinator {
             status = "Relay push currently supports development builds only. Production tokens are not sent."
             return
         }
-        guard let token else { status = "Waiting for Apple push registration."; return }
+        guard let token else {
+            status = appleRegistrationUnavailable
+                ? "Apple push is unavailable. Notifications remain best effort."
+                : "Waiting for Apple push registration."
+            return
+        }
         guard let scope, let request else { status = "Waiting for a supported paired Relay host."; return }
         let revision = generation
         let previous = work
@@ -204,16 +219,24 @@ final class RelayPushCoordinator {
     private func writeDiagnostic() {
         #if DEBUG && targetEnvironment(simulator)
         guard ProcessInfo.processInfo.arguments.contains("-debug-apns-diagnostics") else { return }
-        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        writeDiagnostic(to: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0])
+        #endif
+    }
+    #if DEBUG && targetEnvironment(simulator)
+    // Internal destination seam lets hermetic tests exercise the real file writer.
+    func writeDiagnostic(to directory: URL) {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var state: [String: Any] = ["status": status, "environment": sandbox ? "sandbox" : "production", "registered": !bindings.isEmpty]
-        if let token { state["device_token"] = token }
-        if let scope, let binding = bindings.first(where: { $0.scope == scope }) { state["wake_handle"] = binding.wake }
+        // Explicit allowlist: never export operational token/handle bindings.
+        let state: [String: Any] = ["status": status, "environment": sandbox ? "sandbox" : "production",
+                                    "registered": !bindings.isEmpty, "enabled": enabled, "has_token": token != nil]
+        let url = directory.appendingPathComponent("apns-diagnostics.json")
+        // An older opt-in build may have left secrets here. Remove that artifact
+        // before writing, so a failed replacement cannot leave legacy contents.
+        try? FileManager.default.removeItem(at: url)
         if let data = try? JSONSerialization.data(withJSONObject: state) {
-            let url = directory.appendingPathComponent("apns-diagnostics.json")
             try? data.write(to: url, options: [.atomic, .completeFileProtection])
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         }
-        #endif
     }
+    #endif
 }

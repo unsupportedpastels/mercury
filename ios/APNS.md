@@ -16,6 +16,8 @@ The private local handle binding includes pairing UUID, relay origin, installati
 
 Token changes, fresh connections, and target selections reconcile registration. Generation checks reject stale asynchronous results. Disabling clears local bindings immediately, unregisters Apple remote delivery, and queues host unregistration behind any in-flight registration. Pair removal clears routing immediately and attempts an isolated, dedicated cleanup admission before discarding pairing keys. Host-side unregistration is best effort while offline; it is not a claim that an unreachable host acknowledged revocation.
 
+An Apple registration failure invalidates the in-memory token, persisted wake bindings, and pending registration generation immediately, restoring local delivery without waiting for the network. Host unregistration is queued after pending work and retried on reconnect while Apple registration remains unavailable. A stale RPC completion cannot reclaim delivery. Only a later successful Apple token callback (even if Apple returns the same bytes) permits registration again; that work follows queued cleanup.
+
 ## Environments
 
 XcodeGen sets the app's `aps-environment` to `development` for Debug and `production` for Release. The current server supports sandbox only. Release builds explicitly report this limitation and **never send a production device token as a sandbox token**. Visible alerts do not require the silent-push background mode.
@@ -24,16 +26,16 @@ Enable notification permission plus completion and attention alerts in Settings.
 
 ## Explicit simulator diagnostics (Debug only)
 
-For an operator-run real APNs experiment, launch the simulator app with:
+For an operator-run registration-status check, launch the simulator app with:
 
 - `-debug-apns-register`: explicitly request notification permission and enable the master notification preference. This opt-in is not used during normal launches.
-- `-debug-apns-diagnostics`: allow APNs callbacks/registration status to write `Library/Application Support/apns-diagnostics.json` **inside the app's private simulator data container**, mode `0600`, with file protection. The file may contain `device_token`, `environment`, `registered`, `status`, and the current `wake_handle` after a successful paired registration.
+- `-debug-apns-diagnostics`: allow APNs callbacks/registration status to write `Library/Application Support/apns-diagnostics.json` **inside the app's private simulator data container**, mode `0600`, with file protection. The only fields are `status`, `environment`, `registered`, `enabled`, and `has_token`. Status strings are app-defined; token presence is a boolean, not a token value. No raw APNs token, wake handle, pairing identity, or connection information is exported.
 
-Do not print that file into test logs or paste its contents into source. Use a private operator script to read it, pass values to the real APNs test, and redact outputs. There is no simulator diagnostic export in Release or on physical devices. The app must be paired to the intended supported host for an end-to-end register/wake test; the flags do not bypass pairing or authentication.
+The next explicit diagnostic write removes any legacy diagnostic file before writing the allowlisted state, so old secret-bearing contents are not preserved if replacement fails. This is not a migration that scans or alters user files at startup. There is no simulator diagnostic export in Release or on physical devices. Diagnostics cannot supply credentials for a hosted fixture or prove APNs delivery; no alternate raw-token logging/export is provided. The app must be paired to the intended supported host for an end-to-end register/wake test; the flags do not bypass pairing or authentication.
 
 ## Regression gates
 
-`RelayPushTests` exercises capability gating, wire fields, token rotation/reconnect, production-token rejection, scoped routing, unregistration, and stale completions. `RelayPushUITests` uses `-uitest-push` (and optionally `-uitest-push-unsupported`) with an in-memory RPC substitute to exercise native delegate routing, foreground suppression, direct fallback, and unsupported/disabled no-op routing. The fixture performs no live sign-in or session mutation.
+`RelayPushTests` exercises capability gating, wire fields, token rotation/reconnect, production-token rejection, scoped routing, unregistration, and stale completions. Regression cases cover Apple failure after success and during delayed registration, stale-token rejection across reconnect/enable, fresh-callback recovery, and the actual diagnostic JSON file replacing a synthetic legacy artifact without exporting secrets. `RelayPushUITests` uses `-uitest-push` (and optionally `-uitest-push-unsupported`) with an in-memory RPC substitute to exercise native delegate routing, foreground suppression, direct fallback, and unsupported/disabled no-op routing. The fixture performs no live sign-in or session mutation.
 
 `RelayPushHostedIntegrationTests` is an operator-only simulator gate: it runs only when a private `Library/Application Support/apns-e2e.json` fixture is installed. The fixture supplies an explicitly approved ephemeral test pairing and an Apple-issued simulator token. The test exercises the production Swift connection pool, Noise transport, capability check, registration RPC, and persisted wake binding against a real host/Worker. Remove the private fixture after testing; never commit it or print its fields. An external bounded host harness can then inject synthetic completion/input events into the retained controller to verify real APNs banners.
 
