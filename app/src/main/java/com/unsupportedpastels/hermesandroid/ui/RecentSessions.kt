@@ -1,5 +1,6 @@
 package com.unsupportedpastels.hermesandroid.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -10,39 +11,34 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.key
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.dropUnlessResumed
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.ProjectSummary
-import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
 import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
 import com.unsupportedpastels.hermesandroid.gateway.HermesGatewaySnapshot
 import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
+import com.unsupportedpastels.hermesandroid.theme.LocalHermesSemanticColors
 import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -56,7 +52,10 @@ internal fun RecentSessionsScreen(
     onLoadMore: () -> Unit,
     onRefreshWorkingPresence: () -> Unit = {},
     onSessionSelected: (DurableSessionId) -> Unit,
+    clock: () -> Long = System::currentTimeMillis,
 ) {
+    val nowMillis = rememberSessionRecencyTime(clock)
+    val semanticColors = LocalHermesSemanticColors.current
     val state = snapshot.recentSessions
     val listState = rememberLazyListState()
     val projectBySessionId = buildMap {
@@ -187,13 +186,31 @@ internal fun RecentSessionsScreen(
                         ?.label
                         ?: session.projectId?.value
                         ?: "No project"
-                    RecentSessionFullRow(
+                    SessionInboxRow(
                         session = session,
                         projectLabel = projectLabel,
-                        current = session.id in activeControllerSessionIds,
+                        // All-project rows must identify the project even when a profile is present.
+                        ownerLabel = projectLabel,
                         isWorking = session.id in activeWorkingSessionIds,
-                        onClick = dropUnlessResumed { onSessionSelected(session.id) },
+                        // Completion-unread state is owned by the project inbox, not this snapshot.
+                        isUnreadComplete = false,
+                        activeColor = semanticColors.active,
+                        completedColor = semanticColors.completed,
+                        nowMillis = nowMillis,
+                        modifier = Modifier.background(
+                            if (session.id in activeControllerSessionIds) {
+                                semanticColors.active.copy(alpha = 0.10f)
+                            } else {
+                                androidx.compose.ui.graphics.Color.Transparent
+                            },
+                        ).semantics {
+                            if (session.id in activeControllerSessionIds) {
+                                stateDescription = "Current controller session"
+                            }
+                        },
+                        onClick = { onSessionSelected(session.id) },
                     )
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                 }
                 if (state.isLoadingMore) {
                     item(key = "recent-sessions-loading-more") {
@@ -214,74 +231,6 @@ internal fun RecentSessionsScreen(
                         ) { Text("Could not load more · Retry") }
                     }
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RecentSessionFullRow(
-    session: SessionSummary,
-    projectLabel: String,
-    current: Boolean,
-    isWorking: Boolean = false,
-    onClick: () -> Unit,
-) {
-    Surface(
-        onClick = onClick,
-        shape = MaterialTheme.shapes.medium,
-        color = if (current) {
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.22f)
-        } else {
-            MaterialTheme.colorScheme.surfaceContainer
-        },
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .semantics(mergeDescendants = true) {
-                if (current) stateDescription = "Current controller session"
-            },
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    session.title,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                if (isWorking) {
-                    Spacer(Modifier.width(8.dp))
-                    WorkingIndicator()
-                }
-            }
-            Text(
-                projectLabel,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color = MaterialTheme.colorScheme.primary,
-                style = MaterialTheme.typography.labelMedium,
-            )
-            session.workspacePath?.let { workspace ->
-                Text(
-                    workspace,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            session.preview?.let { preview ->
-                Text(
-                    preview,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
             }
         }
     }
