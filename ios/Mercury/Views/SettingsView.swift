@@ -263,9 +263,10 @@ private struct NotificationSettingsView: View {
             }
 
             Section {
-                Label("Best effort on iOS", systemImage: "info.circle")
+                Label("Relay push and local delivery", systemImage: "info.circle")
+                Text(appModel.relayPush.status).accessibilityIdentifier("relay-push-status")
                     .font(.subheadline.weight(.semibold))
-                Text("Unlike Android, iOS suspends Mercury shortly after you leave it, so the live connection can't stay open in the background. Short tasks are notified promptly; longer runs are caught up when iOS opportunistically wakes the app, or the moment you reopen it. A Live Activity stops receiving updates once iOS suspends Mercury — it reconciles honestly when you return. Delivery is not guaranteed and may be delayed.")
+                Text("Supported Relay hosts can send a generic Apple push alert while Mercury is suspended. Direct connections and older hosts use best-effort local delivery, which may be delayed until you reopen Mercury. Live Activities stop updating when iOS suspends the app.")
                     .font(.footnote)
                     .foregroundStyle(Color.secondary)
             } header: {
@@ -273,7 +274,7 @@ private struct NotificationSettingsView: View {
             }
 
             Section {
-                Text("Mercury makes no server changes and uses no push service. Nothing about your sessions leaves your device or your Hermes server.")
+                Text("Direct connections use local, best-effort notifications. Supported paired Relay hosts can send a generic alert through Apple; session content stays encrypted and is loaded only after you open Mercury.")
                     .font(.footnote)
                     .foregroundStyle(Color.secondary)
             }

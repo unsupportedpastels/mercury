@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import MercuryShareKit
 
 // SwiftUI's Observable macro requires iOS 17+; no Combine needed.
@@ -133,6 +134,8 @@ final class AppModel {
 
     // MARK: - Notification & Live Activity preferences (device-wide)
 
+    let relayPush = RelayPushCoordinator()
+    var pushHomeRevision = UUID()
     private let notificationPreferencesStore = NotificationPreferencesStore()
 
     /// Sessions this install has opened (Android-parity notification scope for
@@ -164,6 +167,7 @@ final class AppModel {
         let status = await notificationCoordinator.authorizationStatus()
         notificationAuthorizationStatus = status
         notificationPreferences = await notificationPreferencesStore.migrateIfNeeded(systemStatus: status)
+        syncPushPreferences()
         notificationCoordinator.preferencesProvider = { [weak self] in
             self?.notificationPreferences ?? .newInstallDefaults
         }
@@ -175,11 +179,13 @@ final class AppModel {
         transform(&updated)
         notificationPreferences = updated
         notificationPreferencesStore.save(updated)
+        syncPushPreferences()
     }
 
     /// Refreshes the cached system authorization status (Settings on-appear).
     func refreshNotificationAuthorizationStatus() async {
         notificationAuthorizationStatus = await notificationCoordinator.authorizationStatus()
+        syncPushPreferences()
     }
 
     /// True while Mercury is the foreground app. The scene phase drives this;
@@ -543,6 +549,9 @@ final class AppModel {
             return
         }
         do {
+            relayPush.remove(target)
+            // An isolated cleanup admission never selects or resumes a session.
+            await RelayPushCoordinator.unregisterPairedTarget(target)
             try await relayTargetStore.remove(id: target.id)
             relayTargets = try await relayTargetStore.load()
             localSettingsError = nil
@@ -1032,6 +1041,7 @@ final class AppModel {
     /// visibility. Posts a local notification only when the reducer decides one
     /// is warranted and the session is not the visible/foreground one.
     func deliverLiveNotification(event: ChatEvent, sessionTitle: String) async {
+        guard !relayPush.ownsDelivery(for: activeRelayTarget) || !RelayPushCoordinator.replacesLocalDelivery(for: event) else { return }
         await notificationCoordinator.handleLive(
             event: event,
             sessionTitle: sessionTitle,
@@ -1283,6 +1293,7 @@ final class AppModel {
     }
 
     private func endRelaySelection() {
+        relayPush.select(nil)
         relaySelectionGeneration &+= 1
         let token = relaySelectionGeneration
         Task { @MainActor in
@@ -1360,6 +1371,7 @@ final class AppModel {
     /// interaction boundary: internal controller reset paths must not cancel
     /// their own active task or invalidate a newer selection.
     func reset() {
+        relayPush.select(nil)
         controller.resetProfileCatalogForConnectionBoundary()
         activeRelayTarget = nil
         selectedRelayTarget = nil
@@ -1430,7 +1442,44 @@ final class AppModel {
     }
 
     func setServerOrigin(_ origin: String?) { serverOrigin = origin }
-    func setActiveRelayTarget(_ target: RelayPairedTarget?) { activeRelayTarget = target }
+    func setActiveRelayTarget(_ target: RelayPairedTarget?) {
+        activeRelayTarget = target
+        relayPush.select(target)
+        if let target, relayPush.enabled { Task { await synchronizeRelayPush(target) } }
+    }
+
+    func syncPushPreferences() {
+        let enabled = RelayPushCoordinator.genericPushEnabled(notificationPreferences, authorized: notificationAuthorizationStatus.countsAsAuthorized)
+        relayPush.setEnabled(enabled)
+        if enabled {
+            UIApplication.shared.registerForRemoteNotifications()
+            if let target = activeRelayTarget { Task { await synchronizeRelayPush(target) } }
+        }
+        else { UIApplication.shared.unregisterForRemoteNotifications() }
+    }
+
+    func synchronizeRelayPush(_ target: RelayPairedTarget) async {
+        guard activeRelayTarget?.id == target.id else { return }
+        guard let connection = try? await RelayConnectionPool.shared.acquire(target: target, profile: activeProfile),
+              activeRelayTarget?.id == target.id else { return }
+        relayPush.connected(target: target, identity: ObjectIdentifier(connection)) { method, params in
+            try await connection.relayRequest(method, params: params)
+        }
+    }
+
+    func handlePushWake(_ wake: String) async {
+        guard RelayPushCoordinator.validWake(wake) else { return }
+        markStartupInteraction()
+        let generation = startupDecisionGeneration
+        await loadNotificationPreferences()
+        await loadRelayTargets()
+        guard generation == startupDecisionGeneration,
+              let target = relayPush.target(for: wake, targets: relayTargets) else { return }
+        pendingSessionRoute = nil
+        clearOpenSessionRequest()
+        pushHomeRevision = UUID()
+        await connectRelay(target)
+    }
     func setHermesVersion(_ version: String?) { hermesVersion = version }
     func setSessionsError(_ message: String?) { sessionsError = message }
     func setAuthProviders(_ providers: [AuthProvider]) { authProviders = providers }

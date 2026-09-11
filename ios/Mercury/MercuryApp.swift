@@ -32,6 +32,7 @@ private final class BackgroundTaskToken {
 
 @main
 struct MercuryApp: App {
+    @UIApplicationDelegateAdaptor(MercuryApplicationDelegate.self) private var applicationDelegate
     @Environment(\.scenePhase) private var scenePhase
     @State private var appModel = AppModel()
     private let notificationDelegate: NotificationDelegate
@@ -65,6 +66,19 @@ struct MercuryApp: App {
         delegate.onOpenRoute = { route in
             Task { @MainActor in model.handleSessionRoute(route) }
         }
+        delegate.onWake = { wake in await model.handlePushWake(wake) }
+        MercuryApplicationDelegate.onToken = { model.relayPush.receivedToken($0) }
+        MercuryApplicationDelegate.onFailure = { model.relayPush.registrationFailed() }
+        Task {
+            await RelayConnectionPool.shared.setPushConnectionSink { target, connection in
+                await MainActor.run {
+                    guard model.activeRelayTarget?.id == target.id else { return }
+                    model.relayPush.connected(target: target, identity: ObjectIdentifier(connection)) { method, params in
+                        try await connection.relayRequest(method, params: params)
+                    }
+                }
+            }
+        }
         UNUserNotificationCenter.current().delegate = delegate
         Self.applyLaunchArgOverrides(to: model)
         Self.registerBackgroundReconciliation(for: model)
@@ -74,7 +88,9 @@ struct MercuryApp: App {
         WindowGroup {
             Group {
                 #if DEBUG
-                if ProcessInfo.processInfo.arguments.contains("-uitest-background-tasks") {
+                if ProcessInfo.processInfo.arguments.contains("-uitest-push") {
+                    RelayPushFixtureView()
+                } else if ProcessInfo.processInfo.arguments.contains("-uitest-background-tasks") {
                     BackgroundTaskFixtureView()
                 } else if ProcessInfo.processInfo.arguments.contains("-uitest-chat-scroll") {
                     ChatTranscriptScrollFixtureView()
@@ -86,7 +102,8 @@ struct MercuryApp: App {
                 .environment(appModel)
                 .task {
                     #if DEBUG
-                    if ProcessInfo.processInfo.arguments.contains("-uitest-background-tasks")
+                    if ProcessInfo.processInfo.arguments.contains("-uitest-push")
+                        || ProcessInfo.processInfo.arguments.contains("-uitest-background-tasks")
                         || ProcessInfo.processInfo.arguments.contains("-uitest-chat-scroll") { return }
                     if ProcessInfo.processInfo.arguments.contains("-uitest-reset-local-state") {
                         await appModel.resetLocalStateForUITest()
@@ -109,6 +126,15 @@ struct MercuryApp: App {
                     // launch), then drive a real banner through
                     // UNUserNotificationCenter so an XCUITest can assert an
                     // actual iOS notification renders.
+                    if ProcessInfo.processInfo.arguments.contains("-debug-apns-register") {
+                        await appModel.requestNotificationAuthorization()
+                        await appModel.refreshNotificationAuthorizationStatus()
+                        appModel.updateNotificationPreferences {
+                            $0.notificationsEnabled = true
+                            $0.completionEnabled = true
+                            $0.attentionEnabled = true
+                        }
+                    }
                     if ProcessInfo.processInfo.arguments.contains("-uitest-fire-notification") {
                         await appModel.requestNotificationAuthorization()
                         // Mirror the Settings Enable action: a fresh install's
@@ -150,6 +176,8 @@ struct MercuryApp: App {
                         // advance dedupe watermarks so a later background
                         // reconcile never re-announces turns seen here.
                         Task {
+                            await appModel.refreshNotificationAuthorizationStatus()
+                            if let target = appModel.activeRelayTarget { await appModel.synchronizeRelayPush(target) }
                             await appModel.loadSessions()
                             await appModel.catchUpNotifications()
                         }

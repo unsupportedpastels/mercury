@@ -14,17 +14,18 @@ struct RootView: View {
             case .signInRequired:
                 SignInView()
             case .connected:
-                home
+                home.id(appModel.pushHomeRevision)
             case .failed(let message):
                 if case .failed(let identity?, _) = appModel.startupState {
                     ConnectView(errorMessage: message)
                 } else if appModel.sessions.isEmpty {
                     ConnectView(errorMessage: message)
                 } else {
-                    home
+                    home.id(appModel.pushHomeRevision)
                 }
             }
         }
+        .onChange(of: appModel.pushHomeRevision) { _, _ in splitSelection = nil }
         .amoledScreen()
     }
 
