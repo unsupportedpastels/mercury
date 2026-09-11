@@ -1,5 +1,6 @@
 package com.unsupportedpastels.hermesandroid.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -51,7 +52,9 @@ internal fun RecentSessionsScreen(
     onLoadMore: () -> Unit,
     onRefreshWorkingPresence: () -> Unit = {},
     onSessionSelected: (DurableSessionId) -> Unit,
+    clock: () -> Long = System::currentTimeMillis,
 ) {
+    val nowMillis = rememberSessionRecencyTime(clock)
     val semanticColors = LocalHermesSemanticColors.current
     val state = snapshot.recentSessions
     val listState = rememberLazyListState()
@@ -193,7 +196,14 @@ internal fun RecentSessionsScreen(
                         isUnreadComplete = false,
                         activeColor = semanticColors.active,
                         completedColor = semanticColors.completed,
-                        modifier = Modifier.semantics {
+                        nowMillis = nowMillis,
+                        modifier = Modifier.background(
+                            if (session.id in activeControllerSessionIds) {
+                                semanticColors.active.copy(alpha = 0.10f)
+                            } else {
+                                androidx.compose.ui.graphics.Color.Transparent
+                            },
+                        ).semantics {
                             if (session.id in activeControllerSessionIds) {
                                 stateDescription = "Current controller session"
                             }

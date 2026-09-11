@@ -118,6 +118,80 @@ class RecentSessionsTest {
         composeRule.onAllNodes(SemanticsMatcher.keyIsDefined(SessionStatusPulseAlpha), useUnmergedTree = true).assertCountEquals(0)
     }
 
+    @Test fun unchangedSnapshotAgesWithoutRequestsAndClockStopsOnDisposal() {
+        composeRule.mainClock.autoAdvance = false
+        val initialNow = 1_800_000_000_000L
+        var now = initialNow
+        var reads = 0
+        var requests = 0
+        var visible by androidx.compose.runtime.mutableStateOf(true)
+        val snapshot = HermesGatewaySnapshot(recentSessions = RecentSessionsState(listOf(
+            session.copy(lastActiveEpochSeconds = (initialNow - 300_000) / 1_000.0),
+            session.copy(id = DurableSessionId("older"),
+                lastActiveEpochSeconds = (initialNow - 3_540_000) / 1_000.0),
+        )))
+        composeRule.setContent {
+            HermesAndroidTheme {
+                if (visible) RecentSessionsScreen(
+                    snapshot, listOf(project), true, {}, { requests++ }, { requests++ },
+                    onRefreshWorkingPresence = { requests++ }, onSessionSelected = {},
+                    clock = { reads++; now },
+                )
+            }
+        }
+        composeRule.mainClock.advanceTimeByFrame()
+        composeRule.onNodeWithText("5 min. ago", useUnmergedTree = true).assertIsDisplayed()
+        val initialRequests = requests
+        composeRule.onNodeWithText("59 min. ago", useUnmergedTree = true).assertIsDisplayed()
+        now += 60_000
+        composeRule.mainClock.advanceTimeBy(60_032)
+        composeRule.onNodeWithText("6 min. ago", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithText("1 hr. ago", useUnmergedTree = true).assertIsDisplayed()
+        assertEquals(initialRequests, requests)
+        composeRule.runOnIdle { visible = false }
+        composeRule.mainClock.advanceTimeByFrame()
+        composeRule.waitForIdle()
+        val readsAfterDisposal = reads
+        now += 120_000
+        composeRule.mainClock.advanceTimeBy(120_032)
+        composeRule.runOnIdle { assertEquals(readsAfterDisposal, reads) }
+    }
+
+    @Test fun recencyClockPausesBelowStartedAndCatchesUpOnReturn() {
+        composeRule.mainClock.autoAdvance = false
+        val owner = object : androidx.lifecycle.LifecycleOwner {
+            val registry = androidx.lifecycle.LifecycleRegistry.createUnsafe(this)
+            override val lifecycle: androidx.lifecycle.Lifecycle = registry
+        }
+        owner.registry.currentState = androidx.lifecycle.Lifecycle.State.STARTED
+        var now = 1_800_000_000_000L
+        var reads = 0
+        var displayed = 0L
+        composeRule.setContent {
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.lifecycle.compose.LocalLifecycleOwner provides owner,
+            ) {
+                val time = rememberSessionRecencyTime { reads++; now }
+                androidx.compose.runtime.SideEffect { displayed = time }
+            }
+        }
+        composeRule.mainClock.advanceTimeByFrame()
+        composeRule.runOnIdle {
+            assertEquals(now, displayed)
+            owner.registry.currentState = androidx.lifecycle.Lifecycle.State.CREATED
+        }
+        composeRule.waitForIdle()
+        val stoppedReads = reads
+        now += 120_000
+        composeRule.mainClock.advanceTimeBy(120_032)
+        composeRule.runOnIdle {
+            assertEquals(stoppedReads, reads)
+            owner.registry.currentState = androidx.lifecycle.Lifecycle.State.STARTED
+        }
+        composeRule.mainClock.advanceTimeByFrame()
+        composeRule.runOnIdle { assertEquals(now, displayed) }
+    }
+
     @Test fun pagingErrorKeepsRowsAndRetryCallback() {
         var moreCalls = 0
         render(HermesGatewaySnapshot(recentSessions = RecentSessionsState(

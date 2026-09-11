@@ -20,16 +20,17 @@ import com.unsupportedpastels.hermesandroid.theme.HermesAndroidTheme
 @Preview(name = "All sessions expanded", widthDp = 900, heightDp = 500, uiMode = 32)
 @Composable
 fun RecentSessionsInboxScreenshot() {
+    val nowMillis = 1_800_000_000_000L
     val project = ProjectSummary(ProjectId("sample"), "Mercury", "/workspace/mercury", 2, emptyList())
     val working = SessionSummary(
         DurableSessionId("working"), "Restore inbox rows", projectId = project.id,
         workspacePath = project.primaryPath, preview = "Reuse the existing project inbox presentation",
-        lastActiveEpochSeconds = (System.currentTimeMillis() - 300_000) / 1_000.0,
+        lastActiveEpochSeconds = (nowMillis - 300_000) / 1_000.0,
         messageCount = 12, model = "Example model", profile = "default",
     )
     val idle = working.copy(id = DurableSessionId("idle"), title = "Review compact and expanded layouts",
         preview = "Ready for review", messageCount = 1,
-        lastActiveEpochSeconds = (System.currentTimeMillis() - 7_200_000) / 1_000.0)
+        lastActiveEpochSeconds = (nowMillis - 7_200_000) / 1_000.0)
     HermesAndroidTheme {
         RecentSessionsScreen(
             snapshot = HermesGatewaySnapshot(
@@ -41,6 +42,7 @@ fun RecentSessionsInboxScreenshot() {
             ),
             projects = listOf(project), showBack = true, onBack = {}, onLoad = {}, onLoadMore = {},
             onSessionSelected = {},
+            clock = { nowMillis },
         )
     }
 }
