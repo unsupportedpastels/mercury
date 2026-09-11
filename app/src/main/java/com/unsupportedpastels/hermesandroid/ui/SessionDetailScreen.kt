@@ -21,7 +21,9 @@ import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -878,6 +880,9 @@ internal fun SessionDetailScreen(
                             if (textChanged) onDraftChanged(newValue.text)
                         },
                         enabled = composerEnabled,
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.Sentences,
+                        ),
                         modifier = Modifier
                             .weight(1f)
                             .heightIn(min = 44.dp, max = 132.dp),
