@@ -47,6 +47,11 @@ targets:
         # Where Gradle drops the static MercuryCore KMP framework for Xcode
         # consumption (see AGENTS.md, cross-platform rule).
         FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/mercury-core/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
+      configs:
+        Debug:
+          MERCURY_APNS_ENVIRONMENT: development
+        Release:
+          MERCURY_APNS_ENVIRONMENT: production
     # Builds the KMP framework before compiling Swift. MercuryCore is a hard
     # dependency (AttachmentPolicy is a facade over it), so a JDK is required
     # to build the iOS app — fail here with a clear message instead of a
@@ -98,8 +103,7 @@ targets:
           - fetch
         BGTaskSchedulerPermittedIdentifiers:
           - com.unsupportedpastels.mercury.reconcile
-        # No aps-environment and no remote-notification background mode —
-        # release invariants (there is no APNs sender for Mercury).
+        # Visible APNs alerts do not require silent/background execution.
         # Canonical session deep links (notification taps).
         CFBundleURLTypes:
           - CFBundleURLName: com.unsupportedpastels.mercury.session

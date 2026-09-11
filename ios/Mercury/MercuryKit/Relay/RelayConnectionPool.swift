@@ -30,6 +30,12 @@ actor RelayConnectionPool {
         var opening: Task<ChatConnection, Error>?
         var generation = UUID()
     }
+    private var pushConnectionSink: (@Sendable (RelayPairedTarget, ChatConnection) async -> Void)?
+
+    func setPushConnectionSink(_ sink: @escaping @Sendable (RelayPairedTarget, ChatConnection) async -> Void) {
+        pushConnectionSink = sink
+    }
+
     private var selectedScope: Scope?
     private var selectionRequired: Bool
     private var selecting = false
@@ -182,6 +188,9 @@ actor RelayConnectionPool {
             }
             slot.connection = candidate
             slot.opening = nil
+            if channel == nil, let pushConnectionSink {
+                Task { await pushConnectionSink(target, candidate) }
+            }
             return candidate
         } catch {
             if slot.generation == token { slot.opening = nil }
