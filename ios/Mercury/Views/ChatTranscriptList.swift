@@ -45,10 +45,13 @@ extension ChatView {
                                     role: row.role,
                                     text: row.text
                                 ) {
-                                    MessageBubble(role: row.role, text: row.text, isStreaming: !row.completed)
+                                    if row.role.lowercased() == "assistant", row.completed {
+                                        completedAssistantMessage(in: row.text)
+                                    } else {
+                                        MessageBubble(role: row.role, text: row.text, isStreaming: !row.completed)
+                                    }
                                 }
                                 if row.role.lowercased() == "assistant", row.completed, !row.text.isEmpty {
-                                    managedImages(in: row.text)
                                     if TranscriptPresentationPolicy.shouldShowPlaybackControl(
                                         enabled: showMessagePlaybackControls,
                                         role: row.role,
@@ -66,7 +69,7 @@ extension ChatView {
                             .id(row.id)
                         case .activity(_, let steps, let reasoning, let count):
                             TurnActivityView(steps: steps, answerReasoning: reasoning, stepCount: count,
-                                             media: { AnyView(managedImages(in: $0)) })
+                                             media: { AnyView(completedAssistantMessage(in: $0)) })
                                 .id(entry.id)
                         }
                     }

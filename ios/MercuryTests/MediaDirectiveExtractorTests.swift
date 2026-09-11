@@ -209,4 +209,33 @@ final class MediaDirectiveExtractorTests: XCTestCase {
         XCTAssertEqual(artifacts.first?.displayName, "AA.png")
         XCTAssertEqual(artifacts.first?.type, .image)
     }
+
+    func testMultilineInlineCodeAndEscapedOpeningBracketNeverSelectImages() {
+        let text = """
+        Before ``code
+        ![hidden](/tmp/hidden.png)
+        ends`` after
+        !\\[example](/tmp/synthetic.png)
+        ![visible](/tmp/visible.png)
+        """
+
+        XCTAssertEqual(
+            MediaDirectiveExtractor.managedImageArtifacts(text).map(\.source),
+            ["/tmp/visible.png"]
+        )
+    }
+
+    func testOrderedManagedImageSegmentsKeepImagesBetweenProse() {
+        let segments = MediaDirectiveExtractor.orderedManagedImageSegments(
+            "Before ![one](/tmp/one.png) between\nMEDIA:/tmp/two.png\nafter"
+        )
+
+        XCTAssertEqual(segments, [
+            .text("Before "),
+            .image(source: "/tmp/one.png", stableIdentity: "managed:/tmp/one.png"),
+            .text(" between\n"),
+            .image(source: "/tmp/two.png", stableIdentity: "managed:/tmp/two.png"),
+            .text("\nafter"),
+        ])
+    }
 }

@@ -140,7 +140,7 @@ extension ChatView {
             backgroundTasks: backgroundTasks,
             onRefresh: { Task { await refreshSessionProgress() } },
             onReconnect: { retryConnectionNow() },
-            media: { AnyView(managedImages(in: $0)) }
+            media: { AnyView(completedAssistantMessage(in: $0)) }
         )
     }
 }

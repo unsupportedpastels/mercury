@@ -46,6 +46,11 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
+import com.unsupportedpastels.mercury.core.artifacts.ArtifactExtractor
+import com.unsupportedpastels.mercury.core.artifacts.ManagedImageContentSegmentKind
+import com.unsupportedpastels.mercury.core.artifacts.ManagedImageFormatPolicy
+import com.unsupportedpastels.mercury.core.artifacts.MarkdownFenceSegmentKind
+import com.unsupportedpastels.mercury.core.artifacts.MarkdownPresentationPolicy
 
 internal sealed interface MarkdownBlock
 
@@ -271,28 +276,31 @@ private fun Char.isBase64PayloadCharacter(): Boolean =
  * must render as plain text until more of the stream arrives.
  */
 internal fun stableMarkdownPrefixLength(text: String): Int {
-    var stableEnd = 0
-    var inFence = false
-    var cursor = 0
-    while (cursor < text.length) {
-        val newline = text.indexOf('\n', cursor)
-        val lineEnd = if (newline < 0) text.length else newline
-        val line = text.substring(cursor, lineEnd)
-        if (line.trimStart().startsWith("```")) {
-            inFence = !inFence
-        } else if (!inFence && line.isBlank() && newline >= 0) {
-            stableEnd = newline + 1
-        }
-        if (newline < 0) break
-        cursor = newline + 1
-    }
-    return stableEnd
+    return MarkdownPresentationPolicy.stablePrefixLength(text)
 }
 
-internal fun parseMessageMarkdown(source: String): List<MarkdownBlock> {
+internal fun parseMessageMarkdown(source: String): List<MarkdownBlock> =
+    ArtifactExtractor.orderedManagedImageSegments(source, ManagedImageFormatPolicy.Android).flatMap { content ->
+        when (content.kind) {
+            ManagedImageContentSegmentKind.Image -> listOfNotNull(content.source?.let(::MarkdownImageBlock))
+            ManagedImageContentSegmentKind.Text -> MarkdownPresentationPolicy.fencedSegments(content.text.orEmpty())
+                .flatMap { fence ->
+                    when (fence.kind) {
+                        MarkdownFenceSegmentKind.Code -> listOf(
+                            MarkdownCodeBlock(code = fence.text, language = fence.language),
+                        )
+                        MarkdownFenceSegmentKind.Text -> parseMessageMarkdownText(fence.text)
+                    }
+                }
+        }
+    }
+
+private fun parseMessageMarkdownText(source: String): List<MarkdownBlock> {
     if (source.isEmpty()) return emptyList()
-    val lines = source.replace("\r\n", "\n").replace('\r', '\n').split('\n')
+    val normalizedSource = source.replace("\r\n", "\n").replace('\r', '\n')
+    val lines = normalizedSource.split('\n')
     val blocks = mutableListOf<MarkdownBlock>()
+    val renderedImageSources = mutableSetOf<String>()
     val paragraph = mutableListOf<String>()
 
     fun flushParagraph() {
@@ -313,7 +321,7 @@ internal fun parseMessageMarkdown(source: String): List<MarkdownBlock> {
             val source = mediaSource
             if (validateRemoteMediaUrl(source) || validateGatewayMediaPath(source)) {
                 flushParagraph()
-                blocks += MarkdownImageBlock(source)
+                if (renderedImageSources.add(source)) blocks += MarkdownImageBlock(source)
                 index += 1
                 continue
             }
@@ -324,24 +332,7 @@ internal fun parseMessageMarkdown(source: String): List<MarkdownBlock> {
                 continue
             }
         }
-        if (trimmedStart.startsWith("```")) {
-            flushParagraph()
-            val language = trimmedStart.removePrefix("```").trim()
-                .take(32)
-                .ifBlank { null }
-            val codeLines = mutableListOf<String>()
-            index += 1
-            while (index < lines.size && !lines[index].trimStart().startsWith("```")) {
-                codeLines += lines[index]
-                index += 1
-            }
-            blocks += MarkdownCodeBlock(
-                code = codeLines.joinToString("\n").trimEnd('\n'),
-                language = language,
-            )
-            if (index < lines.size) index += 1
-            continue
-        }
+
         if (line.isBlank()) {
             flushParagraph()
             index += 1

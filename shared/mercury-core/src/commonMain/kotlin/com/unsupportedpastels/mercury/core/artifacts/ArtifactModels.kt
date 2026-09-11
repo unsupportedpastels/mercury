@@ -14,6 +14,12 @@ enum class ArtifactOrigin {
     RemoteUrl,
 }
 
+/** Native image decoder formats intentionally supported by each client. */
+enum class ManagedImageFormatPolicy {
+    Android,
+    Ios,
+}
+
 /**
  * Bounded metadata for one transcript-delivered artifact.
  *
@@ -37,6 +43,49 @@ data class Artifact(
     val location: String
         get() = source
 }
+
+/**
+ * One validated explicit Markdown image occurrence backed by a managed host path.
+ * Offsets are UTF-16 indices into the input string. Duplicate occurrences remain
+ * present so renderers can remove their syntax while [shouldRender] preserves the
+ * artifact extractor's first-identity-wins policy.
+ */
+data class ExplicitLocalMarkdownImage(
+    val source: String,
+    val stableIdentity: String,
+    val startOffset: Int,
+    val endOffsetExclusive: Int,
+    val shouldRender: Boolean,
+)
+
+/** One ordered slice of completed message content for native rendering. */
+enum class ManagedImageContentSegmentKind {
+    Text,
+    Image,
+}
+
+/**
+ * Swift-friendly DTO returned in document order. Exactly one of [text] or
+ * [source] is populated according to [kind].
+ */
+data class ManagedImageContentSegment(
+    val kind: ManagedImageContentSegmentKind,
+    val text: String? = null,
+    val source: String? = null,
+    val stableIdentity: String? = null,
+)
+
+/** Shared fenced-code segmentation consumed by both native Markdown renderers. */
+enum class MarkdownFenceSegmentKind {
+    Text,
+    Code,
+}
+
+data class MarkdownFenceSegment(
+    val kind: MarkdownFenceSegmentKind,
+    val text: String,
+    val language: String? = null,
+)
 
 /** Input and output bounds for the pure transcript extractor. */
 data class ArtifactExtractionLimits(

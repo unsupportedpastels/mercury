@@ -5,7 +5,9 @@ struct TurnActivityView: View {
     let steps: [TranscriptState.Row]
     let answerReasoning: String?
     let stepCount: Int
-    var media: (String) -> AnyView = { _ in AnyView(EmptyView()) }
+    var media: (String) -> AnyView = {
+        AnyView(MessageBubble(role: "assistant", text: $0, isStreaming: false))
+    }
     @State private var expanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -47,7 +49,9 @@ struct TurnActivityView: View {
 /// transcript renderers. No reduction or tool-result parsing in SwiftUI.
 struct ActivityTranscriptContent: View {
     let rows: [TranscriptState.Row]
-    var media: (String) -> AnyView = { _ in AnyView(EmptyView()) }
+    var media: (String) -> AnyView = {
+        AnyView(MessageBubble(role: "assistant", text: $0, isStreaming: false))
+    }
     var body: some View {
         ForEach(coalesceTranscriptEntries(rows, withinTurnActivity: true)) { entry in
             switch entry {
@@ -57,8 +61,11 @@ struct ActivityTranscriptContent: View {
                         ReasoningDisclosure(reasoningText: row.reasoningText, streaming: !row.completed)
                     }
                     if !row.text.isEmpty {
-                        MessageBubble(role: row.role, text: row.text, isStreaming: !row.completed)
-                        if row.completed { media(row.text) }
+                        if row.role.lowercased() == "assistant", row.completed {
+                            media(row.text)
+                        } else {
+                            MessageBubble(role: row.role, text: row.text, isStreaming: !row.completed)
+                        }
                     }
                 }
             case .toolRun(let rows):

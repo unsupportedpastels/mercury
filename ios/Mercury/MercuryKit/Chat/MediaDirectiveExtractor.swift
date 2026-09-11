@@ -80,6 +80,11 @@ struct MediaExtractionMessage: Sendable, Equatable {
     }
 }
 
+enum ManagedMessageContentSegment: Sendable, Equatable {
+    case text(String)
+    case image(source: String, stableIdentity: String)
+}
+
 // MARK: - Extractor (facade over the shared KMP core)
 
 /// Facade over the shared core's `ArtifactExtractor`
@@ -109,6 +114,43 @@ enum MediaDirectiveExtractor {
         limits: ArtifactExtractionLimits = ArtifactExtractionLimits()
     ) -> [Artifact] {
         extract(messages: [MediaExtractionMessage(text: text)], limits: limits)
+    }
+
+    static func managedImageArtifacts(
+        _ text: String,
+        limits: ArtifactExtractionLimits = ArtifactExtractionLimits()
+    ) -> [Artifact] {
+        MercuryCore.ArtifactExtractor.shared
+            .managedImageArtifacts(
+                text: text,
+                formatPolicy: MercuryCore.ManagedImageFormatPolicy.ios,
+                limits: limits.core
+            )
+            .map(Artifact.init)
+    }
+
+    static func orderedManagedImageSegments(
+        _ text: String,
+        limits: ArtifactExtractionLimits = ArtifactExtractionLimits()
+    ) -> [ManagedMessageContentSegment] {
+        MercuryCore.ArtifactExtractor.shared
+            .orderedManagedImageSegments(
+                text: text,
+                formatPolicy: MercuryCore.ManagedImageFormatPolicy.ios,
+                limits: limits.core
+            )
+            .compactMap { segment -> ManagedMessageContentSegment? in
+                if segment.kind == MercuryCore.ManagedImageContentSegmentKind.image,
+                   let source = segment.source,
+                   let identity = segment.stableIdentity {
+                    return .image(source: source, stableIdentity: identity)
+                }
+                if segment.kind == MercuryCore.ManagedImageContentSegmentKind.text,
+                   let text = segment.text {
+                    return .text(text)
+                }
+                return nil
+            }
     }
 }
 

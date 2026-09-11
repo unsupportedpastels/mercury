@@ -60,6 +60,97 @@ class MessageMarkdownTest {
     }
 
     @Test
+    fun parsesExplicitLocalMarkdownImagesInlineWhilePreservingAdjacentProseAndDedupe() {
+        val blocks = parseMessageMarkdown(
+            "MEDIA:/workspace/first.png\n\nBefore ![first](/workspace/first.png) between " +
+                "![second](/workspace/second.jpg) duplicate " +
+                "![first again](/workspace/first.png) after",
+        )
+
+        assertEquals(
+            listOf("/workspace/first.png", "/workspace/second.jpg"),
+            blocks.filterIsInstance<MarkdownImageBlock>().map { it.url },
+        )
+        assertEquals(
+            "Before between duplicate after",
+            blocks.filterIsInstance<MarkdownTextBlock>().joinToString("") { it.plainText },
+        )
+    }
+
+    @Test
+    fun explicitMarkdownImagesDoNotFetchRemoteOrInvalidPathsAndStayInsideCode() {
+        val source = """
+            ![remote](https://example.com/image.png)
+            ![traversal](/workspace/../secret.png)
+            ![double slash](/workspace//image.png)
+            ![backslash](/workspace\image.png)
+            [ordinary local link](/workspace/linked.png)
+            bare /workspace/bare.png
+            `![inline code](/workspace/inline.png)`
+            ```markdown
+            ![fenced](/workspace/fenced.png)
+            ```
+        """.trimIndent()
+
+        val blocks = parseMessageMarkdown(source)
+
+        assertTrue(blocks.filterIsInstance<MarkdownImageBlock>().isEmpty())
+        assertTrue(blocks.filterIsInstance<MarkdownTextBlock>().any { it.plainText.contains("remote") })
+        assertTrue(blocks.filterIsInstance<MarkdownCodeBlock>().any { it.code.contains("fenced") })
+    }
+
+    @Test
+    fun explicitMarkdownImagesHandleEmptyAltCodeEscapesAndNeverCrossLines() {
+        val source = """
+            ``![double tick](/workspace/double.png)``
+            ~~~~markdown
+            ![tilde fenced](/workspace/tilde.png)
+            ~~~
+            ![still fenced](/workspace/still-fenced.png)
+            ~~~~
+            \![escaped](/workspace/escaped.png)
+            ![line break](
+            /workspace/cross-line.png)
+            ![](/workspace/empty-alt.png)
+        """.trimIndent()
+
+        val blocks = parseMessageMarkdown(source)
+
+        assertEquals(
+            listOf("/workspace/empty-alt.png"),
+            blocks.filterIsInstance<MarkdownImageBlock>().map { it.url },
+        )
+        assertTrue(blocks.filterIsInstance<MarkdownCodeBlock>().any { it.code.contains("tilde fenced") })
+        assertTrue(blocks.filterIsInstance<MarkdownTextBlock>().any { it.plainText.contains("escaped") })
+    }
+
+    @Test
+    fun orderedImagesStayBetweenTheirSurroundingProseAndMultilineCodeIsExcluded() {
+        val blocks = parseMessageMarkdown(
+            "Before ![first](/workspace/first.png) middle ``code\n" +
+                "![hidden](/workspace/hidden.png)`` after ![second](/workspace/second.png) end",
+        )
+
+        assertEquals(
+            listOf("text:Before", "image:/workspace/first.png", "text:middle", "image:/workspace/second.png", "text:end"),
+            blocks.mapNotNull { block ->
+                when (block) {
+                    is MarkdownTextBlock -> "text:${block.plainText.trim().substringBefore(' ')}"
+                    is MarkdownImageBlock -> "image:${block.url}"
+                    else -> null
+                }
+            },
+        )
+    }
+
+    @Test
+    fun escapedOpeningBracketImageExampleRemainsText() {
+        val blocks = parseMessageMarkdown("!\\[example](/tmp/synthetic.png)")
+        assertTrue(blocks.filterIsInstance<MarkdownImageBlock>().isEmpty())
+        assertTrue(blocks.filterIsInstance<MarkdownTextBlock>().single().plainText.contains("example"))
+    }
+
+    @Test
     fun parsesGatewayLocalVideoMediaDirectiveAsVideoBlockInsteadOfRawPath() {
         val path = "/workspace/project/scene-00/preview.mp4"
 
