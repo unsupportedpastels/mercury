@@ -106,6 +106,11 @@ struct ChatView: View {
                                      profile: appModel.activeProfile,
                                      durable: state.durableID ?? sessionID)
     }
+    var queuedPromptScope: QueuedPromptScope {
+        QueuedPromptScope(relayTargetID: appModel.activeRelayTarget?.id,
+            origin: appModel.activeRelayTarget?.relayOrigin ?? appModel.serverOrigin ?? "unconfigured",
+            profile: appModel.activeProfile, durableID: state.durableID ?? sessionID)
+    }
     var backgroundTasks: BackgroundTasks {
         appModel.backgroundTasksBySession[backgroundTaskScope] ?? BackgroundTasks()
     }
@@ -162,14 +167,13 @@ struct ChatView: View {
             let now = Int64(clock.date.timeIntervalSince1970 * 1000)
             ComposerBar(
                 draft: $state.draft,
-                errorMessage: Binding(get: { state.composerError }, set: { state.composerError = $0 }),
-                onDiscardUncertainQueue: state.queueAcknowledgementUncertain ? {
-                    state.queuedPromptSubmission.discard()
-                    state.queueAcknowledgementUncertain = false
-                    state.isComposerActionPending = false
-                    state.composerError = nil
+                errorMessage: Binding(get: { state.queuedPromptState.error ?? state.composerError }, set: { state.composerError = $0 }),
+                onDiscardUncertainQueue: state.queuedPromptState.uncertain ? {
+                    state.queuedPromptState.lifecycle.discard()
+                    state.queuedPromptState.uncertain = false
+                    state.queuedPromptState.error = nil
                 } : nil,
-                noticeMessage: state.composerNotice,
+                noticeMessage: state.queuedPromptState.notice ?? state.composerNotice,
                 isSending: state.composerIsBusy,
                 onSend: {
                     sendDraft()
@@ -238,6 +242,9 @@ struct ChatView: View {
             // SwiftUI may recreate the task while the view is still mounted.
             // Android's ViewModel refuses a second open for an already-owned
             // session; make the same admission decision before any await.
+            if let retained = appModel.queuedPromptStates.state(for: queuedPromptScope) {
+                state.queuedPromptState = retained
+            }
             guard !state.didOpen else { return }
             state.didOpen = true
             applyIncomingShare()
@@ -254,6 +261,12 @@ struct ChatView: View {
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             Task { await catchUpAfterForeground() }
+        }
+        .onChange(of: state.queuedPromptState.draftToRestore, initial: true) { _, draft in
+            if let draft, state.draft.isEmpty {
+                state.draft = draft
+                state.queuedPromptState.draftToRestore = nil
+            }
         }
         .onChange(of: state.draft) {
             scheduleSlashCompletion(for: state.draft)

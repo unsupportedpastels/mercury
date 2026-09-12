@@ -75,8 +75,7 @@ final class ChatSessionState {
     var isStopping = false
     var isComposerActionPending = false
     var promptSubmission = PromptSubmissionLifecycle()
-    var queuedPromptSubmission = QueuedPromptLifecycle()
-    var queueAcknowledgementUncertain = false
+    var queuedPromptState = QueuedPromptState()
     var transcriptWindowStartID: String?
     var userMessageScrollGeneration = 0
     var connectionNote: String?
@@ -290,7 +289,7 @@ final class ChatSessionState {
     /// follow-up (or explicitly steer). Only a transport outage, a local RPC,
     /// or pre-stream prompt submission blocks it.
     var composerIsBusy: Bool {
-        isConnectionDown || isComposerActionPending || (isSending && !turnInFlight)
+        isConnectionDown || isComposerActionPending || queuedPromptState.lifecycle.hasPendingAttempt || (isSending && !turnInFlight)
     }
 
     /// The request id of the currently presented sheet, extracted from the event.

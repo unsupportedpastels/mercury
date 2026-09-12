@@ -1913,6 +1913,37 @@ class HermesChatIntegrationTest {
     }
 
     @Test
+    fun replacedQueueControllerLeavesAnExplicitDiscardableUncertainty() = runTest(dispatcher) {
+        val original = ControllerChatSession("runtime-original")
+        val replacement = ControllerChatSession("runtime-replacement")
+        var connects = 0
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(ServerSettingsState.Ready(origin)),
+            client = ChatConnectionClient(), tokenStore = MemoryTokenStore(tokens),
+            chatConnector = HermesChatConnector { _, _ -> if (connects++ == 0) original else replacement },
+            nowEpochSeconds = { 1_900_000_000 },
+        )
+        advanceUntilIdle()
+        viewModel.openSession(durableId)
+        advanceUntilIdle()
+        viewModel.sendMessage(durableId, "Long-running prompt")
+        advanceUntilIdle()
+        original.queueAck = CompletableDeferred()
+        viewModel.sendComposerMessage(durableId, "Unconfirmed next task")
+        runCurrent()
+        original.close()
+        advanceUntilIdle()
+        original.queueAck!!.complete(PromptSubmission("queued"))
+        advanceUntilIdle()
+        val chat = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        assertTrue(chat.queueAcknowledgementUncertain)
+        viewModel.discardUncertainQueue(durableId)
+        assertFalse(viewModel.snapshots.value.chatSessions.getValue(durableId).isQueueSubmitting)
+        assertEquals(1, original.queueCalls.size)
+        assertTrue(replacement.queueCalls.isEmpty())
+    }
+
+    @Test
     fun unknownQueueAckDoesNotAuthorizeDuplicateSend() = runTest(dispatcher) {
         val session = ControllerChatSession()
         val viewModel = chatViewModel(session)

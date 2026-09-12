@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// Owns one explicit `prompt.submit(queued: true)` admission attempt.
 /// It keeps the draft until the server acknowledges the queue so a transport
@@ -34,5 +35,45 @@ struct QueuedPromptLifecycle: Sendable, Equatable {
         guard currentAttempt?.id == attempt.id else { return .stale }
         currentAttempt = nil
         return accepted ? .accepted : .restoreDraft(attempt.draft)
+    }
+}
+
+/// One app-scoped queue receipt. Presentation state can disappear independently.
+@MainActor @Observable
+final class QueuedPromptState {
+    var lifecycle = QueuedPromptLifecycle()
+    var uncertain = false
+    var error: String?
+    var notice: String?
+    var draftToRestore: String?
+}
+
+struct QueuedPromptScope: Hashable {
+    let relayTargetID: UUID?
+    let origin: String
+    let profile: String
+    let durableID: String
+}
+
+@MainActor
+final class QueuedPromptStateStore {
+    static let maxEntries = 64
+    private var states: [QueuedPromptScope: QueuedPromptState] = [:]
+
+    func state(for scope: QueuedPromptScope) -> QueuedPromptState? { states[scope] }
+
+    @discardableResult
+    func retain(_ state: QueuedPromptState, for scope: QueuedPromptScope) -> Bool {
+        if states[scope] != nil { return states[scope] === state }
+        if states.count >= Self.maxEntries {
+            guard let settled = states.first(where: { !$0.value.lifecycle.hasPendingAttempt && $0.value.draftToRestore == nil })?.key else { return false }
+            states.removeValue(forKey: settled)
+        }
+        states[scope] = state
+        return true
+    }
+
+    func remove(origin: String, relayTargetID: UUID? = nil) {
+        states = states.filter { $0.key.origin != origin || $0.key.relayTargetID != relayTargetID }
     }
 }
