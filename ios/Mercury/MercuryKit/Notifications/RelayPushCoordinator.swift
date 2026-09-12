@@ -162,14 +162,17 @@ final class RelayPushCoordinator {
         default: return false
         }
     }
-    func setEnabled(_ value: Bool) {
-        guard enabled != value else { return }
+    /// `enabled` is desired registration, while bindings are acknowledged host
+    /// ownership. Selective fallback retains the latter until removal succeeds.
+    var needsConnection: Bool { enabled || !bindings.isEmpty }
+    func setEnabled(_ value: Bool, retainOwnershipUntilUnregister: Bool = false) {
+        guard enabled != value || (!value && !retainOwnershipUntilUnregister && !bindings.isEmpty) else { return }
         enabled = value; generation = UUID()
         if !value {
             deletePreviewKeys()
-            bindings.removeAll(); persist()
+            if !retainOwnershipUntilUnregister { bindings.removeAll(); persist() }
             status = "Relay push is off. Direct notifications remain best effort."
-            for request in requests.values { enqueueUnregister(request) }
+            for (id, request) in requests { enqueueUnregister(request, targetID: id) }
         } else { reconcile() }
         writeDiagnostic()
     }
@@ -182,6 +185,7 @@ final class RelayPushCoordinator {
     }
     func rotatePreviewKey() { guard previewEnabled else { return }; forcePreviewRotation = true; generation = UUID(); reconcile() }
     func setPreviewCategories(completion: Bool, attention: Bool) {
+        guard currentCompletion != completion || currentAttention != attention else { return }
         defaults.set(completion, forKey: "mercury.notif.preview.completion")
         defaults.set(attention, forKey: "mercury.notif.preview.attention")
         generation = UUID(); reconcile()
@@ -221,19 +225,19 @@ final class RelayPushCoordinator {
         guard scope == Scope(target), target.status == .approved else { return }
         guard connectionID != identity else { return }
         connectionID = identity; self.request = request; requests[target.id] = request; generation = UUID()
-        if !enabled || appleRegistrationUnavailable { enqueueUnregister(request) }
+        if !enabled || appleRegistrationUnavailable { enqueueUnregister(request, targetID: target.id) }
         if enabled { reconcile() }
     }
     func target(for wake: String, targets: [RelayPairedTarget]) -> RelayPairedTarget? {
-        guard enabled, Self.validWake(wake), let binding = bindings.first(where: { $0.wake == wake }) else { return nil }
+        guard Self.validWake(wake), let binding = bindings.first(where: { $0.wake == wake }) else { return nil }
         return targets.first { $0.status == .approved && Scope($0) == binding.scope }
     }
     func ownsDelivery(for target: RelayPairedTarget?) -> Bool {
-        guard enabled, let target else { return false }
+        guard let target else { return false }
         return bindings.contains { $0.scope == Scope(target) }
     }
     func ownsDelivery(for target: RelayPairedTarget?, event: ChatEvent) -> Bool {
-        guard enabled, let target, let binding = bindings.first(where: { $0.scope == Scope(target) }) else { return false }
+        guard let target, let binding = bindings.first(where: { $0.scope == Scope(target) }) else { return false }
         guard binding.previewKeyID != nil else { return true }
         switch event {
         case .messageComplete: return binding.completion == true
@@ -358,7 +362,10 @@ final class RelayPushCoordinator {
             self.writeDiagnostic()
         }
     }
-    private func enqueueUnregister(_ request: @escaping Request) {
+    private func enqueueUnregister(_ request: @escaping Request, targetID: UUID? = nil) {
+        // Snapshot only this target's acknowledged binding. The serialized chain
+        // removes it after host ACK, before any newer registration can commit.
+        let retiring = bindings.filter { $0.scope.id == targetID }
         let previous = work
         work = Task { [weak self] in
             await previous?.value
@@ -367,6 +374,10 @@ final class RelayPushCoordinator {
                 let result = try await request("relay.push.unregister", [:])
                 guard let registered = result["registered"] as? NSNumber,
                       CFGetTypeID(registered) == CFBooleanGetTypeID(), !registered.boolValue else { throw URLError(.badServerResponse) }
+                self?.bindings.removeAll { binding in
+                    retiring.contains { $0.scope == binding.scope && $0.wake == binding.wake }
+                }
+                self?.persist()
             } catch {
                 if self?.enabled == false { self?.status = "Push off on this device. Host removal pending; reconnect to retry." }
             }

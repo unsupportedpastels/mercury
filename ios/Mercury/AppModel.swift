@@ -141,9 +141,9 @@ final class AppModel {
 
     // MARK: - Notification & Live Activity preferences (device-wide)
 
-    let relayPush = RelayPushCoordinator()
+    let relayPush: RelayPushCoordinator
     var pushHomeRevision = UUID()
-    private let notificationPreferencesStore = NotificationPreferencesStore()
+    private let notificationPreferencesStore: NotificationPreferencesStore
 
     /// Sessions this install has opened (Android-parity notification scope for
     /// the background REST reconciler).
@@ -392,8 +392,12 @@ final class AppModel {
         serverCatalogStore: ServerCatalogStore = ServerCatalogStore(),
         offlineCacheStore: OfflineCacheStore = OfflineCacheStore(),
         relayTargetStore: RelayTargetStore = RelayTargetStore(),
-        startupChoiceStore: StartupConnectionChoiceStore = StartupConnectionChoiceStore()
+        startupChoiceStore: StartupConnectionChoiceStore = StartupConnectionChoiceStore(),
+        relayPush: RelayPushCoordinator? = nil,
+        notificationPreferencesStore: NotificationPreferencesStore = NotificationPreferencesStore()
     ) {
+        self.relayPush = relayPush ?? RelayPushCoordinator()
+        self.notificationPreferencesStore = notificationPreferencesStore
         self.serverCatalogStore = serverCatalogStore
         self.offlineCacheStore = offlineCacheStore
         self.relayTargetStore = relayTargetStore
@@ -1591,7 +1595,7 @@ final class AppModel {
     func setActiveRelayTarget(_ target: RelayPairedTarget?) {
         activeRelayTarget = target
         relayPush.select(target)
-        if let target, relayPush.enabled { Task { await synchronizeRelayPush(target) } }
+        if let target, relayPush.needsConnection { Task { await synchronizeRelayPush(target) } }
     }
 
     func syncPushPreferences() {
@@ -1600,8 +1604,12 @@ final class AppModel {
         let selectivePreview = relayPush.previewEnabled && authorized && notificationPreferences.notificationsEnabled && (notificationPreferences.completionEnabled || notificationPreferences.attentionEnabled)
         let enabled = generic || selectivePreview
         relayPush.setPreviewCategories(completion: notificationPreferences.completionEnabled, attention: notificationPreferences.attentionEnabled)
-        relayPush.setEnabled(enabled)
-        if enabled {
+        let deliveryPermitted = authorized && notificationPreferences.notificationsEnabled
+            && (notificationPreferences.completionEnabled || notificationPreferences.attentionEnabled)
+        relayPush.setEnabled(enabled, retainOwnershipUntilUnregister: deliveryPermitted)
+        // Keep APNs and reconnect cleanup alive for an acknowledged selective
+        // registration; preview key revocation does not revoke the host's token.
+        if enabled || (deliveryPermitted && relayPush.needsConnection) {
             UIApplication.shared.registerForRemoteNotifications()
             if let target = activeRelayTarget { Task { await synchronizeRelayPush(target) } }
         }

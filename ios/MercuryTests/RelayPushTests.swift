@@ -3,6 +3,14 @@ import UserNotifications
 import MercuryNotificationPreviewKit
 @testable import Mercury
 
+private final class PushPreferenceClient: LocalNotificationScheduling, @unchecked Sendable {
+    func requestAuthorization() async -> Bool { true }
+    func authorizationGranted() async -> Bool { true }
+    func authorizationStatus() async -> MercuryNotificationAuthorizationStatus { .authorized }
+    func post(_ notification: PendingNotification) async {}
+    func cancel(sessionID: String) async {}
+}
+
 @MainActor
 final class RelayPushTests: XCTestCase {
     private final class RouteReader: PreviewRouteConsuming {
@@ -22,6 +30,91 @@ final class RelayPushTests: XCTestCase {
     private func coordinator(sandbox: Bool = true) -> RelayPushCoordinator {
         RelayPushCoordinator(defaults: UserDefaults(suiteName: "push-tests-\(UUID())")!, sandbox: sandbox)
     }
+    func testAppModelSelectivePreviewDisableRetainsOwnershipUntilUnregisterAcknowledged() async throws {
+        for (completionEnabled, reenable) in [(true, false), (false, false), (true, true), (false, true)] {
+            let defaults = UserDefaults(suiteName: "push-preferences-\(UUID())")!
+            let c = RelayPushCoordinator(defaults: defaults), t = target()
+            let model = AppModel(relayPush: c, notificationPreferencesStore: NotificationPreferencesStore(userDefaults: defaults))
+            model.injectNotificationCoordinator(NotificationCoordinator(client: PushPreferenceClient(), store: UserDefaultsWatermarkStore(userDefaults: defaults)))
+            await model.refreshNotificationAuthorizationStatus()
+            c.setPreview(enabled: true, includeTitle: false, includeResponseExcerpt: false)
+            model.updateNotificationPreferences {
+                $0.notificationsEnabled = true; $0.completionEnabled = completionEnabled; $0.attentionEnabled = !completionEnabled
+            }
+            let first = NSObject(), next = NSObject()
+            var offline = false, unregisters = 0, registers = 0
+            var keyID = ""
+            let unregisterStarted = expectation(description: "unregister began")
+            var releaseUnregister: CheckedContinuation<Void, Never>?
+            let rpc: RelayPushCoordinator.Request = { method, params in
+                if offline { throw URLError(.notConnectedToInternet) }
+                if method == "relay.status" { return ["capabilities": ["push_notifications_v1": true, "push_previews": [
+                    "version": 1, "register_method": "relay.push.preview.register", "unregister_method": "relay.push.unregister",
+                    "aead": "CHACHA20-POLY1305", "max_plaintext_bytes": 1280, "max_title_utf8_bytes": 160, "max_body_utf8_bytes": 640
+                ]]] }
+                if method == "relay.push.unregister" {
+                    unregisters += 1
+                    if unregisters == 1 {
+                        await withCheckedContinuation { releaseUnregister = $0; unregisterStarted.fulfill() }
+                    }
+                    return ["registered": false]
+                }
+                XCTAssertEqual(method, "relay.push.preview.register", "Selective choices must never enable generic push")
+                registers += 1
+                let preview = params["preview"] as! [String: Any]
+                keyID = preview["key_id"] as! String
+                return ["registered": true, "wake_handle": self.wake, "preview": ["version": 1, "key_id": keyID]]
+            }
+            c.select(t); c.receivedToken(Data([1]))
+            c.connected(target: t, identity: ObjectIdentifier(first), request: rpc)
+            await c.waitForWork()
+            let completion = ChatEvent.messageComplete(sessionID: "fixture", text: "done", status: "finished", error: nil, reasoning: nil, warning: nil, failureReason: nil, recoverable: false, billing: nil)
+            let attention = ChatEvent.clarifyRequest(sessionID: "fixture", requestID: "request", question: "prompt", choices: [], multiSelect: false)
+            XCTAssertTrue(c.ownsDelivery(for: t))
+            offline = true
+            // Same sequence as Settings: revoke preview keys, then sync real preferences.
+            c.setPreview(enabled: false, includeTitle: false, includeResponseExcerpt: false)
+            model.syncPushPreferences()
+            XCTAssertFalse(c.enabled, "Desired remote registration is off")
+            XCTAssertNil(try PreviewKeychainRepository().load(environment: "sandbox", wake: wake, keyID: keyID, now: Int64(Date().timeIntervalSince1970)))
+            await c.waitForWork()
+            for _ in 0..<3 { model.syncPushPreferences() }
+            await c.waitForWork()
+            XCTAssertEqual(c.ownsDelivery(for: t, event: completion), completionEnabled)
+            XCTAssertEqual(c.ownsDelivery(for: t, event: attention), !completionEnabled)
+            XCTAssertEqual(c.target(for: wake, targets: [t])?.id, t.id)
+            XCTAssertEqual(registers, 1)
+            let cold = RelayPushCoordinator(defaults: defaults)
+            XCTAssertEqual(cold.target(for: wake, targets: [t])?.id, t.id)
+            offline = false
+            c.connected(target: t, identity: ObjectIdentifier(next), request: rpc)
+            await fulfillment(of: [unregisterStarted], timeout: 2)
+            XCTAssertTrue(c.ownsDelivery(for: t), "An in-flight unregister is not an ACK")
+            if reenable {
+                c.setPreview(enabled: true, includeTitle: false, includeResponseExcerpt: false)
+                model.syncPushPreferences()
+            }
+            releaseUnregister?.resume()
+            await c.waitForWork()
+            XCTAssertEqual(unregisters, 1)
+            XCTAssertEqual(c.ownsDelivery(for: t), reenable)
+            XCTAssertEqual(c.target(for: wake, targets: [t])?.id, reenable ? t.id : nil)
+            XCTAssertEqual(registers, reenable ? 2 : 1)
+            if reenable {
+                XCTAssertEqual(c.ownsDelivery(for: t, event: completion), completionEnabled)
+                XCTAssertEqual(c.ownsDelivery(for: t, event: attention), !completionEnabled)
+                // Explicit master disable still drops ownership synchronously,
+                // even after a selective disable / enable / ACK race.
+                model.updateNotificationPreferences { $0.notificationsEnabled = false }
+                XCTAssertFalse(c.ownsDelivery(for: t))
+                XCTAssertNil(c.target(for: wake, targets: [t]))
+                await c.waitForWork()
+                XCTAssertEqual(unregisters, 2)
+                XCTAssertFalse(c.ownsDelivery(for: t))
+            }
+        }
+    }
+
     func testAppleFailureAfterSuccessClearsPersistedOwnershipAndUnregisters() async {
         let defaults = UserDefaults(suiteName: "failed-push-\(UUID())")!
         let c = RelayPushCoordinator(defaults: defaults), t = target(), owner = NSObject()
