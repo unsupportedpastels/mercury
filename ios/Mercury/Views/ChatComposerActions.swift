@@ -5,13 +5,14 @@ extension ChatView {
     // MARK: Sending
 
     func sendDraft() {
-        guard !state.isComposerActionPending, !state.queuedPromptSubmission.hasPendingAttempt else { return }
+        guard !state.isComposerActionPending, !state.queuedPromptState.lifecycle.hasPendingAttempt else { return }
         let action = M7ComposerPolicy.route(
             draft: state.draft,
             turnActive: state.turnInFlight,
             hasAttachments: !state.stagedAttachments.isEmpty || !state.stagedHostReferences.isEmpty
         )
         state.composerNotice = nil
+        state.queuedPromptState.notice = nil
 
         switch action {
         case .openModelPicker:
@@ -52,12 +53,21 @@ extension ChatView {
             state.composerError = "Not connected — reopen this session to queue a message."
             return
         }
-        guard let attempt = state.queuedPromptSubmission.begin(draft: text) else { return }
+        let scope = queuedPromptScope
+        let queued = appModel.queuedPromptStates.state(for: scope) ?? state.queuedPromptState
+        state.queuedPromptState = queued
+        guard appModel.queuedPromptStates.retain(queued, for: scope) else {
+            state.composerError = "Resolve an existing queued message before starting another."
+            return
+        }
+        guard let attempt = queued.lifecycle.begin(draft: text) else { return }
+        queued.error = nil
+        queued.notice = nil
+        queued.uncertain = false
 
         state.draft = ""
         clearSlashCompletion()
         state.composerError = nil
-        state.isComposerActionPending = true
         Task {
             do {
                 let submission = try await connection.submitPrompt(
@@ -68,28 +78,26 @@ extension ChatView {
                 let outcome = MercuryCore.QueueAcknowledgementPolicy.shared.classify(status: submission.status)
                 await MainActor.run {
                     guard outcome.accepted else {
-                        state.queueAcknowledgementUncertain = true
-                        state.composerError = outcome.notice
+                        queued.uncertain = true
+                        queued.error = outcome.notice
                         return // Retain the attempt and its draft; unknown is not safe to retry.
                     }
-                    guard state.queuedPromptSubmission.resolve(attempt: attempt, accepted: true) != .stale else { return }
-                    state.isComposerActionPending = false
-                    state.composerNotice = outcome.notice
+                    guard queued.lifecycle.resolve(attempt: attempt, accepted: true) != .stale else { return }
+                    queued.notice = outcome.notice
                 }
             } catch is ChatMethodNotFoundError {
                 await MainActor.run {
-                    let result = state.queuedPromptSubmission.resolve(attempt: attempt, accepted: false)
+                    let result = queued.lifecycle.resolve(attempt: attempt, accepted: false)
                     guard case .restoreDraft(let original) = result else { return }
-                    state.isComposerActionPending = false
-                    state.composerError = "This connection does not support queued prompts."
-                    if state.draft.isEmpty { state.draft = original }
+                    queued.error = "This connection does not support queued prompts."
+                    queued.draftToRestore = original
                 }
             } catch {
                 await MainActor.run {
                     // A transport error does not establish rejection. Keep the
                     // captured draft in the attempt, not in a replayable composer.
-                    state.queueAcknowledgementUncertain = true
-                    state.composerError = "Queue acknowledgement unavailable — check the transcript before sending again."
+                    queued.uncertain = true
+                    queued.error = "Queue acknowledgement unavailable — check the transcript before sending again."
                 }
             }
         }

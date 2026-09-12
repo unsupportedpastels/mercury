@@ -187,6 +187,32 @@ final class AppFlowTests: XCTestCase {
         XCTAssertNil(model.pendingSessionRoute)
     }
 
+    func testInvalidatedBootstrapKeepsCatalogFailureDistinctFromRemovedServer() async throws {
+        let persistence = AppFlowCatalogPersistence()
+        persistence.failReads = true
+        let model = makeModel(session: makeSession(), catalogPersistence: persistence)
+        model.showStartupPicker()
+        await model.bootstrapSavedServer()
+        let route = SessionOpenRoute(durableSessionID: "direct-after-wake", serverID: UUID(), profile: "default")
+        model.handleSessionRoute(route)
+        XCTAssertEqual(model.pendingSessionRoute, route)
+        XCTAssertEqual(model.localSettingsError, "Saved connection settings could not be loaded.")
+    }
+
+    func testSignOutDropsOnlyMatchingQueueReceiptScope() {
+        let model = makeModel(session: makeSession())
+        let scope = QueuedPromptScope(relayTargetID: nil, origin: origin, profile: "default", durableID: "session")
+        let other = QueuedPromptScope(relayTargetID: nil, origin: otherOrigin, profile: "default", durableID: "session")
+        let old = QueuedPromptState()
+        _ = old.lifecycle.begin(draft: "Pending")
+        model.queuedPromptStates.retain(old, for: scope)
+        model.queuedPromptStates.retain(QueuedPromptState(), for: other)
+        model.signedOutPreservingServer(origin)
+        old.uncertain = true // A late old callback cannot republish the removed scope.
+        XCTAssertNil(model.queuedPromptStates.state(for: scope))
+        XCTAssertNotNil(model.queuedPromptStates.state(for: other))
+    }
+
     // MARK: - Successful probes
 
     func testUnauthenticatedProbeSetsConnectedAndStoresVersion() async {
@@ -959,7 +985,11 @@ final class AppFlowTests: XCTestCase {
 
 private final class AppFlowCatalogPersistence: ServerCatalogPersisting, @unchecked Sendable {
     private var data: Data?
-    func readCatalogData() throws -> Data? { data }
+    var failReads = false
+    func readCatalogData() throws -> Data? {
+        if failReads { throw URLError(.cannotOpenFile) }
+        return data
+    }
     func writeCatalogData(_ data: Data) throws { self.data = data }
 }
 

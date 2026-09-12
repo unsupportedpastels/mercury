@@ -4024,7 +4024,8 @@ class HermesConnectionViewModel(
 
     /** UI sends preserve the active turn; explicit programmatic replacement/voice uses sendMessage. */
     fun sendComposerMessage(durableSessionId: DurableSessionId, text: String): Job =
-        if (queuedSubmissions.any { it.durableSessionId == durableSessionId && isCurrentControllerOperation(it) }) {
+        if (mutableSnapshots.value.chatSessions[durableSessionId]?.isQueueSubmitting == true ||
+            queuedSubmissions.any { it.durableSessionId == durableSessionId && isCurrentControllerOperation(it) }) {
             viewModelScope.launch { }
         } else if (mutableSnapshots.value.chatSessions[durableSessionId]?.isSending == true) {
             queueMessage(durableSessionId, text)
@@ -4049,6 +4050,7 @@ class HermesConnectionViewModel(
             return viewModelScope.launch { }
         }
         val queueKey = operation
+        val queueProfile = owningProfile(durableSessionId)
         if (!queuedSubmissions.add(queueKey)) return viewModelScope.launch { }
         updateChat(durableSessionId) { it.copy(isQueueSubmitting = true, queueAcknowledgementUncertain = false, error = null, notice = null) }
         return viewModelScope.launch {
@@ -4087,6 +4089,19 @@ class HermesConnectionViewModel(
                     updateChat(durableSessionId) { it.copy(isQueueSubmitting = queueKey in queuedSubmissions) }
                 } else {
                     queuedSubmissions.remove(queueKey)
+                    // A replacement transport must not inherit a permanent
+                    // spinner. Publish only into this same authenticated logical
+                    // session, never a different origin/profile or newer queue.
+                    if (generation == operation.originGeneration && activeOrigin == operation.origin &&
+                        owningProfile(durableSessionId) == queueProfile &&
+                        queuedSubmissions.none { it.durableSessionId == durableSessionId && isCurrentControllerOperation(it) }) {
+                        updateChat(durableSessionId) { current ->
+                            if (!current.isQueueSubmitting) current else current.copy(
+                                queueAcknowledgementUncertain = true,
+                                error = "Queue acknowledgement unavailable — check the transcript before sending again",
+                            )
+                        }
+                    }
                 }
             }
         }

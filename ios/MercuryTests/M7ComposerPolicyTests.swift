@@ -2,6 +2,52 @@ import XCTest
 @testable import Mercury
 
 final class M7ComposerPolicyTests: XCTestCase {
+    @MainActor
+    func testQueuedReceiptSurvivesPresentationReleaseAndRemainsScopeIsolated() throws {
+        let store = QueuedPromptStateStore()
+        let scope = QueuedPromptScope(relayTargetID: nil, origin: "https://hermes.example", profile: "default", durableID: "session")
+        var departing: QueuedPromptState? = QueuedPromptState()
+        let attempt = try XCTUnwrap(departing!.lifecycle.begin(draft: "Unconfirmed next task"))
+        XCTAssertTrue(store.retain(departing!, for: scope))
+        weak var original = departing
+        departing = nil
+        let reopened = try XCTUnwrap(store.state(for: scope))
+        XCTAssertTrue(reopened === original)
+        reopened.uncertain = true
+        reopened.error = "Queue acknowledgement unavailable"
+        XCTAssertTrue(reopened.lifecycle.hasPendingAttempt)
+        XCTAssertNil(reopened.lifecycle.begin(draft: "Duplicate"))
+        XCTAssertNil(store.state(for: .init(relayTargetID: nil, origin: scope.origin, profile: "other", durableID: "session")))
+        XCTAssertNil(store.state(for: .init(relayTargetID: UUID(), origin: scope.origin, profile: "default", durableID: "session")))
+        XCTAssertEqual(reopened.lifecycle.resolve(attempt: attempt, accepted: true), .accepted)
+        XCTAssertFalse(reopened.lifecycle.hasPendingAttempt)
+    }
+
+    @MainActor
+    func testQueueStoreBoundsNeverEvictUnconfirmedWork() throws {
+        let store = QueuedPromptStateStore()
+        for index in 0..<QueuedPromptStateStore.maxEntries {
+            let state = QueuedPromptState()
+            _ = state.lifecycle.begin(draft: "Held")
+            XCTAssertTrue(store.retain(state, for: .init(relayTargetID: nil, origin: "https://hermes.example", profile: "default", durableID: "session-\(index)")))
+        }
+        XCTAssertFalse(store.retain(QueuedPromptState(), for: .init(relayTargetID: nil, origin: "https://hermes.example", profile: "default", durableID: "overflow")))
+        let first = try XCTUnwrap(store.state(for: .init(relayTargetID: nil, origin: "https://hermes.example", profile: "default", durableID: "session-0")))
+        XCTAssertTrue(first.lifecycle.hasPendingAttempt)
+    }
+
+    @MainActor
+    func testQueueStoreAuthenticationCleanupIsScoped() {
+        let store = QueuedPromptStateStore()
+        let direct = QueuedPromptScope(relayTargetID: nil, origin: "https://hermes.example", profile: "default", durableID: "session")
+        let relay = QueuedPromptScope(relayTargetID: UUID(), origin: direct.origin, profile: "default", durableID: "session")
+        store.retain(QueuedPromptState(), for: direct)
+        store.retain(QueuedPromptState(), for: relay)
+        store.remove(origin: direct.origin)
+        XCTAssertNil(store.state(for: direct))
+        XCTAssertNotNil(store.state(for: relay))
+    }
+
     func testNormalDraftSubmitsPrompt() {
         XCTAssertEqual(
             M7ComposerPolicy.route(draft: "  Ship it  ", turnActive: false, hasAttachments: false),
