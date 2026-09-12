@@ -423,6 +423,64 @@ final class RelayPushTests: XCTestCase {
             "capabilities": ["push_notifications_v2": 1]
         ]))
     }
+    // Characterize the production adapter, including Foundation NSNumber bridging.
+    func testRouteAdapterRequiresActualJSONBooleansAndToleratesUnknownFields() throws {
+        for token in ["true", "false", "1", "0", "1.0", "\"true\"", "null", "{}", "[]"] {
+            let status = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(
+                "{\"capabilities\":{\"push_notifications_v1\":\(token),\"push_notifications_v2\":\(token)},\"future\":{}}".utf8
+            )) as? [String: Any])
+            XCTAssertEqual(RelayPushCoordinator.supports(status), token == "true", token)
+            XCTAssertEqual(RelayPushCoordinator.supportsSessionResolution(status), token == "true", token)
+            let result = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(
+                "{\"resolved\":\(token),\"durable_session_id\":\"sid\",\"profile\":\"default\",\"future\":[]}".utf8
+            )) as? [String: Any])
+            XCTAssertEqual(RelayPushCoordinator.resolvedSessionRoute(result) != nil, token == "true", token)
+        }
+        for caps in [NSNull(), [], true, "true"] as [Any] {
+            XCTAssertFalse(RelayPushCoordinator.supportsSessionResolution(["capabilities": caps]))
+        }
+        XCTAssertNil(RelayPushCoordinator.resolvedSessionRoute([:]))
+        XCTAssertNil(RelayPushCoordinator.resolvedSessionRoute(["resolved": true]))
+        XCTAssertNil(RelayPushCoordinator.resolvedSessionRoute(["resolved": false, "durable_session_id": 1]))
+    }
+
+    func testRouteAdapterPreservesUTF8BoundsAndDoesNotTrimOrCanonicalize() {
+        for (field, limit) in [("durable_session_id", 128), ("profile", 64)] {
+            for (value, accepted) in [("", false), (String(repeating: "a", count: limit), true),
+                                      (String(repeating: "a", count: limit + 1), false),
+                                      (String(repeating: "é", count: limit / 2), true),
+                                      (String(repeating: "é", count: limit / 2) + "a", false),
+                                      (" ../ spaced : name ", true), ("\u{2028}\u{2029}", true), ("😀", true)] {
+                var result: [String: Any] = ["resolved": true, "durable_session_id": "sid", "profile": "default", "future": NSObject()]
+                result[field] = value
+                let route = RelayPushCoordinator.resolvedSessionRoute(result)
+                XCTAssertEqual(route != nil, accepted, "\(field): \(value.debugDescription)")
+                if accepted { XCTAssertEqual(field == "profile" ? route?.profile : route?.durableSessionID, value) }
+            }
+            for value in [NSNull(), true, 1, []] as [Any] {
+                var result: [String: Any] = ["resolved": true, "durable_session_id": "sid", "profile": "default"]
+                result[field] = value
+                XCTAssertNil(RelayPushCoordinator.resolvedSessionRoute(result))
+            }
+        }
+    }
+
+    func testRouteAdapterPreservesFoundationControlCharacterContract() {
+        // Exhaustive scalar characterization prevents an ASCII-only or JVM Unicode
+        // category substitute from silently changing the existing native contract.
+        for code in 0...0x10ffff {
+            guard let scalar = UnicodeScalar(code) else { continue }
+            let value = String(scalar)
+            let route = RelayPushCoordinator.resolvedSessionRoute([
+                "resolved": true, "durable_session_id": value, "profile": value
+            ])
+            if (route == nil) != CharacterSet.controlCharacters.contains(scalar) {
+                XCTFail("Control contract differs at U+\(String(code, radix: 16))")
+                return
+            }
+        }
+    }
+
     func testRegistrationWireAndScopedTap() async {
         let c = coordinator(), t = target(), owner = NSObject()
         var calls: [String] = []
