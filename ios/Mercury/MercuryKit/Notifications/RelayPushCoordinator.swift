@@ -32,6 +32,12 @@ final class RelayPushCoordinator {
         var retiredKeyID: String? = nil
         var retiredWake: String? = nil
     }
+    /// Routing metadata only: never a delivery owner or decryption key.
+    struct RetiredPreviewScope: Codable {
+        let scope: Scope
+        let wake: String
+        let expiresAt: Int64
+    }
     private(set) var status = "Relay push is off. Direct notifications remain best effort."
     private(set) var enabled = false
     private(set) var previewEnabled: Bool
@@ -47,6 +53,12 @@ final class RelayPushCoordinator {
     private var forcePreviewRotation = false
     private var work: Task<Void, Never>?
     private var bindings: [Binding]
+    private var retiredPreviewScopes: [RetiredPreviewScope]
+    private let now: () -> Int64
+    private let retiredScopesKey = "mercury.apns.retired-preview-scopes.v1"
+    // A retired key may authenticate one final arrival during its existing
+    // 15-minute grace. That arrival's receipt has its own seven-day lifetime.
+    static let retiredRouteRetention = PreviewRouteStore.maxRetentionSeconds + 900
     private let defaults: UserDefaults
     private let sandbox: Bool
     private let storageKey = "mercury.apns.wake-bindings.v1"
@@ -55,12 +67,25 @@ final class RelayPushCoordinator {
     private let previewTitleKey = "mercury.apns.preview.title.v1"
     private let previewExcerptKey = "mercury.apns.preview.excerpt.v1"
 
-    init(defaults: UserDefaults = .standard, sandbox: Bool = RelayPushCoordinator.isSandboxBuild) {
-        self.defaults = defaults; self.sandbox = sandbox
+    init(defaults: UserDefaults = .standard, sandbox: Bool = RelayPushCoordinator.isSandboxBuild,
+         now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970) }) {
+        self.defaults = defaults; self.sandbox = sandbox; self.now = now
         previewEnabled = defaults.bool(forKey: previewEnabledKey)
         includeTitle = defaults.bool(forKey: previewTitleKey)
         includeResponseExcerpt = defaults.bool(forKey: previewExcerptKey)
         bindings = (defaults.data(forKey: storageKey).flatMap { try? JSONDecoder().decode([Binding].self, from: $0) }) ?? []
+        retiredPreviewScopes = (defaults.data(forKey: retiredScopesKey).flatMap {
+            try? JSONDecoder().decode([RetiredPreviewScope].self, from: $0)
+        }) ?? []
+        if defaults.object(forKey: retiredScopesKey) == nil {
+            // One-time upgrade of the formerly key-cleanup-only predecessor.
+            // Persist immediately so cold launches cannot renew its lifetime.
+            retiredPreviewScopes = bindings.compactMap { binding in
+                guard let wake = binding.retiredWake, Self.validWake(wake) else { return nil }
+                return RetiredPreviewScope(scope: binding.scope, wake: wake, expiresAt: now() + Self.retiredRouteRetention)
+            }
+        }
+        persist()
     }
     nonisolated static var isSandboxBuild: Bool {
         #if DEBUG
@@ -166,11 +191,11 @@ final class RelayPushCoordinator {
     /// ownership. Selective fallback retains the latter until removal succeeds.
     var needsConnection: Bool { enabled || !bindings.isEmpty }
     func setEnabled(_ value: Bool, retainOwnershipUntilUnregister: Bool = false) {
-        guard enabled != value || (!value && !retainOwnershipUntilUnregister && !bindings.isEmpty) else { return }
+        guard enabled != value || (!value && !retainOwnershipUntilUnregister && (!bindings.isEmpty || !retiredPreviewScopes.isEmpty)) else { return }
         enabled = value; generation = UUID()
         if !value {
             deletePreviewKeys()
-            if !retainOwnershipUntilUnregister { bindings.removeAll(); persist() }
+            if !retainOwnershipUntilUnregister { bindings.removeAll(); retiredPreviewScopes.removeAll(); persist() }
             status = "Relay push is off. Direct notifications remain best effort."
             for (id, request) in requests { enqueueUnregister(request, targetID: id) }
         } else { reconcile() }
@@ -208,7 +233,7 @@ final class RelayPushCoordinator {
         token = nil; generation = UUID()
         appleRegistrationUnavailable = true
         deletePreviewKeys()
-        bindings.removeAll(); persist()
+        bindings.removeAll(); retiredPreviewScopes.removeAll(); persist()
         status = "Apple push is unavailable. Notifications remain best effort."
         // Do not cancel/replace the pending-task chain: cleanup must follow an
         // in-flight register, and a fresh callback must register after cleanup.
@@ -232,6 +257,17 @@ final class RelayPushCoordinator {
         guard Self.validWake(wake), let binding = bindings.first(where: { $0.wake == wake }) else { return nil }
         return targets.first { $0.status == .approved && Scope($0) == binding.scope }
     }
+    /// Only a protected authenticated receipt may use historical routing scope.
+    /// Generic wake resolution, inspection RPCs, and delivery ownership continue
+    /// using current bindings exclusively.
+    func previewTarget(for wake: String, targets: [RelayPairedTarget]) -> RelayPairedTarget? {
+        guard Self.validWake(wake) else { return nil }
+        persist() // Prune expired history on reads as well as rotation/reload.
+        let scopes = bindings.filter { $0.wake == wake }.map(\.scope)
+            + retiredPreviewScopes.filter { $0.wake == wake }.map(\.scope)
+        guard let scope = scopes.first, scopes.allSatisfy({ $0 == scope }) else { return nil }
+        return targets.first { $0.status == .approved && Scope($0) == scope }
+    }
     func ownsDelivery(for target: RelayPairedTarget?) -> Bool {
         guard let target else { return false }
         return bindings.contains { $0.scope == Scope(target) }
@@ -249,7 +285,8 @@ final class RelayPushCoordinator {
     func remove(_ target: RelayPairedTarget) {
         let removed = Scope(target)
         deletePreviewKeys(for: removed)
-        bindings.removeAll { $0.scope == removed }; persist()
+        bindings.removeAll { $0.scope == removed }
+        retiredPreviewScopes.removeAll { $0.scope == removed }; persist()
         if let request = requests.removeValue(forKey: target.id) { enqueueUnregister(request) }
         if scope == removed {
             generation = UUID()
@@ -347,6 +384,9 @@ final class RelayPushCoordinator {
                 let retainedID = sameKeyScope ? previousPreview?.retiredKeyID : previousPreview?.previewKeyID
                 let retainedWake = sameKeyScope ? previousPreview?.retiredWake : previousPreview?.wake
                 if previewKeyID == nil { self.deletePreviewKeys(for: scope) }
+                for old in self.bindings where old.scope == scope && old.wake != wake && old.previewKeyID != nil {
+                    self.retainPreviewRouteScope(old)
+                }
                 self.bindings.removeAll { $0.scope == scope || $0.wake == wake }
                 self.bindings.append(Binding(scope: scope, wake: wake, previewKeyID: previewKeyID, completion: previewKeyID == nil ? nil : self.currentCompletion, attention: previewKeyID == nil ? nil : self.currentAttention, retiredKeyID: previewKeyID == nil ? nil : retainedID, retiredWake: previewKeyID == nil ? nil : retainedWake)); self.persist()
                 if previewKeyID != nil { self.forcePreviewRotation = false }
@@ -414,7 +454,21 @@ final class RelayPushCoordinator {
         // Keep delivery/category ownership and wake routing until replacement
         // registration or explicit revocation updates the binding.
     }
-    private func persist() { defaults.set(try? JSONEncoder().encode(bindings), forKey: storageKey) }
+    private func retainPreviewRouteScope(_ binding: Binding) {
+        retiredPreviewScopes.removeAll { $0.scope == binding.scope && $0.wake == binding.wake }
+        retiredPreviewScopes.append(RetiredPreviewScope(scope: binding.scope, wake: binding.wake,
+            expiresAt: now() + Self.retiredRouteRetention))
+    }
+    private func persist() {
+        let timestamp = now()
+        retiredPreviewScopes.removeAll {
+            let remaining = $0.expiresAt.subtractingReportingOverflow(timestamp)
+            return !Self.validWake($0.wake) || remaining.overflow
+                || !(0...Self.retiredRouteRetention).contains(remaining.partialValue)
+        }
+        defaults.set(try? JSONEncoder().encode(bindings), forKey: storageKey)
+        defaults.set(try? JSONEncoder().encode(retiredPreviewScopes), forKey: retiredScopesKey)
+    }
     private func writeDiagnostic() {
         #if DEBUG && targetEnvironment(simulator)
         guard ProcessInfo.processInfo.arguments.contains("-debug-apns-diagnostics") else { return }

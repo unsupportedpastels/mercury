@@ -268,7 +268,7 @@ final class AppModel {
             return NotificationSessionIdentity(scope: scope, sessionID: route.durableSessionID)
         }
         delegate.previewIdentity = { [weak self] route in
-            guard let self, let target = self.relayPush.target(for: route.wake, targets: self.relayTargets),
+            guard let self, let target = self.relayPush.previewTarget(for: route.wake, targets: self.relayTargets),
                   let scope = NotificationSourceScope(origin: target.relayOrigin, relayTargetID: target.id, profile: route.profile) else { return nil }
             return NotificationSessionIdentity(scope: scope, sessionID: route.sessionID)
         }
@@ -1665,7 +1665,7 @@ final class AppModel {
         await loadNotificationPreferences()
         await loadRelayTargets()
         guard generation == startupDecisionGeneration,
-              let target = relayPush.target(for: wake, targets: relayTargets) else { return }
+              let target = relayPush.previewTarget(for: wake, targets: relayTargets) else { return }
         pendingSessionRoute = nil; clearOpenSessionRequest(); pushHomeRevision = UUID()
         await connectRelay(target)
         guard activeRelayTarget?.id == target.id, case .connected = connectionPhase else { return }
