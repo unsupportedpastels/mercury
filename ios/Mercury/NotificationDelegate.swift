@@ -107,14 +107,21 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        handlePayload(response.notification.request.content.userInfo, completionHandler: completionHandler)
+        handlePayload(response.notification.request.content.userInfo,
+                      isRemote: response.notification.request.trigger is UNPushNotificationTrigger,
+                      completionHandler: completionHandler)
     }
 
-    func handlePayload(_ userInfo: [AnyHashable: Any], completionHandler: @escaping () -> Void) {
-        // Acquire an OS execution assertion on main BEFORE acknowledging the
-        // response. Reachability alone cannot keep a cold/background tap alive.
+    func handlePayload(_ userInfo: [AnyHashable: Any], isRemote: Bool = false, completionHandler: @escaping () -> Void) {
+        // Record trusted local intent synchronously before acknowledging. Only
+        // Relay resolution needs an OS assertion; local taps survive its denial.
         // Delegate callbacks need not arrive on main; never block that queue.
         let start: @MainActor () -> Void = { [self] in
+            if !isRemote && userInfo["mercury_wake"] == nil {
+                routeLocalPayload(userInfo)
+                completionHandler()
+                return
+            }
             let lifetime = NotificationRouteLifetime(endTask: endTask)
             lifetime.start(beginTask: beginTask, sleep: routeSleep,
                            completion: completionHandler) { [self] in await routePayload(userInfo) }
@@ -124,26 +131,12 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     }
 
     @MainActor
-    private func routePayload(_ userInfo: [AnyHashable: Any]) async {
-        if let wake = RelayPushCoordinator.wake(from: userInfo),
-           let event = userInfo["mercury_event"] as? String,
-           let onPreviewRoute,
-           let route = previewRoutes?.consume(event: event, wake: wake, now: Int64(Date().timeIntervalSince1970)) {
-            await onPreviewRoute(wake, route.sessionID, route.profile)
-            return
-        }
-        if userInfo["mercury_wake"] == nil,
-           let routeString = userInfo["mercury.route"] as? String,
+    private func routeLocalPayload(_ userInfo: [AnyHashable: Any]) {
+        if let routeString = userInfo["mercury.route"] as? String,
            let url = URL(string: routeString),
            let route = MercuryDeepLink.parse(url),
            let routeHandler = onOpenRoute {
             routeHandler(route)
-            return
-        }
-        if userInfo["mercury_wake"] != nil {
-            if let wake = RelayPushCoordinator.wake(from: userInfo), let onWake {
-                await onWake(wake)
-            }
             return
         }
         if let sessionID = userInfo["mercury.sessionID"] as? String,
@@ -152,6 +145,21 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    @MainActor
+    private func routePayload(_ userInfo: [AnyHashable: Any]) async {
+        // Remote payloads can never supply a trusted local route. Only the
+        // authenticated local receipt can select a preview session/profile.
+        if let wake = RelayPushCoordinator.wake(from: userInfo),
+           let event = userInfo["mercury_event"] as? String,
+           let onPreviewRoute,
+           let route = previewRoutes?.consume(event: event, wake: wake, now: Int64(Date().timeIntervalSince1970)) {
+            await onPreviewRoute(wake, route.sessionID, route.profile)
+            return
+        }
+        if let wake = RelayPushCoordinator.wake(from: userInfo), let onWake {
+            await onWake(wake)
+        }
+    }
 }
 
 /// One assertion per response; the watchdog is independent of routing, so even
