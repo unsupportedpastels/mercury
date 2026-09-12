@@ -198,13 +198,19 @@ final class ChatConnection: @unchecked Sendable {
         )
     }
 
-    func submitPrompt(runtimeSessionID: String, text: String) async throws -> PromptSubmission {
+    func submitPrompt(
+        runtimeSessionID: String,
+        text: String,
+        queued: Bool = false
+    ) async throws -> PromptSubmission {
         let boundedText = try boundedRPCInput(text, maxChars: maxMessageTextChars, label: "prompt text")
         let sessionKey = try boundedRPCInput(runtimeSessionID, maxChars: maxEventIDChars, label: "runtime session ID")
-        let result = try await request("prompt.submit", [
+        var params: [String: Any] = [
             "session_id": sessionKey,
             "text": boundedText,
-        ])
+        ]
+        if queued { params["queued"] = true }
+        let result = try await request("prompt.submit", params)
         guard let status = stringField("status", in: result) else {
             throw ChatError.protocolError("Prompt response was incomplete")
         }
@@ -672,8 +678,8 @@ final class ChatConnection: @unchecked Sendable {
     /// (`gateway.ping`, `session.*`, `prompt.submit`, …) and the `relay.*`
     /// in-process reads the host intercepts at the lease layer. The relay
     /// method policy is the authority over what is permitted on the wire.
-    func relayRequest(_ method: String, params: [String: Any] = [:]) async throws -> [String: Any] {
-        try await request(method, params)
+    func relayRequest(_ method: String, params: [String: Any] = [:], timeoutNanoseconds: UInt64? = nil) async throws -> [String: Any] {
+        try await request(method, params, timeoutNanoseconds: timeoutNanoseconds)
     }
 
     /// Process-local registry: callers may only reconcile IDs already observed on their own runtime.

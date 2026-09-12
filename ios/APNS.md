@@ -4,15 +4,18 @@ Optional native Apple push registration supplements the existing direct-mode loc
 
 ## Contract and privacy
 
-After an approved paired Relay admission, Mercury reads `relay.status`. Only an explicit JSON boolean `capabilities.push_notifications_v1: true` enables the encrypted RPC:
+After an approved paired Relay admission, Mercury reads `relay.status`. An explicit JSON boolean `capabilities.push_notifications_v1: true` enables registration; `capabilities.push_notifications_v2: true` additionally enables encrypted one-time session resolution:
 
 - `relay.push.register`: `device_token` (lowercase hexadecimal), `environment: "sandbox"`.
 - Successful response: `registered: true`, `wake_handle` (43 base64url characters).
 - `relay.push.unregister`: empty parameters; successful response `registered: false`.
+- `relay.push.resolve`: exact `wake_handle`; returns either `{resolved: false}` or `{resolved: true, durable_session_id, profile}` over the fresh encrypted Relay channel.
+
+`RelayPushRoutePolicy` in `shared/mercury-core` owns the v1/v2 capability and resolved-route decoding. It requires actual booleans, preserves the existing 1–256 UTF-8-byte durable ID / 1–64-byte profile limits and control-character rejection, and ignores unknown fields without trimming or canonicalization. Swift only bridges Foundation JSON types and maps the returned destination; native request deadlines, cancellation, and navigation ownership remain unchanged. Android has no push-resolution caller yet, but the same plain-map decoder and common tests are available without adding an Android APNs feature.
 
 APNs alerts contain only `aps.alert.title: "Mercury"`, `aps.alert.body: "An update is available. Open Mercury to continue."`, `aps.sound: "default"`, and the opaque `mercury_wake` handle. No session identifiers, titles, text, prompts, or credentials are sent in the alert. Publisher signing keys never belong in the app.
 
-The private local handle binding includes pairing UUID, relay origin, installation, device identity, and host public key. A tap must resolve to an existing approved pairing; unknown, removed, pending, or malformed bindings do nothing. A valid tap returns to that host's home list. It does not open/resume a conversation or answer pending input. Foreground generic pushes are suppressed; direct local banners retain their existing behavior. Successfully registered Relay targets use APNs-owned delivery rather than also posting local completion notifications.
+The private local handle binding includes pairing UUID, relay origin, installation, device identity, and host public key. A tap must resolve to an existing approved pairing; unknown, removed, pending, or malformed bindings do nothing. On a v2 host, Mercury reconnects to that pairing and consumes the short-lived host-side route over the fresh E2EE channel, then opens the durable session in its recorded profile. If the route is absent, expired, unbound, or the host only supports v1, Mercury safely falls back to that host's Home list. It never resumes a conversation or answers pending input merely because a notification was tapped. Foreground generic pushes are suppressed; direct local banners retain their existing behavior. Successfully registered Relay targets use APNs-owned delivery rather than also posting local completion notifications.
 
 Token changes, fresh connections, and target selections reconcile registration. Generation checks reject stale asynchronous results. Disabling clears local bindings immediately, unregisters Apple remote delivery, and queues host unregistration behind any in-flight registration. Pair removal clears routing immediately and attempts an isolated, dedicated cleanup admission before discarding pairing keys. Host-side unregistration is best effort while offline; it is not a claim that an unreachable host acknowledged revocation.
 

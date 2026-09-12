@@ -11,14 +11,32 @@ extension ChatView {
     /// Parameterized only so the DEBUG fixture can render this production UI
     /// without evaluating ChatView's environment-backed task store directly.
     func transcriptList(backgroundTasks: BackgroundTasks) -> some View {
-        ScrollViewReader { proxy in
+        let entries = foldTranscriptTurns(state.transcript.rows, turnActive: state.activityTurnActive)
+        let windowSize = 100
+        let start = state.transcriptWindowStartID.flatMap { anchor in entries.firstIndex { $0.id == anchor } }
+            ?? max(0, entries.count - windowSize)
+        let end = min(entries.count, start + windowSize)
+        return ScrollViewReader { proxy in
             GeometryReader { viewport in
                 ZStack(alignment: .bottomTrailing) {
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 12) {
-                    if state.hasMoreHistory || state.historyError != nil {
+                        // Measure at most one window. Lazy height estimates broke
+                        // true-tail jumps; bounded eager rows preserve exact geometry
+                        // without retaining every Markdown view from paged history.
+                        VStack(alignment: .leading, spacing: 12) {
+                    if start > 0 || state.hasMoreHistory || state.historyError != nil {
                         Button {
-                            Task { await loadEarlierHistory() }
+                            state.followBottom = false
+                            if start > 0 {
+                                state.transcriptWindowStartID = entries[max(0, start - 75)].id
+                            } else {
+                                Task {
+                                    await loadEarlierHistory()
+                                    state.transcriptWindowStartID = foldTranscriptTurns(
+                                        state.transcript.rows, turnActive: state.activityTurnActive
+                                    ).first?.id
+                                }
+                            }
                         } label: {
                             HStack(spacing: 6) {
                                 if state.isLoadingHistory {
@@ -37,7 +55,7 @@ extension ChatView {
                         .accessibilityLabel(state.historyError.map { _ in "Retry loading earlier messages" } ?? "Load earlier messages")
                         .id(firstRowID)
                     }
-                    ForEach(foldTranscriptTurns(state.transcript.rows, turnActive: state.activityTurnActive)) { entry in
+                    ForEach(Array(entries[start..<end])) { entry in
                         switch entry {
                         case .message(let row):
                             VStack(alignment: .leading, spacing: 4) {
@@ -72,6 +90,13 @@ extension ChatView {
                                              media: { AnyView(completedAssistantMessage(in: $0)) })
                                 .id(entry.id)
                         }
+                    }
+                    if end < entries.count {
+                        Button("Show newer messages") {
+                            let next = min(max(0, entries.count - windowSize), start + 75)
+                            state.transcriptWindowStartID = next + windowSize >= entries.count ? nil : entries[next].id
+                        }
+                        .frame(minHeight: 44)
                     }
                     if let request = state.transcript.pendingRequest, state.pendingRequest == nil {
                         Button("Respond to pending request") {
@@ -159,9 +184,14 @@ extension ChatView {
                        state.pendingRequest == nil,
                        state.pendingSecure == nil {
                         Button {
+                            state.transcriptWindowStartID = nil
                             state.followBottom = true
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                proxy.scrollTo(lastRowID, anchor: .bottom)
+                            Task { @MainActor in
+                                await Task.yield()
+                                guard state.followBottom else { return }
+                                withAnimation(.easeOut(duration: 0.15)) {
+                                    proxy.scrollTo(lastRowID, anchor: .bottom)
+                                }
                             }
                         } label: {
                             Image(systemName: "arrow.down")
@@ -192,7 +222,7 @@ extension ChatView {
     }
 
     private var isTranscriptAtBottom: Bool {
-        TranscriptScrollPosition.isAtBottom(
+        state.transcriptWindowStartID == nil && TranscriptScrollPosition.isAtBottom(
             tailMaxY: state.transcriptTailMaxY,
             viewportHeight: state.transcriptViewportHeight
         )

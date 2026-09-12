@@ -42,14 +42,34 @@ struct RelayPushFixtureView: View {
         .task {
             delegate.onWake = { handle in
                 if let mapped = push.target(for: handle, targets: [target]) {
-                    destination = "Home · \(mapped.displayLabel)"
+                    let route = await RelayPushCoordinator.resolveSessionRoute(wake: handle) { method, _ in
+                        if method == "relay.status" {
+                            return ["capabilities": [
+                                "push_notifications_v1": true,
+                                "push_notifications_v2": true,
+                            ]]
+                        }
+                        return [
+                            "resolved": true,
+                            "durable_session_id": "fixture-session",
+                            "profile": "default",
+                        ]
+                    }
+                    destination = route.map {
+                        "Session · \($0.durableSessionID) · \(mapped.displayLabel)"
+                    } ?? "Home · \(mapped.displayLabel)"
                 }
             }
             push.select(target); push.setEnabled(true)
             push.receivedToken(Data(UUID().uuidString.utf8))
             let unsupported = ProcessInfo.processInfo.arguments.contains("-uitest-push-unsupported")
             push.connected(target: target, identity: ObjectIdentifier(owner)) { method, _ in
-                if method == "relay.status" { return ["capabilities": ["push_notifications_v1": !unsupported]] }
+                if method == "relay.status" {
+                    return ["capabilities": [
+                        "push_notifications_v1": !unsupported,
+                        "push_notifications_v2": !unsupported,
+                    ]]
+                }
                 if method == "relay.push.register" { return ["registered": true, "wake_handle": wake] }
                 if method == "relay.push.unregister" { return ["registered": false] }
                 unexpectedRPC += 1

@@ -43,13 +43,16 @@ final class SFSpeechDictationRecognizer: DictationRecognizing {
             Task { @MainActor in onLevel(level) }
         }
 
-        task = recognizer.recognitionTask(with: request) { result, error in
+        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             Task { @MainActor in
                 if let result {
                     onTranscript(result.bestTranscription.formattedString, result.isFinal)
                 }
                 if error != nil, result?.isFinal != true {
                     onFailure(.recognitionFailed)
+                }
+                if result?.isFinal == true || error != nil {
+                    self?.releaseRecognitionResources()
                 }
             }
         }
@@ -64,7 +67,7 @@ final class SFSpeechDictationRecognizer: DictationRecognizing {
 
     func stop() {
         request?.endAudio()
-        tearDownAudio(cancelRecognition: false)
+        stopAudioCapture()
     }
 
     func cancel() {
@@ -72,12 +75,20 @@ final class SFSpeechDictationRecognizer: DictationRecognizing {
     }
 
     private func tearDownAudio(cancelRecognition: Bool) {
+        stopAudioCapture()
+        if cancelRecognition { task?.cancel() }
+        releaseRecognitionResources()
+    }
+
+    private func stopAudioCapture() {
         if audioEngine.isRunning { audioEngine.stop() }
         audioEngine.inputNode.removeTap(onBus: 0)
-        if cancelRecognition { task?.cancel() }
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    private func releaseRecognitionResources() {
         task = nil
         request = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     nonisolated private static func normalizedLevel(_ buffer: AVAudioPCMBuffer) -> Float {

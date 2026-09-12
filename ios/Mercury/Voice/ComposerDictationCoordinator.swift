@@ -113,6 +113,27 @@ final class ComposerDictationCoordinator: ObservableObject {
         timeoutTask?.cancel()
         timeoutTask = nil
         recognizer.stop()
+        recognizer.cancel()
+        state = .idle
+    }
+
+    /// Send-boundary stop. End microphone capture, allow Speech a short bounded
+    /// window to deliver its final hypothesis, then freeze the draft. Manual
+    /// mic stop remains immediate via `stop()`.
+    func finishForSubmission() async {
+        guard isActive else { return }
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        let attempt = generation
+        recognizer.stop()
+        do {
+            try await sleep(.milliseconds(350))
+        } catch {
+            // The owning view/session can cancel without reviving this attempt.
+        }
+        guard generation == attempt else { return }
+        generation &+= 1
+        recognizer.cancel()
         state = .idle
     }
 

@@ -96,6 +96,8 @@ data class ChatSessionSnapshot(
     val isLoading: Boolean = false,
     val isSending: Boolean = false,
     val isStopping: Boolean = false,
+    val isQueueSubmitting: Boolean = false,
+    val queueAcknowledgementUncertain: Boolean = false,
     val error: String? = null,
     val notice: String? = null,
     val billingNotice: ChatBillingNotice? = null,

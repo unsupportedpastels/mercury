@@ -1,11 +1,16 @@
 import Foundation
 import Observation
 import CoreFoundation
+import MercuryCore
 
 /// Native APNs lifecycle only. Tokens travel exclusively in authenticated Relay RPCs.
 @MainActor @Observable
 final class RelayPushCoordinator {
     typealias Request = @MainActor (String, [String: Any]) async throws -> [String: Any]
+    struct ResolvedSessionRoute: Equatable, Sendable {
+        let durableSessionID: String
+        let profile: String
+    }
     struct Scope: Codable, Equatable {
         let id: UUID
         let origin: String
@@ -55,10 +60,43 @@ final class RelayPushCoordinator {
         return wake
     }
     nonisolated static func supports(_ status: [String: Any]) -> Bool {
-        guard let caps = status["capabilities"] as? [String: Any],
-              let value = caps["push_notifications_v1"] as? NSNumber,
-              CFGetTypeID(value) == CFBooleanGetTypeID() else { return false }
-        return value.boolValue
+        MercuryCore.RelayPushRoutePolicy.shared.supports(status: sharedPushStatus(status))
+    }
+    nonisolated static func supportsSessionResolution(_ status: [String: Any]) -> Bool {
+        MercuryCore.RelayPushRoutePolicy.shared.supportsSessionResolution(status: sharedPushStatus(status))
+    }
+    nonisolated static func resolvedSessionRoute(_ result: [String: Any]) -> ResolvedSessionRoute? {
+        var wire = result
+        wire["resolved"] = sharedPushValue(result["resolved"])
+        guard let route = MercuryCore.RelayPushRoutePolicy.shared.resolvedSessionRoute(result: wire) else { return nil }
+        return ResolvedSessionRoute(durableSessionID: route.durableSessionId, profile: route.profile)
+    }
+    // Foundation's NSNumber can bridge numeric 1 as Bool. Preserve its JSON type
+    // explicitly for Kotlin's plain-map API; all acceptance policy stays shared.
+    nonisolated private static func sharedPushValue(_ value: Any?) -> Any? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return value }
+        return KotlinBoolean(bool: number.boolValue)
+    }
+    nonisolated private static func sharedPushStatus(_ status: [String: Any]) -> [String: Any] {
+        var wire = status
+        if var caps = status["capabilities"] as? [String: Any] {
+            for key in ["push_notifications_v1", "push_notifications_v2"] { caps[key] = sharedPushValue(caps[key]) }
+            wire["capabilities"] = caps
+        }
+        return wire
+    }
+    static func resolveSessionRoute(wake: String, request: Request) async -> ResolvedSessionRoute? {
+        guard validWake(wake) else { return nil }
+        do {
+            let status = try await request("relay.status", [:])
+            guard supportsSessionResolution(status) else { return nil }
+            let result = try await request("relay.push.resolve", ["wake_handle": wake])
+            return resolvedSessionRoute(result)
+        } catch {
+            // V1/older or temporarily unavailable hosts retain the existing
+            // safe fallback: select the mapped Relay host's Home screen.
+            return nil
+        }
     }
     nonisolated static func genericPushEnabled(_ preferences: MercuryNotificationPreferences, authorized: Bool) -> Bool {
         // This first delivery contract is intentionally content-free and cannot

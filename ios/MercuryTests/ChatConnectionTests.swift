@@ -286,6 +286,28 @@ final class ChatConnectionTests: XCTestCase {
         XCTAssertTrue(sent.contains(#""jsonrpc":"2.0""#))
     }
 
+    func testExplicitQueuedPromptUsesOfficialRunAfterFlag() async throws {
+        let socket = ConnectionTestSocket(frames: [])
+        socket.autoRespond = { sent in
+            guard sent.contains(#""method":"prompt.submit""#) else { return nil }
+            return #"{"jsonrpc":"2.0","id":1,"result":{"status":"queued"}}"#
+        }
+        let connection = try ChatConnection(socket: socket)
+        _ = connection.start()
+
+        let submission = try await connection.submitPrompt(
+            runtimeSessionID: "rt-active",
+            text: "run after the current response",
+            queued: true
+        )
+
+        XCTAssertEqual(submission.status, "queued")
+        let sent = socket.lastSent ?? ""
+        XCTAssertTrue(sent.contains(#""queued":true"#), sent)
+        XCTAssertFalse(sent.contains("session.steer"), sent)
+        XCTAssertFalse(sent.contains("session.interrupt"), sent)
+    }
+
     func testMethodNotFoundSurfacesMethodName() async throws {
         // Same auto-reply pattern: respond to prompt.submit with -32601.
         let socket = ConnectionTestSocket(frames: [])

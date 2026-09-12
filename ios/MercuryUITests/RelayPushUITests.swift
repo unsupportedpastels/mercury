@@ -15,13 +15,15 @@ final class RelayPushUITests: XCTestCase {
         app.buttons["Deliver direct local notification"].tap()
         XCTAssertEqual(app.staticTexts["push-fixture-presentation"].label, "Direct local banner preserved")
     }
-    func testGenericTapSelectsMappedHomeWithoutMutation() {
+    func testGenericTapResolvesMappedSessionWithoutMutation() {
         let app = launch()
         let active = NSPredicate(format: "label CONTAINS %@", "Relay push active")
         expectation(for: active, evaluatedWith: app.staticTexts["push-fixture-status"])
         waitForExpectations(timeout: 10)
         app.buttons["Tap generic push"].tap()
-        XCTAssertTrue(app.staticTexts["Home · Push fixture host"].waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            app.staticTexts["Session · fixture-session · Push fixture host"].waitForExistence(timeout: 5)
+        )
         XCTAssertEqual(app.staticTexts["push-fixture-mutations"].label, "Mutation RPCs: 0")
         XCTAssertFalse(app.buttons["Send"].exists)
     }

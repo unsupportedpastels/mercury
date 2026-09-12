@@ -186,6 +186,7 @@ fun HermesApp(
     onSendVoiceMessage: (DurableSessionId, String, Boolean) -> Unit = { _, _, _ -> },
     onSendMessage: (DurableSessionId, String) -> Unit = { _, _ -> },
     onSteerMessage: (DurableSessionId, String) -> Unit = { _, _ -> },
+    onDiscardUncertainQueue: (DurableSessionId) -> Unit = {},
     onReasoningSelected: (DurableSessionId, String) -> Unit = { _, _ -> },
     onFastSelected: (DurableSessionId, Boolean) -> Unit = { _, _ -> },
     onClarificationResponse: (DurableSessionId, String, String?, String) -> Unit = { _, _, _, _ -> },
@@ -278,11 +279,10 @@ fun HermesApp(
     val drafts = rememberSaveable(saver = DraftsSaver) { mutableStateMapOf() }
     val hostReferences = rememberSaveable(saver = DraftsSaver) { mutableStateMapOf() }
     val hostReferenceScopeKey = "$connectionScopeKey\u0000${snapshot.selectedProfile}"
-    // Owned by the app, not the detail route: navigation must not lose an
-    // in-flight acknowledgment. A transport/profile switch invalidates it.
-    val pendingComposerSubmissions = remember(hostReferenceScopeKey) {
-        mutableStateMapOf<DurableSessionId, PendingComposerSubmission>()
-    }
+    // The Activity ViewModelStore survives rotation/fold/window recreation,
+    // just like the connection owner still awaiting the acknowledgement.
+    val composerSubmissionOwner = androidx.lifecycle.viewmodel.compose.viewModel<ComposerSubmissionOwner>()
+    val pendingComposerSubmissions = composerSubmissionOwner.submissions(hostReferenceScopeKey)
     LaunchedEffect(snapshot.chatSessions, pendingComposerSubmissions.toMap()) {
         pendingComposerSubmissions.toMap().forEach { (sessionId, pending) ->
             val chat = snapshot.chatSessions[sessionId] ?: return@forEach
@@ -799,7 +799,8 @@ fun HermesApp(
                             onSlashCompletionRequested(session.id, updated)
                         },
                         canSend = snapshot.authenticationState == AuthenticationState.Authenticated &&
-                            !projectDraftMissingWorkspace,
+                            !projectDraftMissingWorkspace &&
+                            pendingComposerSubmissions.size < ComposerSubmissionOwner.MAX_PENDING,
                         attachments = attachments[session.id].orEmpty(),
                         hostReferences = stagedHostReferences,
                         onAddAttachments = { candidates -> onAddAttachments(session.id, candidates) },
@@ -817,7 +818,10 @@ fun HermesApp(
                                 .filterNot { it == reference }
                                 .joinToString("\n")
                         },
-                        onSend = { text ->
+                        onSend = send@{ text ->
+                            if (session.id in pendingComposerSubmissions ||
+                                pendingComposerSubmissions.size >= ComposerSubmissionOwner.MAX_PENDING
+                            ) return@send
                             onSlashCompletionRequested(session.id, "")
                             val prompt = (stagedHostReferences + text.takeIf(String::isNotBlank))
                                 .filterNotNull()
@@ -834,6 +838,12 @@ fun HermesApp(
                             onSendMessage(session.id, prompt)
                         },
                         onSteer = { text -> onSteerMessage(session.id, text) },
+                        onDiscardUncertainQueue = {
+                            pendingComposerSubmissions.remove(session.id)?.let { pending ->
+                                if (drafts[draftKey] == pending.draft) drafts[draftKey] = ""
+                            }
+                            onDiscardUncertainQueue(session.id)
+                        },
                         onReasoningSelected = { effort -> onReasoningSelected(session.id, effort) },
                         onFastSelected = { fast -> onFastSelected(session.id, fast) },
                         onOpenModelPicker = {

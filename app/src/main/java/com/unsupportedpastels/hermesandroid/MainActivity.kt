@@ -194,8 +194,9 @@ class MainActivity : ComponentActivity() {
                         connectionViewModel.createProjectSession(projectId, "New task")
                     },
                     onOpenSession = connectionViewModel::openSession,
-                    onSendMessage = connectionViewModel::sendMessage,
+                    onSendMessage = connectionViewModel::sendComposerMessage,
                     onSteerMessage = connectionViewModel::steerSession,
+                    onDiscardUncertainQueue = connectionViewModel::discardUncertainQueue,
                     onReasoningSelected = connectionViewModel::setReasoningEffort,
                     onFastSelected = connectionViewModel::setFast,
                     onClarificationResponse = { sessionId, requestId, questionId, answer ->
@@ -303,6 +304,7 @@ internal fun HermesAppHost(
     onOpenSession: (DurableSessionId) -> Unit = {},
     onSendMessage: (DurableSessionId, String) -> Unit = { _, _ -> },
     onSteerMessage: (DurableSessionId, String) -> Unit = { _, _ -> },
+    onDiscardUncertainQueue: (DurableSessionId) -> Unit = {},
     onReasoningSelected: (DurableSessionId, String) -> Unit = { _, _ -> },
     onFastSelected: (DurableSessionId, Boolean) -> Unit = { _, _ -> },
     onClarificationResponse: (DurableSessionId, String, String?, String) -> Unit = { _, _, _, _ -> },
@@ -607,6 +609,7 @@ internal fun HermesAppHost(
         voiceScreenOffContinuation = voiceScreenOffContinuation,
         onSendMessage = onSendMessage,
         onSteerMessage = onSteerMessage,
+        onDiscardUncertainQueue = onDiscardUncertainQueue,
         onReasoningSelected = onReasoningSelected,
         onFastSelected = onFastSelected,
         onClarificationResponse = onClarificationResponse,

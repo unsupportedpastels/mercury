@@ -13,6 +13,11 @@ struct ChatTranscriptScrollFixtureView: View {
     @State private var loaded = false
     @State private var streamChunk = 0
 
+    private let fixtureLine = "A deliberately uneven Markdown line makes lazy row estimates diverge from their measured heights."
+    private var usesStressTranscript: Bool {
+        ProcessInfo.processInfo.arguments.contains("-uitest-chat-scroll-stress")
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -20,15 +25,30 @@ struct ChatTranscriptScrollFixtureView: View {
                     state.isSending = true
                     streamChunk += 1
                     state.transcript.ensureInflightAssistantRow(
-                        text: "Synthetic streaming response\n" + String(
-                            repeating: "A growing response line exercises follow scrolling.\n",
-                            count: streamChunk * 12
-                        ),
+                        text: syntheticStreamingText(lineCount: streamChunk * 120),
                         completed: false
                     )
                 }
                 .buttonStyle(.bordered)
                 .padding(8)
+
+                if usesStressTranscript {
+                    Button("Start synthetic stream burst") {
+                        Task { @MainActor in
+                            state.isSending = true
+                            for chunk in 1...8 {
+                                streamChunk = chunk
+                                state.transcript.ensureInflightAssistantRow(
+                                    text: syntheticStreamingText(lineCount: chunk * 120),
+                                    completed: false
+                                )
+                                try? await Task.sleep(for: .milliseconds(80))
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .padding(.bottom, 8)
+                }
 
                 ChatView(fixtureState: state).transcriptList(backgroundTasks: BackgroundTasks())
             }
@@ -43,15 +63,31 @@ struct ChatTranscriptScrollFixtureView: View {
             // load changes row count, matching the real REST-load lifecycle.
             try? await Task.sleep(for: .milliseconds(250))
             var messages: [(role: String, content: String)] = []
-            for index in 1...35 {
+            for index in 1...(usesStressTranscript ? 120 : 35) {
                 messages.append((
                     role: index.isMultiple(of: 2) ? "assistant" : "user",
-                    content: "Synthetic message \(index)\nA second line makes the transcript tall enough to scroll."
+                    content: syntheticHistoryText(index: index)
                 ))
             }
             messages.append((role: "assistant", content: "Synthetic latest message"))
             state.transcript.loadTranscript(messages)
         }
+    }
+
+    private func syntheticHistoryText(index: Int) -> String {
+        let lineCount = (index * 17).quotientAndRemainder(dividingBy: 23).remainder + 1
+        let body = String(repeating: "\(fixtureLine)\n", count: lineCount)
+        if index.isMultiple(of: 5) {
+            return "Synthetic message \(index)\n\n### Variable-height section\n\n\(body)"
+        }
+        return "Synthetic message \(index)\n\(body)"
+    }
+
+    private func syntheticStreamingText(lineCount: Int) -> String {
+        "Synthetic streaming response\n" + String(
+            repeating: "A growing response line exercises follow scrolling.\n",
+            count: lineCount
+        )
     }
 }
 #endif

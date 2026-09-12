@@ -1,16 +1,18 @@
 import SwiftUI
+import MercuryCore
 
 extension ChatView {
     // MARK: Sending
 
     func sendDraft() {
-        guard !state.isComposerActionPending else { return }
+        guard !state.isComposerActionPending, !state.queuedPromptState.lifecycle.hasPendingAttempt else { return }
         let action = M7ComposerPolicy.route(
             draft: state.draft,
             turnActive: state.turnInFlight,
             hasAttachments: !state.stagedAttachments.isEmpty || !state.stagedHostReferences.isEmpty
         )
         state.composerNotice = nil
+        state.queuedPromptState.notice = nil
 
         switch action {
         case .openModelPicker:
@@ -26,6 +28,9 @@ extension ChatView {
         case .steer(let text):
             steerActiveTurn(text)
 
+        case .queue(let text):
+            queueAfterActiveTurn(text)
+
         case .submit(let text):
             submitPrompt(text)
 
@@ -39,6 +44,61 @@ extension ChatView {
                 state.composerError = "There is no active turn to steer."
             case .attachmentsUnavailableWhileSteering:
                 state.composerError = "Attachments are unavailable while steering an active turn."
+            }
+        }
+    }
+
+    private func queueAfterActiveTurn(_ text: String) {
+        guard let connection = state.connection, let runtimeSessionID = state.runtimeSessionID else {
+            state.composerError = "Not connected — reopen this session to queue a message."
+            return
+        }
+        let scope = queuedPromptScope
+        let queued = appModel.queuedPromptStates.state(for: scope) ?? state.queuedPromptState
+        state.queuedPromptState = queued
+        guard appModel.queuedPromptStates.retain(queued, for: scope) else {
+            state.composerError = "Resolve an existing queued message before starting another."
+            return
+        }
+        guard let attempt = queued.lifecycle.begin(draft: text) else { return }
+        queued.error = nil
+        queued.notice = nil
+        queued.uncertain = false
+
+        state.draft = ""
+        clearSlashCompletion()
+        state.composerError = nil
+        Task {
+            do {
+                let submission = try await connection.submitPrompt(
+                    runtimeSessionID: runtimeSessionID,
+                    text: text,
+                    queued: true
+                )
+                let outcome = MercuryCore.QueueAcknowledgementPolicy.shared.classify(status: submission.status)
+                await MainActor.run {
+                    guard outcome.accepted else {
+                        queued.uncertain = true
+                        queued.error = outcome.notice
+                        return // Retain the attempt and its draft; unknown is not safe to retry.
+                    }
+                    guard queued.lifecycle.resolve(attempt: attempt, accepted: true) != .stale else { return }
+                    queued.notice = outcome.notice
+                }
+            } catch is ChatMethodNotFoundError {
+                await MainActor.run {
+                    let result = queued.lifecycle.resolve(attempt: attempt, accepted: false)
+                    guard case .restoreDraft(let original) = result else { return }
+                    queued.error = "This connection does not support queued prompts."
+                    queued.draftToRestore = original
+                }
+            } catch {
+                await MainActor.run {
+                    // A transport error does not establish rejection. Keep the
+                    // captured draft in the attempt, not in a replayable composer.
+                    queued.uncertain = true
+                    queued.error = "Queue acknowledgement unavailable — check the transcript before sending again."
+                }
             }
         }
     }

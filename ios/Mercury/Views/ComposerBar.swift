@@ -19,6 +19,7 @@ import MercuryCore
 struct ComposerBar: View {
     @Binding var draft: String
     @Binding var errorMessage: String?
+    var onDiscardUncertainQueue: (() -> Void)? = nil
     var noticeMessage: String? = nil
     let isSending: Bool
     let onSend: () -> Void
@@ -27,6 +28,8 @@ struct ComposerBar: View {
     var onStop: (() -> Void)? = nil
     /// Active assistant turn: text remains sendable and routes to session.steer.
     var isSteering: Bool = false
+    /// Plain active-turn Send queues a distinct next turn.
+    var isQueueing: Bool = false
     /// Disabled while steering so bytes can never enter the active-turn path.
     var attachmentsEnabled: Bool = true
 
@@ -65,6 +68,7 @@ struct ComposerBar: View {
     @State private var showFileImporter = false
     @State private var showHostFiles = false
     @State private var dictationActive = false
+    @State private var finishingDictationForSend = false
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -85,6 +89,12 @@ struct ComposerBar: View {
                     .transition(.opacity)
             }
 
+
+            if let onDiscardUncertainQueue {
+                Button("Discard local queue attempt", action: onDiscardUncertainQueue)
+                    .font(.footnote)
+                    .accessibilityHint("Does not cancel or resend server work. Check the transcript before repeating the message.")
+            }
 
             if !attachments.isEmpty && !isSteering {
                 AttachmentChipRow(
@@ -125,7 +135,7 @@ struct ComposerBar: View {
                     .onSubmit(send)
 
                 if let dictation {
-                    DictationButton(dictation: dictation, enabled: !isSteering)
+                    DictationButton(dictation: dictation)
                 }
 
                 Button(action: primaryAction) {
@@ -136,7 +146,7 @@ struct ComposerBar: View {
                         .foregroundStyle(primaryActionForeground)
                 }
                 .disabled(!primaryActionEnabled)
-                .accessibilityLabel(showStop ? "Stop Hermes response" : (isSteering ? "Steer active turn" : "Send message"))
+                .accessibilityLabel(showStop ? "Stop Hermes response" : (isQueueing ? "Queue message" : (isSteering ? "Steer active turn" : "Send message")))
                 .accessibilityValue(showStop ? (isStopping ? "Stopping" : "Ready to stop") : "")
             }
             .padding(6)
@@ -403,7 +413,7 @@ struct ComposerBar: View {
     }
 
     private var primaryActionEnabled: Bool {
-        showStop ? !isStopping && onStop != nil : canSend
+        showStop ? !isStopping && onStop != nil : canSend && !finishingDictationForSend
     }
 
     private var primaryActionBackground: Color {
@@ -422,7 +432,22 @@ struct ComposerBar: View {
     }
 
     private func send() {
-        guard canSend else { return }
+        guard canSend, !finishingDictationForSend else { return }
+        if dictationActive, let dictation {
+            // One tap owns the whole boundary: stop capture, briefly accept the
+            // recognizer's final hypothesis, then submit exactly once. The
+            // coordinator invalidates the attempt before returning, so later
+            // callbacks cannot repopulate an accepted draft.
+            composerFocused = false
+            withAnimation { errorMessage = nil }
+            finishingDictationForSend = true
+            Task { @MainActor in
+                await dictation.finishForSubmission()
+                finishingDictationForSend = false
+                onSend()
+            }
+            return
+        }
         // Submission is an explicit user boundary: release first responder
         // before the parent starts changing transcript/layout state. Keeping
         // this in the stable composer view avoids a keyboard-dismiss/re-focus

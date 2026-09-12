@@ -61,8 +61,12 @@ enum ComposerSendPolicy {
         hasAttachments: Bool,
         hasHostReferences: Bool
     ) -> Bool {
-        guard !isSending, !dictationActive else { return false }
+        guard !isSending else { return false }
         let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // App-owned dictation is an input source, not an active assistant turn.
+        // Once partial text exists, Send remains available and atomically
+        // freezes capture at the action boundary before prompt submission.
+        if dictationActive { return hasText }
         if isSteering { return hasText }
         return hasText || hasAttachments || hasHostReferences
     }

@@ -106,6 +106,11 @@ struct ChatView: View {
                                      profile: appModel.activeProfile,
                                      durable: state.durableID ?? sessionID)
     }
+    var queuedPromptScope: QueuedPromptScope {
+        QueuedPromptScope(relayTargetID: appModel.activeRelayTarget?.id,
+            origin: appModel.activeRelayTarget?.relayOrigin ?? appModel.serverOrigin ?? "unconfigured",
+            profile: appModel.activeProfile, durableID: state.durableID ?? sessionID)
+    }
     var backgroundTasks: BackgroundTasks {
         appModel.backgroundTasksBySession[backgroundTaskScope] ?? BackgroundTasks()
     }
@@ -162,8 +167,9 @@ struct ChatView: View {
             let now = Int64(clock.date.timeIntervalSince1970 * 1000)
             ComposerBar(
                 draft: $state.draft,
-                errorMessage: Binding(get: { state.composerError }, set: { state.composerError = $0 }),
-                noticeMessage: state.composerNotice,
+                errorMessage: state.composerErrorBinding,
+                onDiscardUncertainQueue: state.discardUncertainQueue,
+                noticeMessage: state.queuedPromptState.notice ?? state.composerNotice,
                 isSending: state.composerIsBusy,
                 onSend: {
                     sendDraft()
@@ -175,7 +181,12 @@ struct ChatView: View {
                 ),
                 isStopping: state.isStopping,
                 onStop: interruptTurn,
-                isSteering: state.turnInFlight && state.steerSupported,
+                isSteering: state.turnInFlight && state.draft
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).first == "/steer",
+                isQueueing: state.turnInFlight && state.draft
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).first != "/steer",
                 attachmentsEnabled: !state.turnInFlight,
                 attachments: state.stagedAttachments,
                 onAttachmentPicked: { filename, mimeType, data in
@@ -223,6 +234,9 @@ struct ChatView: View {
             // SwiftUI may recreate the task while the view is still mounted.
             // Android's ViewModel refuses a second open for an already-owned
             // session; make the same admission decision before any await.
+            if let retained = appModel.queuedPromptStates.state(for: queuedPromptScope) {
+                state.queuedPromptState = retained
+            }
             guard !state.didOpen else { return }
             state.didOpen = true
             applyIncomingShare()
@@ -239,6 +253,9 @@ struct ChatView: View {
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             Task { await catchUpAfterForeground() }
+        }
+        .onChange(of: state.queuedPromptState.draftToRestore, initial: true) {
+            state.restoreDeferredQueuedDraft()
         }
         .onChange(of: state.draft) {
             scheduleSlashCompletion(for: state.draft)

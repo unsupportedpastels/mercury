@@ -205,6 +205,7 @@ class HermesConnectionViewModel(
 
     private val connectionCoordinator = ConnectionCoordinator()
     private val sessionControllerRegistry = PerSessionControllerRegistry()
+    private val queuedSubmissions = mutableSetOf<ControllerOperation>()
     // Fixed-size stripes bound lock retention; Relay admission is target-wide.
     private val controllerConnectionLocks = List(32) { kotlinx.coroutines.sync.Mutex() }
     private val relayConnectionLock = kotlinx.coroutines.sync.Mutex()
@@ -4021,6 +4022,91 @@ class HermesConnectionViewModel(
         }
     }
 
+    /** UI sends preserve the active turn; explicit programmatic replacement/voice uses sendMessage. */
+    fun sendComposerMessage(durableSessionId: DurableSessionId, text: String): Job =
+        if (mutableSnapshots.value.chatSessions[durableSessionId]?.isQueueSubmitting == true ||
+            queuedSubmissions.any { it.durableSessionId == durableSessionId && isCurrentControllerOperation(it) }) {
+            viewModelScope.launch { }
+        } else if (mutableSnapshots.value.chatSessions[durableSessionId]?.isSending == true) {
+            queueMessage(durableSessionId, text)
+        } else {
+            sendMessage(durableSessionId, text)
+        }
+
+    /** Explicit user discard; never cancels or repeats the server submission. */
+    fun discardUncertainQueue(durableSessionId: DurableSessionId) {
+        if (mutableSnapshots.value.chatSessions[durableSessionId]?.queueAcknowledgementUncertain != true) return
+        queuedSubmissions.removeAll { it.durableSessionId == durableSessionId && isCurrentControllerOperation(it) }
+        updateChat(durableSessionId) {
+            it.copy(isQueueSubmitting = false, queueAcknowledgementUncertain = false, error = null)
+        }
+    }
+
+    fun queueMessage(durableSessionId: DurableSessionId, rawText: String): Job {
+        val text = rawText.trim()
+        val operation = beginSteerSession(durableSessionId)
+        if (text.isEmpty() || operation == null) {
+            rejectSubmission(durableSessionId, text, "Not connected to an active turn")
+            return viewModelScope.launch { }
+        }
+        val queueKey = operation
+        val queueProfile = owningProfile(durableSessionId)
+        if (!queuedSubmissions.add(queueKey)) return viewModelScope.launch { }
+        updateChat(durableSessionId) { it.copy(isQueueSubmitting = true, queueAcknowledgementUncertain = false, error = null, notice = null) }
+        return viewModelScope.launch {
+            try {
+                val result = operation.session.queuePrompt(operation.runtimeSessionId, text)
+                if (!isCurrentControllerOperation(operation)) return@launch
+                val outcome = com.unsupportedpastels.mercury.core.composer.QueueAcknowledgementPolicy.classify(result.status)
+                if (outcome.accepted) {
+                    updateChat(durableSessionId) {
+                        it.copy(
+                            acceptedSubmissionCount = it.acceptedSubmissionCount + 1,
+                            acceptedSubmissionText = text,
+                            notice = outcome.notice,
+                        )
+                    }
+                    queuedSubmissions.remove(queueKey)
+                } else {
+                    updateChat(durableSessionId) { it.copy(error = outcome.notice, queueAcknowledgementUncertain = true) }
+                }
+            } catch (_: com.unsupportedpastels.hermesandroid.gateway.HermesChatMethodNotFoundException) {
+                queuedSubmissions.remove(queueKey)
+                if (isCurrentControllerOperation(operation)) {
+                    rejectSubmission(durableSessionId, text, "This connection does not support queued prompts")
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // The RPC may have reached the host. Never encourage blind replay.
+                if (isCurrentControllerOperation(operation)) {
+                    updateChat(durableSessionId) {
+                        it.copy(error = "Queue acknowledgement unavailable — check the transcript before sending again", queueAcknowledgementUncertain = true)
+                    }
+                }
+            } finally {
+                if (isCurrentControllerOperation(operation)) {
+                    updateChat(durableSessionId) { it.copy(isQueueSubmitting = queueKey in queuedSubmissions) }
+                } else {
+                    queuedSubmissions.remove(queueKey)
+                    // A replacement transport must not inherit a permanent
+                    // spinner. Publish only into this same authenticated logical
+                    // session, never a different origin/profile or newer queue.
+                    if (generation == operation.originGeneration && activeOrigin == operation.origin &&
+                        owningProfile(durableSessionId) == queueProfile &&
+                        queuedSubmissions.none { it.durableSessionId == durableSessionId && isCurrentControllerOperation(it) }) {
+                        updateChat(durableSessionId) { current ->
+                            if (!current.isQueueSubmitting) current else current.copy(
+                                queueAcknowledgementUncertain = true,
+                                error = "Queue acknowledgement unavailable — check the transcript before sending again",
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /** Queues guidance for exactly this HAM-controlled session's active turn. */
     fun steerSession(durableSessionId: DurableSessionId, text: String): Job {
         val guidance = text.trim()
@@ -5411,7 +5497,11 @@ class HermesConnectionViewModel(
                             )
                         }
                     }
-                    is HermesChatEvent.MessageStart,
+                    is HermesChatEvent.MessageStart -> updateChat(durableSessionId) {
+                        // A server-owned queued turn can start after the prior
+                        // terminal event, without a new local send operation.
+                        it.applyTranscriptEvent(event).copy(isSending = true)
+                    }
                     is HermesChatEvent.MessageDelta,
                     is HermesChatEvent.ReasoningDelta,
                     is HermesChatEvent.MessageInterim,
@@ -7058,6 +7148,7 @@ class HermesConnectionViewModel(
     }
 
     private suspend fun disconnectChat() {
+        queuedSubmissions.clear()
         clearAllSlashCompletions()
         automaticChatReconnects.clear()
         val controllers = sessionControllerRegistry.detachAll()

@@ -106,6 +106,10 @@ interface HermesChatSession {
         submissionId: String?,
     ): PromptSubmission = submitPrompt(runtimeSessionId, text, interrupted)
 
+    /** Explicit next-turn admission; never silently drop the queue annotation. */
+    suspend fun queuePrompt(runtimeSessionId: RuntimeSessionId, text: String): PromptSubmission =
+        throw HermesChatMethodNotFoundException("prompt.submit queued")
+
     /** Adds bounded steering text to the currently running turn. */
     suspend fun steer(runtimeSessionId: RuntimeSessionId, text: String): SessionSteerResult =
         throw HermesChatMethodNotFoundException("session.steer")

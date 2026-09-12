@@ -360,6 +360,15 @@ class HermesChatConnection internal constructor(
         return PromptSubmission(status)
     }
 
+    override suspend fun queuePrompt(runtimeSessionId: RuntimeSessionId, text: String): PromptSubmission {
+        val result = request("prompt.submit", buildJsonObject {
+            put("session_id", runtimeSessionId.value)
+            put("text", text)
+            put("queued", true)
+        })
+        return PromptSubmission(result.stringValue("status") ?: "unknown")
+    }
+
     override suspend fun steer(runtimeSessionId: RuntimeSessionId, text: String): SessionSteerResult {
         val bounded = boundedRpcInput(text, HERMES_CHAT_MAX_EVENT_TEXT_CHARS, "steer text")
         val result = request("session.steer", buildJsonObject {

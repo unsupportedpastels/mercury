@@ -2,8 +2,9 @@ import Foundation
 import MercuryCore
 
 /// Deterministic composer routing for M7. The view performs RPCs, while this
-/// policy guarantees that local commands never leak into `prompt.submit` and
-/// active-turn text always uses `session.steer`.
+/// policy guarantees that local commands never leak into `prompt.submit`.
+/// Plain active-turn text is queued as a distinct next turn; explicit
+/// `/steer` retains the in-turn guidance contract.
 struct M7ComposerPolicy {
     enum Rejection: Equatable, Sendable {
         case blankPrompt
@@ -14,6 +15,7 @@ struct M7ComposerPolicy {
 
     enum Action: Equatable, Sendable {
         case submit(text: String)
+        case queue(text: String)
         case steer(text: String)
         case openModelPicker
         case setReasoning(effort: String)
@@ -29,6 +31,8 @@ struct M7ComposerPolicy {
         switch action {
         case let submit as MercuryCore.ComposerActionSubmit:
             return .submit(text: submit.text)
+        case let queue as MercuryCore.ComposerActionQueue:
+            return .queue(text: queue.text)
         case let steer as MercuryCore.ComposerActionSteer:
             return .steer(text: steer.text)
         case is MercuryCore.ComposerActionOpenModelPicker:
