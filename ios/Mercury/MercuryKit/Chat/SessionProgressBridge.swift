@@ -63,7 +63,7 @@ extension ChatSessionState {
             isSending: activityTurnActive,
             isStopping: isStopping,
             connectionPhase: phase,
-            pendingSubmission: isComposerActionPending && isSending && !turnInFlight,
+            pendingSubmission: isComposerActionPending && isSending && !transcript.hasStreamingAssistant,
             connectionLost: { if case .offline = connectionState { return true }; return false }(),
             awaitingUser: transcript.pendingRequest != nil || outstandingSecure != nil,
             runningToolNames: running.map(\.name),

@@ -1646,7 +1646,7 @@ final class AppModel {
         let route = await RelayPushCoordinator.resolveSessionRoute(
             wake: wake,
             request: { method, params in
-                try await connection.relayRequest(method, params: params)
+                try await connection.relayRequest(method, params: params, timeoutNanoseconds: 5_000_000_000)
             }
         )
         guard let route else { return }

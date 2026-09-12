@@ -319,14 +319,16 @@ final class ChatSessionState {
     }
 
     var turnInFlight: Bool {
-        transcript.hasStreamingAssistant
+        // Interim commentary seals a row, not the active turn. The sending
+        // lifecycle remains authoritative through tool work until terminal.
+        isSending || transcript.hasStreamingAssistant
     }
 
     /// A running turn is intentionally not busy: its composer can queue a
     /// follow-up (or explicitly steer). Only a transport outage, a local RPC,
     /// or pre-stream prompt submission blocks it.
     var composerIsBusy: Bool {
-        isConnectionDown || isComposerActionPending || queuedPromptState.lifecycle.hasPendingAttempt || (isSending && !turnInFlight)
+        isConnectionDown || isComposerActionPending || queuedPromptState.lifecycle.hasPendingAttempt
     }
 
     /// The request id of the currently presented sheet, extracted from the event.
