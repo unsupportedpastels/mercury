@@ -1661,8 +1661,11 @@ final class AppModel {
     func handlePushPreviewRoute(wake: String, durableSessionID: String, profile: String) async {
         guard RelayPushCoordinator.validWake(wake), (1...256).contains(durableSessionID.utf8.count), (1...64).contains(profile.utf8.count) else { return }
         markStartupInteraction()
-        await loadNotificationPreferences(); await loadRelayTargets()
-        guard let target = relayPush.target(for: wake, targets: relayTargets) else { return }
+        let generation = startupDecisionGeneration
+        await loadNotificationPreferences()
+        await loadRelayTargets()
+        guard generation == startupDecisionGeneration,
+              let target = relayPush.target(for: wake, targets: relayTargets) else { return }
         pendingSessionRoute = nil; clearOpenSessionRequest(); pushHomeRevision = UUID()
         await connectRelay(target)
         guard activeRelayTarget?.id == target.id, case .connected = connectionPhase else { return }
