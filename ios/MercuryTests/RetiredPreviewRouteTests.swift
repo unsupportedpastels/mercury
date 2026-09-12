@@ -55,6 +55,8 @@ final class RetiredPreviewRouteTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory); model.disconnect() }
         let routes = PreviewRouteStore(url: directory.appendingPathComponent("routes.json"))
         let delegate = NotificationDelegate(previewRoutes: routes)
+        MercuryApp.configureNotificationRouting(delegate, model: model)
+        let productionPreviewRoute = try XCTUnwrap(delegate.onPreviewRoute)
         var assertions = 0
         delegate.beginTask = { _ in assertions += 1; return UIBackgroundTaskIdentifier(rawValue: 54) }
         delegate.endTask = { _ in assertions -= 1 }
@@ -69,7 +71,7 @@ final class RetiredPreviewRouteTests: XCTestCase {
             let routed = expectation(description: "retired authenticated route settled")
             delegate.onPreviewRoute = { wake, session, profile in
                 XCTAssertEqual(assertions, 1)
-                await model.handlePushPreviewRoute(wake: wake, durableSessionID: session, profile: profile)
+                await productionPreviewRoute(wake, session, profile)
                 routed.fulfill()
             }
             var completions = 0
@@ -147,6 +149,94 @@ final class RetiredPreviewRouteTests: XCTestCase {
         XCTAssertNil(third.previewTarget(for: wake, targets: [target]))
     }
 
+    func testManyRealRotationsBoundHistoryWithoutRevokingCurrentOwner() async throws {
+        let suite = "retired-bounds-\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let target = makeTarget()
+        let owner = NSObject()
+        let push = RelayPushCoordinator(defaults: defaults, now: { 1_000_000 })
+        defer { push.remove(target) }
+        push.setPreview(enabled: true, includeTitle: false, includeResponseExcerpt: false)
+        push.select(target); push.setEnabled(true); push.receivedToken(Data([1]))
+        var wakes: [String] = []
+        push.connected(target: target, identity: ObjectIdentifier(owner)) { method, params in
+            if method == "relay.status" { return Self.capabilities }
+            if method == "relay.push.unregister" { return ["registered": false] }
+            let wake = RelayBase64.urlSafeEncode(Data(repeating: UInt8(wakes.count), count: 32))
+            wakes.append(wake)
+            let preview = try XCTUnwrap(params["preview"] as? [String: Any])
+            return ["registered": true, "wake_handle": wake, "preview": ["version": 1, "key_id": preview["key_id"]!]]
+        }
+        await push.waitForWork()
+        for _ in 0..<150 { push.rotatePreviewKey(); await push.waitForWork() }
+        XCTAssertEqual(wakes.count, 151)
+        let data = try XCTUnwrap(defaults.data(forKey: "mercury.apns.retired-preview-scopes.v1"))
+        let history = try JSONDecoder().decode([RelayPushCoordinator.RetiredPreviewScope].self, from: data)
+        XCTAssertLessThanOrEqual(history.count, 64)
+        XCTAssertLessThanOrEqual(data.count, 32 * 1024)
+        let cold = RelayPushCoordinator(defaults: defaults, now: { 1_000_000 })
+        XCTAssertNil(cold.previewTarget(for: wakes[0], targets: [target]))
+        XCTAssertEqual(cold.previewTarget(for: wakes[149], targets: [target])?.id, target.id)
+        XCTAssertEqual(cold.target(for: wakes[150], targets: [target])?.id, target.id)
+        XCTAssertTrue(cold.ownsDelivery(for: target))
+        cold.remove(target)
+        XCTAssertNil(RelayPushCoordinator(defaults: defaults, now: { 1_000_000 }).previewTarget(for: wakes[149], targets: [target]))
+    }
+
+    func testColdLoadBoundsCountAndBytesAndDoesNotRewriteOnRead() throws {
+        let suite = "retired-load-bounds-\(UUID())"
+        let defaults = RetiredCountingDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let target = makeTarget()
+        let key = "mercury.apns.retired-preview-scopes.v1"
+        var clock: Int64 = 1_000_000
+        let records = (0..<65).map { index in
+            RelayPushCoordinator.RetiredPreviewScope(scope: .init(target),
+                wake: RelayBase64.urlSafeEncode(Data(repeating: UInt8(index), count: 32)), expiresAt: clock + 100)
+        }
+        let encoded = try JSONEncoder().encode(records)
+        XCTAssertLessThanOrEqual(encoded.count, 32 * 1024, "Fixture isolates count limit below parse byte limit")
+        defaults.set(encoded, forKey: key)
+        let push = RelayPushCoordinator(defaults: defaults, now: { clock })
+        let saved = try XCTUnwrap(defaults.data(forKey: key))
+        XCTAssertLessThanOrEqual(try JSONDecoder().decode([RelayPushCoordinator.RetiredPreviewScope].self, from: saved).count, 64)
+        let writes = defaults.writes
+        let reloaded = RelayPushCoordinator(defaults: defaults, now: { clock })
+        XCTAssertEqual(defaults.writes, writes, "An unchanged cold load must not rewrite storage")
+        XCTAssertNil(reloaded.previewTarget(for: records.first!.wake, targets: [target]), "Equal-expiry eviction follows persisted oldest-first order")
+        XCTAssertEqual(reloaded.previewTarget(for: records.last!.wake, targets: [target])?.id, target.id)
+        for _ in 0..<50 { _ = push.previewTarget(for: records.last!.wake, targets: [target]) }
+        XCTAssertEqual(defaults.writes, writes, "Read-only lookup must not rewrite either history or bindings")
+        clock += 100
+        XCTAssertNil(push.previewTarget(for: records.last!.wake, targets: [target]), "Expiry is exclusive")
+        let afterExpiry = defaults.writes
+        _ = push.previewTarget(for: records.last!.wake, targets: [target])
+        XCTAssertEqual(defaults.writes, afterExpiry)
+        // Reject oversized persisted bytes before JSON decoding; do not renew legacy history.
+        for oversized in [Data(repeating: 32, count: 32 * 1024 + 1), try JSONEncoder().encode(Array(repeating: records[0], count: 200))] {
+            defaults.set(oversized, forKey: key)
+            let cold = RelayPushCoordinator(defaults: defaults, now: { 1_000_000 })
+            XCTAssertNil(cold.previewTarget(for: records[0].wake, targets: [target]))
+            XCTAssertLessThanOrEqual(try XCTUnwrap(defaults.data(forKey: key)).count, 32 * 1024)
+        }
+    }
+
+    func testLegacyMigrationEnforcesEncodedByteBudget() throws {
+        let suite = "retired-migration-bytes-\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let target = makeTarget(origin: "https://relay.test/" + String(repeating: "a", count: 10_000))
+        let bindings = (0..<8).map { index in
+            RelayPushCoordinator.Binding(scope: .init(target), wake: RelayBase64.urlSafeEncode(Data(repeating: 99, count: 32)),
+                retiredWake: RelayBase64.urlSafeEncode(Data(repeating: UInt8(index), count: 32)))
+        }
+        defaults.set(try JSONEncoder().encode(bindings), forKey: "mercury.apns.wake-bindings.v1")
+        let push = RelayPushCoordinator(defaults: defaults, now: { 1_000_000 })
+        XCTAssertLessThanOrEqual(try XCTUnwrap(defaults.data(forKey: "mercury.apns.retired-preview-scopes.v1")).count, 32 * 1024)
+        XCTAssertTrue(push.ownsDelivery(for: target), "History eviction is not active ownership revocation")
+    }
+
     private func response(_ info: [AnyHashable: Any]) throws -> UNNotificationResponse {
         let content = UNMutableNotificationContent(); content.userInfo = info
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
@@ -165,6 +255,13 @@ final class RetiredPreviewRouteTests: XCTestCase {
         "version": 1, "register_method": "relay.push.preview.register", "unregister_method": "relay.push.unregister",
         "aead": "CHACHA20-POLY1305", "max_plaintext_bytes": 1280, "max_title_utf8_bytes": 160, "max_body_utf8_bytes": 640
     ]]] }
+}
+private final class RetiredCountingDefaults: UserDefaults, @unchecked Sendable {
+    var writes = 0
+    override func set(_ value: Any?, forKey defaultName: String) {
+        writes += 1
+        super.set(value, forKey: defaultName)
+    }
 }
 private final class RetiredRouteCoder: NSCoder {
     let values: [String: Any]

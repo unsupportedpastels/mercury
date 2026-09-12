@@ -59,6 +59,8 @@ final class RelayPushCoordinator {
     // A retired key may authenticate one final arrival during its existing
     // 15-minute grace. That arrival's receipt has its own seven-day lifetime.
     static let retiredRouteRetention = PreviewRouteStore.maxRetentionSeconds + 900
+    static let maxRetiredScopes = 64
+    static let maxRetiredScopeBytes = 32 * 1024
     private let defaults: UserDefaults
     private let sandbox: Bool
     private let storageKey = "mercury.apns.wake-bindings.v1"
@@ -74,13 +76,16 @@ final class RelayPushCoordinator {
         includeTitle = defaults.bool(forKey: previewTitleKey)
         includeResponseExcerpt = defaults.bool(forKey: previewExcerptKey)
         bindings = (defaults.data(forKey: storageKey).flatMap { try? JSONDecoder().decode([Binding].self, from: $0) }) ?? []
-        retiredPreviewScopes = (defaults.data(forKey: retiredScopesKey).flatMap {
-            try? JSONDecoder().decode([RetiredPreviewScope].self, from: $0)
+        retiredPreviewScopes = (defaults.data(forKey: retiredScopesKey).flatMap { data -> [RetiredPreviewScope]? in
+            // Bound decoding as well as the resulting collection. An oversized
+            // legacy value is discarded, never reimported or granted a new TTL.
+            guard data.count <= Self.maxRetiredScopeBytes else { return nil }
+            return try? JSONDecoder().decode([RetiredPreviewScope].self, from: data)
         }) ?? []
         if defaults.object(forKey: retiredScopesKey) == nil {
             // One-time upgrade of the formerly key-cleanup-only predecessor.
             // Persist immediately so cold launches cannot renew its lifetime.
-            retiredPreviewScopes = bindings.compactMap { binding in
+            retiredPreviewScopes = bindings.suffix(Self.maxRetiredScopes).compactMap { binding in
                 guard let wake = binding.retiredWake, Self.validWake(wake) else { return nil }
                 return RetiredPreviewScope(scope: binding.scope, wake: wake, expiresAt: now() + Self.retiredRouteRetention)
             }
@@ -262,7 +267,7 @@ final class RelayPushCoordinator {
     /// using current bindings exclusively.
     func previewTarget(for wake: String, targets: [RelayPairedTarget]) -> RelayPairedTarget? {
         guard Self.validWake(wake) else { return nil }
-        persist() // Prune expired history on reads as well as rotation/reload.
+        if pruneRetiredScopes() { persistRetiredScopes() }
         let scopes = bindings.filter { $0.wake == wake }.map(\.scope)
             + retiredPreviewScopes.filter { $0.wake == wake }.map(\.scope)
         guard let scope = scopes.first, scopes.allSatisfy({ $0 == scope }) else { return nil }
@@ -459,15 +464,49 @@ final class RelayPushCoordinator {
         retiredPreviewScopes.append(RetiredPreviewScope(scope: binding.scope, wake: binding.wake,
             expiresAt: now() + Self.retiredRouteRetention))
     }
-    private func persist() {
+    @discardableResult
+    private func pruneRetiredScopes() -> Bool {
+        let count = retiredPreviewScopes.count
         let timestamp = now()
         retiredPreviewScopes.removeAll {
             let remaining = $0.expiresAt.subtractingReportingOverflow(timestamp)
             return !Self.validWake($0.wake) || remaining.overflow
-                || !(0...Self.retiredRouteRetention).contains(remaining.partialValue)
+                || !(1...Self.retiredRouteRetention).contains(remaining.partialValue)
         }
-        defaults.set(try? JSONEncoder().encode(bindings), forKey: storageKey)
-        defaults.set(try? JSONEncoder().encode(retiredPreviewScopes), forKey: retiredScopesKey)
+        return retiredPreviewScopes.count != count
+    }
+
+    private func persistRetiredScopes() {
+        pruneRetiredScopes()
+        // Persisted order breaks equal-expiry ties, keeping newer rotations.
+        retiredPreviewScopes = retiredPreviewScopes.enumerated().sorted {
+            if $0.element.expiresAt != $1.element.expiresAt {
+                return $0.element.expiresAt < $1.element.expiresAt
+            }
+            return $0.offset < $1.offset
+        }.suffix(Self.maxRetiredScopes).map(\.element)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        // At most 64 records enter this loop. Evict oldest first until the
+        // entire encoded array fits; active delivery bindings are untouched.
+        while let data = try? encoder.encode(retiredPreviewScopes) {
+            if data.count <= Self.maxRetiredScopeBytes {
+                if defaults.data(forKey: retiredScopesKey) != data {
+                    defaults.set(data, forKey: retiredScopesKey)
+                }
+                return
+            }
+            retiredPreviewScopes.removeFirst()
+        }
+    }
+
+    private func persist() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        if let data = try? encoder.encode(bindings), defaults.data(forKey: storageKey) != data {
+            defaults.set(data, forKey: storageKey)
+        }
+        persistRetiredScopes()
     }
     private func writeDiagnostic() {
         #if DEBUG && targetEnvironment(simulator)
