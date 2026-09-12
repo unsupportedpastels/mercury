@@ -97,6 +97,39 @@ final class PushPreviewKitTests: XCTestCase {
         XCTAssertEqual(store.consume(event: event, wake: wake, now: 101), route)
         XCTAssertNil(store.consume(event: event, wake: wake, now: 101))
     }
+    func testTapRouteOutlivesPreviewFreshness() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = PreviewRouteStore(url: url)
+        let route = PreviewRouteRecord(event: event, wake: wake, sessionID: "durable", profile: "default", expiresAt: 86_500)
+        store.record(route, now: 100)
+        XCTAssertEqual(store.consume(event: event, wake: wake, now: 701), route)
+    }
+
+    func testRouteRecordDoesNotOverwriteCorruptStore() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let corrupt = Data("not-json".utf8)
+        try corrupt.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = PreviewRouteStore(url: url)
+        store.record(.init(event: event, wake: wake, sessionID: "durable", profile: "default", expiresAt: 120), now: 100)
+        XCTAssertEqual(try Data(contentsOf: url), corrupt)
+        XCTAssertNil(store.consume(event: event, wake: wake, now: 101))
+    }
+
+    func testIndependentRouteStoreInstancesDoNotLoseConcurrentWrites() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        DispatchQueue.concurrentPerform(iterations: 32) { index in
+            let event = PushPreviewEnvelope.encode(Data(repeating: UInt8(index), count: 32))
+            PreviewRouteStore(url: url).record(.init(event: event, wake: wake, sessionID: "session-\(index)", profile: "default", expiresAt: 120), now: 100)
+        }
+        for index in 0..<32 {
+            let event = PushPreviewEnvelope.encode(Data(repeating: UInt8(index), count: 32))
+            XCTAssertEqual(PreviewRouteStore(url: url).consume(event: event, wake: wake, now: 101)?.sessionID, "session-\(index)")
+        }
+    }
+
     func testReplayClaimFailsClosedForCorruptStateAndWriteFailure() throws {
         let corruptURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data("not-json".utf8).write(to: corruptURL)

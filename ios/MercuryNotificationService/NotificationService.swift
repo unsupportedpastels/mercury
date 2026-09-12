@@ -24,7 +24,7 @@ final class NotificationService: UNNotificationServiceExtension {
             if let sid = preview.routeSessionID, let profile = preview.routeProfile,
                let event = mutable.userInfo["mercury_event"] as? String,
                let wake = mutable.userInfo["mercury_wake"] as? String {
-                PreviewRouteStore()?.record(.init(event: event, wake: wake, sessionID: sid, profile: profile, expiresAt: preview.expiresAt), now: now)
+                PreviewRouteStore()?.record(.init(event: event, wake: wake, sessionID: sid, profile: profile, expiresAt: now + PreviewRouteStore.maxRetentionSeconds), now: now)
             }
             finish(mutable)
         } catch { finish(mutable) }

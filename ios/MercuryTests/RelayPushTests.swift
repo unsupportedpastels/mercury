@@ -197,21 +197,38 @@ final class RelayPushTests: XCTestCase {
         XCTAssertEqual(NotificationDelegate.presentationOptions(userInfo: payload), [.banner, .sound, .list])
         XCTAssertTrue(NotificationDelegate.presentationOptions(userInfo: ["mercury.sessionID": "local"]).contains(.banner))
     }
+    func testSystemResponseCompletesBeforeIndependentWakeRouting() async {
+        let delegate = NotificationDelegate(previewRoutes: RouteReader(nil))
+        var completed = false
+        let routed = expectation(description: "retained route task")
+        delegate.onWake = { _ in
+            XCTAssertTrue(completed)
+            routed.fulfill()
+        }
+        delegate.handlePayload(["mercury_wake": wake]) { completed = true }
+        XCTAssertTrue(completed, "System completion must not wait for routing or the network")
+        await fulfillment(of: [routed], timeout: 2)
+    }
+
     func testPreviewTapUsesOnlyAuthenticatedRouteStoreNotTransportFields() async {
         let event = String(repeating: "e", count: 43)
         let spoofed: [AnyHashable: Any] = ["mercury_wake": wake, "mercury_event": event,
             "mercury.preview.sid": "spoof", "mercury.preview.profile": "spoof"]
         let noRoute = NotificationDelegate(previewRoutes: RouteReader(nil))
         var fallbackWake: String?
-        noRoute.onWake = { fallbackWake = $0 }
-        await withCheckedContinuation { continuation in noRoute.handlePayload(spoofed) { continuation.resume() } }
+        let fallbackRouted = expectation(description: "fallback routed")
+        noRoute.onWake = { fallbackWake = $0; fallbackRouted.fulfill() }
+        noRoute.handlePayload(spoofed) {}
+        await fulfillment(of: [fallbackRouted], timeout: 2)
         XCTAssertEqual(fallbackWake, wake)
 
         let stored = PreviewRouteRecord(event: event, wake: wake, sessionID: "durable", profile: "default", expiresAt: Int64(Date().timeIntervalSince1970) + 60)
         let delegate = NotificationDelegate(previewRoutes: RouteReader(stored))
         var opened: (String, String, String)?
-        delegate.onPreviewRoute = { opened = ($0, $1, $2) }
-        await withCheckedContinuation { continuation in delegate.handlePayload(spoofed) { continuation.resume() } }
+        let previewRouted = expectation(description: "preview routed")
+        delegate.onPreviewRoute = { opened = ($0, $1, $2); previewRouted.fulfill() }
+        delegate.handlePayload(spoofed) {}
+        await fulfillment(of: [previewRouted], timeout: 2)
         XCTAssertEqual(opened?.0, wake); XCTAssertEqual(opened?.1, "durable"); XCTAssertEqual(opened?.2, "default")
     }
     func testCapabilityMustBeExplicitBoolean() {

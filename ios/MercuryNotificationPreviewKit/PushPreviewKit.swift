@@ -194,44 +194,90 @@ public final class PreviewReplayStore: PreviewReplayChecking {
 /// Authenticated local routes cross the extension/app boundary through
 /// protected App Group state. APNs userInfo is never route authority.
 public final class PreviewRouteStore: PreviewRouteConsuming, PreviewRouteReading {
-    private let url: URL; private let lock = NSLock()
+    /// Tap authority is retained for seven days, independently of the 300-second ciphertext window.
+    public static let maxRetentionSeconds: Int64 = 7 * 24 * 60 * 60
+    private let url, lockURL: URL
+    private let lock = NSLock()
     public init?(appGroup: String = PushPreviewConstants.appGroup) {
         guard let root = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) else { return nil }
         url = root.appendingPathComponent("push-preview-routes-v1.json")
+        lockURL = url.appendingPathExtension("lock")
     }
-    public init(url: URL) { self.url = url }
-    public func record(_ route: PreviewRouteRecord, now: Int64) {
-        guard PushPreviewEnvelope.canonical(route.event, bytes: 32), PushPreviewEnvelope.canonical(route.wake, bytes: 32),
-              (1...PushPreviewConstants.maxRouteSessionBytes).contains(route.sessionID.utf8.count),
-              (1...PushPreviewConstants.maxRouteProfileBytes).contains(route.profile.utf8.count),
-              route.expiresAt >= now, route.expiresAt - now <= 300 else { return }
-        lock.lock(); defer { lock.unlock() }
-        var rows = load(now: now).filter { !($0.event == route.event && $0.wake == route.wake) }
-        rows.append(route); save(Array(rows.suffix(64)))
+    public init(url: URL) { self.url = url; lockURL = url.appendingPathExtension("lock") }
+
+    @discardableResult
+    public func record(_ route: PreviewRouteRecord, now: Int64) -> Bool {
+        let lifetime = route.expiresAt.subtractingReportingOverflow(now)
+        guard valid(route), !lifetime.overflow,
+              (0...Self.maxRetentionSeconds).contains(lifetime.partialValue) else { return false }
+        return transaction {
+            var rows = try load(now: now).filter { !($0.event == route.event && $0.wake == route.wake) }
+            rows.append(route)
+            try save(Array(rows.suffix(64)))
+            return true
+        } ?? false
     }
+
     /// Display decisions never consume the single-use tap receipt.
     public func peek(event: String, wake: String, now: Int64) -> PreviewRouteRecord? {
-        guard PushPreviewEnvelope.canonical(event, bytes: 32), PushPreviewEnvelope.canonical(wake, bytes: 32) else { return nil }
-        lock.lock(); defer { lock.unlock() }
-        return load(now: now).first { $0.event == event && $0.wake == wake }
+        guard canonical(event: event, wake: wake) else { return nil }
+        return transaction { try load(now: now).first { $0.event == event && $0.wake == wake } } ?? nil
     }
+
     public func consume(event: String, wake: String, now: Int64) -> PreviewRouteRecord? {
-        guard PushPreviewEnvelope.canonical(event, bytes: 32), PushPreviewEnvelope.canonical(wake, bytes: 32) else { return nil }
+        guard canonical(event: event, wake: wake) else { return nil }
+        return transaction {
+            var rows = try load(now: now)
+            guard let index = rows.firstIndex(where: { $0.event == event && $0.wake == wake }) else { return nil }
+            let route = rows.remove(at: index)
+            // Returning authority requires committing its removal. A failed write
+            // cannot masquerade as a successful single-use consume.
+            try save(rows)
+            return route
+        } ?? nil
+    }
+
+    public func clear() {
+        let _: Bool? = transaction {
+            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+            return true
+        }
+    }
+
+    private func transaction<T>(_ body: () throws -> T) -> T? {
         lock.lock(); defer { lock.unlock() }
-        var rows = load(now: now)
-        guard let index = rows.firstIndex(where: { $0.event == event && $0.wake == wake }) else { save(rows); return nil }
-        let route = rows.remove(at: index); save(rows); return route
+        // Lock a stable sidecar, never the atomically replaced data inode.
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else { return nil }
+        defer { close(descriptor) }
+        guard flock(descriptor, LOCK_EX) == 0 else { return nil }
+        defer { flock(descriptor, LOCK_UN) }
+        return try? body()
     }
-    public func clear() { lock.lock(); defer { lock.unlock() }; try? FileManager.default.removeItem(at: url) }
-    private func load(now: Int64) -> [PreviewRouteRecord] {
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        guard size <= 32_768, let data = try? Data(contentsOf: url),
-              let rows = try? JSONDecoder().decode([PreviewRouteRecord].self, from: data) else { return [] }
-        return rows.filter { $0.expiresAt >= now }
+
+    private func canonical(event: String, wake: String) -> Bool {
+        PushPreviewEnvelope.canonical(event, bytes: 32) && PushPreviewEnvelope.canonical(wake, bytes: 32)
     }
-    private func save(_ rows: [PreviewRouteRecord]) {
-        guard let data = try? JSONEncoder().encode(rows), data.count <= 32_768 else { return }
-        try? data.write(to: url, options: [.atomic, .completeFileProtection])
+    private func valid(_ route: PreviewRouteRecord) -> Bool {
+        canonical(event: route.event, wake: route.wake) &&
+        (1...PushPreviewConstants.maxRouteSessionBytes).contains(route.sessionID.utf8.count) &&
+        (1...PushPreviewConstants.maxRouteProfileBytes).contains(route.profile.utf8.count)
+    }
+    private func load(now: Int64) throws -> [PreviewRouteRecord] {
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let values = try url.resourceValues(forKeys: [.fileSizeKey])
+        guard let size = values.fileSize, size <= 32_768 else { throw PushPreviewFailure.malformedPlaintext }
+        let rows = try JSONDecoder().decode([PreviewRouteRecord].self, from: Data(contentsOf: url))
+        guard rows.count <= 64, rows.allSatisfy(valid) else { throw PushPreviewFailure.malformedPlaintext }
+        return rows.filter {
+            let lifetime = $0.expiresAt.subtractingReportingOverflow(now)
+            return !lifetime.overflow && (0...Self.maxRetentionSeconds).contains(lifetime.partialValue)
+        }
+    }
+    private func save(_ rows: [PreviewRouteRecord]) throws {
+        let data = try JSONEncoder().encode(rows)
+        guard data.count <= 32_768 else { throw PushPreviewFailure.malformedPlaintext }
+        try data.write(to: url, options: [.atomic, .completeFileProtection])
     }
 }
 
