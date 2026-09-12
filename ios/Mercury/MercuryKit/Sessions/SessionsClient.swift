@@ -23,6 +23,7 @@ struct TranscriptMessage: Equatable, Decodable {
     var content: String
     var toolName: String?
     var reasoningText: String
+    var displayKind: String?
 
     private enum CodingKeys: String, CodingKey {
         case role
@@ -33,23 +34,27 @@ struct TranscriptMessage: Equatable, Decodable {
         case reasoning
         case reasoningContent = "reasoning_content"
         case reasoningDetails = "reasoning_details"
+        case displayKind = "display_kind"
     }
 
     init(
         role: String = "",
         content: String = "",
         toolName: String? = nil,
-        reasoningText: String = ""
+        reasoningText: String = "",
+        displayKind: String? = nil
     ) {
         self.role = role
         self.content = content
         self.toolName = toolName
         self.reasoningText = reasoningText
+        self.displayKind = displayKind
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         role = (try? c.decode(String.self, forKey: .role)) ?? ""
+        displayKind = try? c.decode(String.self, forKey: .displayKind)
         content = (try? c.decode(String.self, forKey: .content))
             ?? (try? c.decode(String.self, forKey: .text))
             ?? ""

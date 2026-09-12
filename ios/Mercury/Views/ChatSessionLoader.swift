@@ -22,7 +22,8 @@ extension ChatView {
         durableSessionID requestedID: String? = nil,
         preservingActiveTurn: Bool = false,
         using liveConnection: ChatConnection? = nil,
-        allowStandaloneRelayRead: Bool = false
+        allowStandaloneRelayRead: Bool = false,
+        sourceAuthority: TranscriptReadAuthority = .history
     ) async -> Bool {
         let isRelay = appModel.activeRelayTarget != nil
         guard isRelay || appModel.serverOrigin != nil else {
@@ -35,7 +36,7 @@ extension ChatView {
         let requestedScope = backgroundTaskScope
         let requestedSelection = appModel.relaySelectionGeneration
         let turnWasActive = preservingActiveTurn && (state.isSending || state.transcript.hasStreamingAssistant)
-        if !preservingActiveTurn, let origin = appModel.serverOrigin {
+        if sourceAuthority.publishesTranscript, !preservingActiveTurn, let origin = appModel.serverOrigin {
             let cached = await appModel.cachedTranscript(
                 origin: origin,
                 profile: appModel.activeProfile,
@@ -46,7 +47,7 @@ extension ChatView {
                     TranscriptState.RestoredMessage(
                         role: $0.role.rawValue,
                         content: $0.text,
-                        reasoningText: $0.reasoningText
+                        reasoningText: $0.reasoningText, displayKind: $0.displayKind
                     )
                 })
                 state.initialScrollDone = true
@@ -87,21 +88,15 @@ extension ChatView {
                     role: message.role,
                     content: message.content,
                     toolName: message.toolName,
-                    reasoningText: message.reasoningText
+                    reasoningText: message.reasoningText, displayKind: message.displayKind
                 )
             }
-            if preservingActiveTurn {
-                state.isSending = state.transcript.reconcileForegroundTranscript(
-                    restored,
-                    turnWasActive: turnWasActive
-                )
-            } else {
-                state.transcript.loadTranscript(restored)
-            }
+            applyDurableDisplayRows(restored, sourceAuthority: sourceAuthority,
+                                    preservingActiveTurn: preservingActiveTurn, turnWasActive: turnWasActive)
             state.loadedTranscriptCount = relayPage?.nextOffset ?? history.count
             state.hasMoreHistory = relayPage?.hasMore ?? TranscriptHistoryPolicy.hasMoreHistory(fetchedCount: history.count)
             state.historyError = nil
-            await cacheCurrentTranscript()
+            if sourceAuthority.publishesTranscript { await cacheCurrentTranscript() }
             state.initialScrollDone = !state.transcript.rows.isEmpty
             state.loadError = nil
             return true
@@ -109,6 +104,22 @@ extension ChatView {
             // Keep whatever rendered; surface a banner. No secret material here.
             state.loadError = "Could not load transcript for this session."
             return false
+        }
+    }
+
+    /// Publication boundary shared by initial history and the post-resume read.
+    @MainActor
+    func applyDurableDisplayRows(
+        _ restored: [TranscriptState.RestoredMessage],
+        sourceAuthority: TranscriptReadAuthority = .history,
+        preservingActiveTurn: Bool = false,
+        turnWasActive: Bool = false
+    ) {
+        guard sourceAuthority.publishesTranscript else { return }
+        if preservingActiveTurn {
+            state.isSending = state.transcript.reconcileForegroundTranscript(restored, turnWasActive: turnWasActive)
+        } else {
+            state.transcript.loadTranscript(restored)
         }
     }
 
@@ -215,7 +226,7 @@ extension ChatView {
                     role: message.role,
                     content: message.content,
                     toolName: message.toolName,
-                    reasoningText: message.reasoningText
+                    reasoningText: message.reasoningText, displayKind: message.displayKind
                 )
             }
             state.transcript.prependHistory(restored)
@@ -242,7 +253,8 @@ extension ChatView {
             )
         let messages = state.transcript.rows.compactMap { row -> OfflineCachedMessage? in
             guard let role = OfflineCachedMessageRole(rawValue: row.role.lowercased()) else { return nil }
-            return OfflineCachedMessage(role: role, text: row.text, reasoningText: row.reasoningText)
+            return OfflineCachedMessage(role: role, text: row.text, reasoningText: row.reasoningText,
+                                        displayKind: row.displayKind)
         }
         await appModel.cacheTranscript(
             origin: origin,

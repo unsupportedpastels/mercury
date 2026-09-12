@@ -23,6 +23,7 @@ struct TranscriptState: Sendable, Equatable {
         var completed: Bool
         var toolName: String? = nil
         var reasoningText: String = ""
+        var displayKind: String? = nil
 
         /// Stable UUID derived from the engine identity, for SwiftUI.
         var id: UUID {
@@ -37,16 +38,18 @@ struct TranscriptState: Sendable, Equatable {
             lhs.role == rhs.role && lhs.text == rhs.text && lhs.completed == rhs.completed
                 && lhs.toolName == rhs.toolName
                 && lhs.reasoningText == rhs.reasoningText
+                && lhs.displayKind == rhs.displayKind
         }
 
         init(coreID: Int64 = 0, role: String, text: String, completed: Bool,
-             toolName: String? = nil, reasoningText: String = "") {
+             toolName: String? = nil, reasoningText: String = "", displayKind: String? = nil) {
             self.coreID = coreID
             self.role = role
             self.text = text
             self.completed = completed
             self.toolName = toolName
             self.reasoningText = reasoningText
+            self.displayKind = displayKind
         }
 
         init(_ core: MercuryCore.TranscriptRow) {
@@ -56,14 +59,14 @@ struct TranscriptState: Sendable, Equatable {
                 text: core.text,
                 completed: core.completed,
                 toolName: core.toolName,
-                reasoningText: core.reasoningText
+                reasoningText: core.reasoningText, displayKind: core.displayKind
             )
         }
 
         var core: MercuryCore.TranscriptRow {
             MercuryCore.TranscriptRow(
                 id: coreID, role: role, text: text, completed: completed,
-                toolName: toolName, reasoningText: reasoningText
+                toolName: toolName, reasoningText: reasoningText, displayKind: displayKind
             )
         }
     }
@@ -73,10 +76,12 @@ struct TranscriptState: Sendable, Equatable {
         var content: String
         var toolName: String? = nil
         var reasoningText: String = ""
+        var displayKind: String? = nil
 
         var core: MercuryCore.RestoredMessage {
             MercuryCore.RestoredMessage(
-                role: role, content: content, toolName: toolName, reasoningText: reasoningText
+                role: role, content: content, toolName: toolName, reasoningText: reasoningText,
+                displayKind: displayKind
             )
         }
     }

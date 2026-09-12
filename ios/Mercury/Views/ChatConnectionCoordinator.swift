@@ -1,4 +1,5 @@
 import SwiftUI
+import MercuryCore
 
 /// The user-action boundary for a chat connection attempt. Retries that are
 /// part of opening a session, or of tapping Retry, remain explicit even when
@@ -176,15 +177,17 @@ extension ChatView {
                         completed: false
                     )
                 } else {
-                    // The turn completed while we were away. Android performs
-                    // a second REST transcript load here because the first
-                    // load may have raced the tool phase and omitted the final
-                    // assistant response. Keep the resume snapshot visible if
-                    // that follow-up request is temporarily unavailable. The
+                    // Resume owns display rows when nonempty. The bounded
+                    // durable read still recovers progress/tool metadata and
+                    // history cursors; it is not an interchangeable display
+                    // projection. Empty resume retains full history fallback. The
                     // candidate is not published yet, so pass it explicitly:
                     // in relay mode a standalone read here would supersede
                     // this very connection and loop the reconnect.
-                    _ = await loadTranscript(durableSessionID: sessionID, using: candidate)
+                    _ = await loadTranscript(
+                        durableSessionID: state.durableID ?? sessionID, using: candidate,
+                        sourceAuthority: TranscriptReadPolicy.shared.afterResume(hasDisplayRows: !resumedRows.isEmpty)
+                    )
                     state.transcript.finishStreamingAssistant()
                 }
             }

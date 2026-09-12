@@ -88,6 +88,18 @@ class OfflineCacheRepositoryTest {
     }
 
     @Test
+    fun completionPresentationMetadataSurvivesEncryptedCacheRoundTrip() = runTest {
+        val scope = CacheScope(ServerOrigin.parse("https://one.example"), "default")
+        val message = ChatMessage(ChatMessageRole.User, "New envelope", displayKind = "async_delegation_complete")
+        repository.setTranscriptCachingEnabled(true)
+        repository.writeTranscript(scope, summary("notice"), listOf(message), nowEpochSeconds = 10)
+        val restored = repository.read(scope, 11).sessions.single().messages.single()
+        assertEquals(message, restored)
+        assertTrue(com.unsupportedpastels.mercury.core.transcript.InternalCompletionNotice.isNotice(
+            restored.role.name.lowercase(), restored.text, restored.displayKind))
+    }
+
+    @Test
     fun disablingTranscriptCachingClearsBodiesButKeepsMetadata() = runTest {
         val scope = CacheScope(ServerOrigin.parse("https://one.example"), "default")
         repository.setTranscriptCachingEnabled(true)

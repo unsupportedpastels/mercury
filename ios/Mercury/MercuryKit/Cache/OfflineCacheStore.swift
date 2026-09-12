@@ -250,9 +250,11 @@ actor OfflineCacheStore {
             let bounded = OfflineCachedMessage(
                 role: message.role,
                 text: bound(message.text, bytes: OfflineCachePolicy.maxBodyBytes),
-                reasoningText: bound(message.reasoningText, bytes: OfflineCachePolicy.maxBodyBytes)
+                reasoningText: bound(message.reasoningText, bytes: OfflineCachePolicy.maxBodyBytes),
+                displayKind: message.displayKind.map { bound($0, bytes: 256) }
             )
             let size = bounded.text.utf8.count + bounded.reasoningText.utf8.count
+                + (bounded.displayKind?.utf8.count ?? 0)
             if selected.isEmpty || bytes + size <= budget {
                 selected.insert(bounded, at: 0)
                 bytes += size

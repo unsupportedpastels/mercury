@@ -20,6 +20,14 @@ fun foldTranscriptTurns(rows: List<TranscriptRow>, turnActive: Boolean): List<Fo
     }
     val result = mutableListOf<FoldedTranscriptEntry>()
     fun emitTurn(turn: List<TranscriptRow>, active: Boolean) {
+        // A completion starts its own server turn, but is not a human prompt.
+        // Keep its disclosure separate from both the preceding and following
+        // assistant summary, including while the new summary is streaming.
+        if (turn.firstOrNull()?.let(InternalCompletionNotice::isNotice) == true) {
+            result += FoldedTranscriptEntry.TurnActivity(listOf(turn.first()), null)
+            emitTurn(turn.drop(1), active)
+            return
+        }
         if (active) {
             turn.forEach { row ->
                 val role = row.role.lowercase()

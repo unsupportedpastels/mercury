@@ -1346,6 +1346,48 @@ class HermesChatIntegrationTest {
     }
 
     @Test
+    fun idleRecoveryKeepsNonemptyResumeSegmentsOverStaleDurableRead() = runTest(dispatcher) {
+        assertIdleRecoveryTranscript(hasResumeRows = true)
+    }
+
+    @Test
+    fun idleRecoveryFallsBackToDurableHistoryWhenResumeIsEmpty() = runTest(dispatcher) {
+        assertIdleRecoveryTranscript(hasResumeRows = false)
+    }
+
+    private suspend fun kotlinx.coroutines.test.TestScope.assertIdleRecoveryTranscript(hasResumeRows: Boolean) {
+        val first = ReconnectingChatSession(
+            runtimeId = "runtime-first", running = false, inflightText = null,
+            submitFailure = HermesChatTransportException("socket closed before acknowledgement"),
+            onSubmit = { channel, _ -> channel.close() },
+        )
+        val segments = listOf("Synthetic first answer alpha.", "Synthetic first answer omega.")
+        val second = ReconnectingChatSession(
+            runtimeId = "runtime-recovered", running = false, inflightText = null,
+            resumeMessages = if (hasResumeRows) segments.map { text ->
+                buildJsonObject { put("role", "assistant"); put("content", text) }
+            } else emptyList(),
+        )
+        val sessions = ArrayDeque<HermesChatSession>().apply { add(first); add(second) }
+        val client = ChatConnectionClient()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow(ServerSettingsState.Ready(origin)),
+            client = client, tokenStore = MemoryTokenStore(tokens),
+            chatConnector = HermesChatConnector { _, _ -> sessions.removeFirst() },
+            nowEpochSeconds = { 1_900_000_000 },
+        )
+        advanceUntilIdle()
+        viewModel.sendMessage(durableId, "Synthetic first prompt")
+        advanceUntilIdle()
+        val chat = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        assertEquals(if (hasResumeRows) segments else listOf("Earlier question", "Earlier answer"),
+            chat.messages.map { it.text })
+        assertTrue("Recovery must still perform the bounded durable read", client.transcriptLoads > 0)
+        assertTrue(second.closed)
+        assertFalse(chat.isSending)
+    }
+
+    @Test
     fun reconnectReplacesLocalPartialWithInflightSnapshot() = runTest(dispatcher) {
         val first = ReconnectingChatSession(
             runtimeId = "runtime-1",

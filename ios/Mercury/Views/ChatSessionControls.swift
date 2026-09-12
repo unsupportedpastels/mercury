@@ -423,7 +423,7 @@ extension ChatView {
                 role: role,
                 content: content,
                 toolName: toolName,
-                reasoningText: reasoning
+                reasoningText: reasoning, displayKind: message["display_kind"] as? String
             )
         }
     }
