@@ -1928,6 +1928,7 @@ class HermesChatIntegrationTest {
         advanceUntilIdle()
         viewModel.sendMessage(durableId, "Long-running prompt")
         advanceUntilIdle()
+        val acceptedBeforeQueue = viewModel.snapshots.value.chatSessions.getValue(durableId).acceptedSubmissionCount
         original.queueAck = CompletableDeferred()
         viewModel.sendComposerMessage(durableId, "Unconfirmed next task")
         runCurrent()
@@ -1937,6 +1938,9 @@ class HermesChatIntegrationTest {
         advanceUntilIdle()
         val chat = viewModel.snapshots.value.chatSessions.getValue(durableId)
         assertTrue(chat.queueAcknowledgementUncertain)
+        // This receipt cannot clear a retained composer owned by the old controller.
+        assertEquals(acceptedBeforeQueue, chat.acceptedSubmissionCount)
+        assertTrue(chat.acceptedSubmissionText != "Unconfirmed next task")
         viewModel.discardUncertainQueue(durableId)
         assertFalse(viewModel.snapshots.value.chatSessions.getValue(durableId).isQueueSubmitting)
         assertEquals(1, original.queueCalls.size)

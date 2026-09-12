@@ -279,11 +279,10 @@ fun HermesApp(
     val drafts = rememberSaveable(saver = DraftsSaver) { mutableStateMapOf() }
     val hostReferences = rememberSaveable(saver = DraftsSaver) { mutableStateMapOf() }
     val hostReferenceScopeKey = "$connectionScopeKey\u0000${snapshot.selectedProfile}"
-    // Owned by the app, not the detail route: navigation must not lose an
-    // in-flight acknowledgment. A transport/profile switch invalidates it.
-    val pendingComposerSubmissions = remember(hostReferenceScopeKey) {
-        mutableStateMapOf<DurableSessionId, PendingComposerSubmission>()
-    }
+    // The Activity ViewModelStore survives rotation/fold/window recreation,
+    // just like the connection owner still awaiting the acknowledgement.
+    val composerSubmissionOwner = androidx.lifecycle.viewmodel.compose.viewModel<ComposerSubmissionOwner>()
+    val pendingComposerSubmissions = composerSubmissionOwner.submissions(hostReferenceScopeKey)
     LaunchedEffect(snapshot.chatSessions, pendingComposerSubmissions.toMap()) {
         pendingComposerSubmissions.toMap().forEach { (sessionId, pending) ->
             val chat = snapshot.chatSessions[sessionId] ?: return@forEach
@@ -800,7 +799,8 @@ fun HermesApp(
                             onSlashCompletionRequested(session.id, updated)
                         },
                         canSend = snapshot.authenticationState == AuthenticationState.Authenticated &&
-                            !projectDraftMissingWorkspace,
+                            !projectDraftMissingWorkspace &&
+                            pendingComposerSubmissions.size < ComposerSubmissionOwner.MAX_PENDING,
                         attachments = attachments[session.id].orEmpty(),
                         hostReferences = stagedHostReferences,
                         onAddAttachments = { candidates -> onAddAttachments(session.id, candidates) },
@@ -818,7 +818,10 @@ fun HermesApp(
                                 .filterNot { it == reference }
                                 .joinToString("\n")
                         },
-                        onSend = { text ->
+                        onSend = send@{ text ->
+                            if (session.id in pendingComposerSubmissions ||
+                                pendingComposerSubmissions.size >= ComposerSubmissionOwner.MAX_PENDING
+                            ) return@send
                             onSlashCompletionRequested(session.id, "")
                             val prompt = (stagedHostReferences + text.takeIf(String::isNotBlank))
                                 .filterNotNull()
