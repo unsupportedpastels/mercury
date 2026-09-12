@@ -27,7 +27,7 @@ struct RelayPushFixtureView: View {
                 Text(presentation).accessibilityIdentifier("push-fixture-presentation")
                 Text("Mutation RPCs: \(unexpectedRPC)").accessibilityIdentifier("push-fixture-mutations")
                 Button("Deliver generic foreground push") {
-                    presentation = NotificationDelegate.presentationOptions(userInfo: payload).isEmpty ? "Generic banner suppressed" : "Banner shown"
+                    presentation = NotificationDelegate.presentationOptions(userInfo: payload).isEmpty ? "Generic banner suppressed" : "Generic banner preserved"
                 }
                 Button("Tap generic push") {
                     delegate.handlePayload(payload, completionHandler: {})

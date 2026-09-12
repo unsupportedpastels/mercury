@@ -198,16 +198,97 @@ final class AppModel {
     /// The durable id of the session currently on screen, if any. A chat view
     /// publishes this on appear and clears it on disappear.
     private(set) var visibleSessionID: String?
+    private(set) var visibleNotificationSession: NotificationSessionIdentity?
+    private var notificationVisibilityOwner: UUID?
+    private var notificationVisibilityScope: NotificationSourceScope?
 
     var notificationVisibility: SessionNotificationVisibility {
         SessionNotificationVisibility(
             appForeground: appIsForeground,
-            visibleSessionID: visibleSessionID
+            visibleSessionID: visibleNotificationSession?.scope == notificationSourceScope ? visibleSessionID : nil
         )
     }
 
     func setAppForeground(_ foreground: Bool) { appIsForeground = foreground }
-    func setVisibleSession(_ sessionID: String?) { visibleSessionID = sessionID }
+    var notificationSourceScope: NotificationSourceScope? {
+        NotificationSourceScope(origin: activeRelayTarget?.relayOrigin ?? serverOrigin,
+                                relayTargetID: activeRelayTarget?.id, profile: activeProfile)
+    }
+
+    func setVisibleSession(_ sessionID: String?) {
+        visibleSessionID = sessionID
+        notificationVisibilityScope = notificationSourceScope
+        visibleNotificationSession = sessionID.flatMap { sid in
+            notificationSourceScope.map { NotificationSessionIdentity(scope: $0, sessionID: sid) }
+        }
+        notificationVisibilityOwner = nil
+    }
+
+    func showNotificationSession(_ sessionID: String?, scope: NotificationSourceScope?, owner: UUID) {
+        guard scope == notificationSourceScope else { return }
+        setVisibleSession(sessionID)
+        notificationVisibilityOwner = owner
+    }
+
+    func updateNotificationSession(_ sessionID: String?, owner: UUID) {
+        guard notificationVisibilityOwner == owner else { return }
+        // A delayed connection callback may update the durable ID, but never
+        // reclaim visibility after navigation or relabel it with a new scope.
+        guard notificationVisibilityScope == notificationSourceScope else { return }
+        setVisibleSession(sessionID)
+        notificationVisibilityOwner = owner
+    }
+
+    func hideNotificationSession(owner: UUID) {
+        guard notificationVisibilityOwner == owner else { return }
+        setVisibleSession(nil)
+    }
+
+    func shouldPresentNotification(_ identity: NotificationSessionIdentity, foreground: Bool? = nil) -> Bool {
+        let visible = visibleNotificationSession
+        let matchesScope = visible?.scope == identity.scope && visible?.scope == notificationSourceScope
+        return NotificationVisibilityPolicy.shouldPost(sessionID: identity.sessionID, visibility: .init(
+            appForeground: foreground ?? appIsForeground,
+            visibleSessionID: matchesScope ? visible?.sessionID : nil))
+    }
+
+    func configureNotificationPresentation(_ delegate: NotificationDelegate) {
+        delegate.shouldPresent = { [weak self] identity in
+            // Read UIKit at arrival as well as scene-driven selection. A selected
+            // chat behind a locked/background app is not visible.
+            self?.shouldPresentNotification(identity, foreground: UIApplication.shared.applicationState == .active) ?? true
+        }
+        delegate.localRouteIdentity = { [weak self] route in
+            guard let entry = self?.serverCatalog.entries.first(where: { $0.id == route.serverID }),
+                  let scope = NotificationSourceScope(origin: entry.origin, profile: route.profile) else { return nil }
+            return NotificationSessionIdentity(scope: scope, sessionID: route.durableSessionID)
+        }
+        delegate.previewIdentity = { [weak self] route in
+            guard let self, let target = self.relayPush.target(for: route.wake, targets: self.relayTargets),
+                  let scope = NotificationSourceScope(origin: target.relayOrigin, relayTargetID: target.id, profile: route.profile) else { return nil }
+            return NotificationSessionIdentity(scope: scope, sessionID: route.sessionID)
+        }
+        delegate.remoteIdentity = { [weak self] wake, event in
+            guard let self, UIApplication.shared.applicationState == .active,
+                  let target = self.relayPush.target(for: wake, targets: self.relayTargets),
+                  target.id == self.activeRelayTarget?.id,
+                  let connection = await RelayConnectionPool.shared.existingConnection(target: target, profile: self.activeProfile) else { return nil }
+            do {
+                let status = try await connection.relayRequest("relay.status", timeoutNanoseconds: 750_000_000)
+                guard RelayPushCoordinator.supportsArrivalInspection(status) else { return nil }
+                let result = try await connection.relayRequest("relay.push.inspect",
+                    params: ["wake_handle": wake, "event_id": event], timeoutNanoseconds: 750_000_000)
+                guard self.relayPush.target(for: wake, targets: self.relayTargets) == target,
+                      let route = RelayPushCoordinator.resolvedSessionRoute(result),
+                      let scope = NotificationSourceScope(origin: target.relayOrigin, relayTargetID: target.id, profile: route.profile) else { return nil }
+                return NotificationSessionIdentity(scope: scope, sessionID: route.durableSessionID)
+            } catch { return nil }
+        }
+    }
+
+    #if DEBUG
+    func notificationVisibilityOwned(by owner: UUID) -> Bool { notificationVisibilityOwner == owner }
+    #endif
 
     /// A session the user asked to open by tapping a notification. RootView /
     /// SessionListView observe this and navigate, then clear it. The counter
@@ -1045,9 +1126,16 @@ final class AppModel {
     /// dedupe state. Called when a connection reaches `.connected`.
     func configureNotifications(origin: String) {
         notificationCoordinator.configure(origin: origin)
+        refreshNotificationContext()
+    }
+
+    private func refreshNotificationContext() {
+        notificationCoordinator.sourceScope = notificationSourceScope
+        notificationCoordinator.shouldDeliver = { [weak self] in self?.shouldPresentNotification($0) ?? true }
         // Multi-server tap routing: embed the active server's catalog UUID +
         // profile in each posted notification.
-        if let active = serverCatalog.activeEntry {
+        if activeRelayTarget == nil, let active = serverCatalog.activeEntry,
+           ServerOrigin.normalize(active.origin) == notificationSourceScope?.origin {
             notificationCoordinator.routeContext = (serverID: active.id, profile: activeProfile)
         } else {
             notificationCoordinator.routeContext = nil
@@ -1068,8 +1156,10 @@ final class AppModel {
     /// Feeds one live chat event to the delivery brain with the current
     /// visibility. Posts a local notification only when the reducer decides one
     /// is warranted and the session is not the visible/foreground one.
-    func deliverLiveNotification(event: ChatEvent, sessionTitle: String) async {
-        guard !relayPush.ownsDelivery(for: activeRelayTarget) || !RelayPushCoordinator.replacesLocalDelivery(for: event) else { return }
+    func deliverLiveNotification(event: ChatEvent, sessionTitle: String, sourceScope: NotificationSourceScope? = nil) async {
+        if let sourceScope, sourceScope != notificationSourceScope { return }
+        refreshNotificationContext()
+        guard !relayPush.ownsDelivery(for: activeRelayTarget, event: event) || !RelayPushCoordinator.replacesLocalDelivery(for: event) else { return }
         await notificationCoordinator.handleLive(
             event: event,
             sessionTitle: sessionTitle,
@@ -1096,7 +1186,8 @@ final class AppModel {
             client: HermesHTTPClient.makeAuthenticated(origin: origin),
             profile: profile
         )
-        return await NotificationReconciler.deltas(
+        let scope = notificationSourceScope
+        let deltas = await NotificationReconciler.deltas(
             from: sessions,
             engagedIDs: engaged,
             watermarks: watermarks,
@@ -1109,6 +1200,7 @@ final class AppModel {
                 )
             }
         )
+        return notificationSourceScope == scope ? deltas : []
     }
 
     /// Best-effort background reconciliation (BGAppRefresh). iOS grants a short,
@@ -1118,9 +1210,11 @@ final class AppModel {
     /// no APNs — purely opportunistic.
     func performBackgroundReconciliation() async {
         guard let origin = serverOrigin else { return }
-        notificationCoordinator.configure(origin: origin)
+        configureNotifications(origin: origin)
+        let scope = notificationSourceScope
         // Reload the newest sessions; reuse the normal authenticated path.
         await controller.loadSessions()
+        guard notificationSourceScope == scope else { return }
         let deltas = await buildReconcileDeltas()
         guard !deltas.isEmpty else { return }
         await notificationCoordinator.handleReconcile(
@@ -1136,8 +1230,10 @@ final class AppModel {
     /// too would double-notify. All other sessions post normally.
     func performGraceReconciliation() async {
         guard let origin = serverOrigin else { return }
-        notificationCoordinator.configure(origin: origin)
+        configureNotifications(origin: origin)
+        let scope = notificationSourceScope
         await controller.loadSessions()
+        guard notificationSourceScope == scope else { return }
         let deltas = await buildReconcileDeltas()
         guard !deltas.isEmpty else { return }
         // Force-suppress the still-visible session by presenting it as the
@@ -1477,7 +1573,11 @@ final class AppModel {
     }
 
     func syncPushPreferences() {
-        let enabled = RelayPushCoordinator.genericPushEnabled(notificationPreferences, authorized: notificationAuthorizationStatus.countsAsAuthorized)
+        let authorized = notificationAuthorizationStatus.countsAsAuthorized
+        let generic = RelayPushCoordinator.genericPushEnabled(notificationPreferences, authorized: authorized)
+        let selectivePreview = relayPush.previewEnabled && authorized && notificationPreferences.notificationsEnabled && (notificationPreferences.completionEnabled || notificationPreferences.attentionEnabled)
+        let enabled = generic || selectivePreview
+        relayPush.setPreviewCategories(completion: notificationPreferences.completionEnabled, attention: notificationPreferences.attentionEnabled)
         relayPush.setEnabled(enabled)
         if enabled {
             UIApplication.shared.registerForRemoteNotifications()
@@ -1527,6 +1627,18 @@ final class AppModel {
                   case .connected = connectionPhase else { return }
         }
         requestOpenSession(route.durableSessionID)
+    }
+    func handlePushPreviewRoute(wake: String, durableSessionID: String, profile: String) async {
+        guard RelayPushCoordinator.validWake(wake), (1...256).contains(durableSessionID.utf8.count), (1...64).contains(profile.utf8.count) else { return }
+        markStartupInteraction()
+        await loadNotificationPreferences(); await loadRelayTargets()
+        guard let target = relayPush.target(for: wake, targets: relayTargets) else { return }
+        pendingSessionRoute = nil; clearOpenSessionRequest(); pushHomeRevision = UUID()
+        await connectRelay(target)
+        guard activeRelayTarget?.id == target.id, case .connected = connectionPhase else { return }
+        if profile != activeProfile { await switchProfile(profile) }
+        guard activeRelayTarget?.id == target.id, activeProfile == profile, case .connected = connectionPhase else { return }
+        requestOpenSession(durableSessionID)
     }
     func setHermesVersion(_ version: String?) { hermesVersion = version }
     func setSessionsError(_ message: String?) { sessionsError = message }

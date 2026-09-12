@@ -136,6 +136,9 @@ extension ChatView {
                     // create; register it now so background reconciliation is
                     // allowed to notify about it (Android engaged-scope parity).
                     appModel.markSessionEngaged(stored)
+                    // Publish the authenticated durable identity at adoption,
+                    // before auxiliary RPCs can suspend or a push can arrive.
+                    appModel.updateNotificationSession(stored, owner: state.notificationVisibilityOwner)
                 }
             } else {
                 let resumed = try await candidate.resume(durableSessionID: state.durableID ?? sessionID, profile: requestedProfile,
@@ -261,7 +264,7 @@ extension ChatView {
             guard !Task.isCancelled,
                   state.connectionOwnership.isCurrent(ownershipToken),
                   state.connection === candidate,
-                  backgroundTaskScope == requestedScope,
+                  backgroundTaskScope == childScope,
                   appModel.activeProfile == requestedProfile,
                   appModel.activeRelayTarget?.id == requestedTargetID,
                   appModel.serverOrigin == requestedOrigin,
@@ -271,7 +274,7 @@ extension ChatView {
             }
             // Live notifications are keyed on the durable id; keep the visible
             // session in sync so suppression matches while on screen.
-            appModel.setVisibleSession(notificationSessionID)
+            appModel.updateNotificationSession(notificationSessionID, owner: state.notificationVisibilityOwner)
             state.connectionNote = nil
             state.connectionState = .live
             scheduleSlashCompletion(for: state.draft)

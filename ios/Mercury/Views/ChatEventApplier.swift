@@ -43,7 +43,8 @@ extension ChatView {
         if let notifyID {
             let notifyEvent = event.withSessionID(notifyID)
             let notifySessionTitle = state.titleText
-            Task { await appModel.deliverLiveNotification(event: notifyEvent, sessionTitle: notifySessionTitle) }
+            let scope = state.notificationSourceScope
+            Task { await appModel.deliverLiveNotification(event: notifyEvent, sessionTitle: notifySessionTitle, sourceScope: scope) }
         }
 
         // UI-only reactions preserved verbatim from the pre-extraction

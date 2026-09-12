@@ -678,8 +678,8 @@ final class ChatConnection: @unchecked Sendable {
     /// (`gateway.ping`, `session.*`, `prompt.submit`, …) and the `relay.*`
     /// in-process reads the host intercepts at the lease layer. The relay
     /// method policy is the authority over what is permitted on the wire.
-    func relayRequest(_ method: String, params: [String: Any] = [:]) async throws -> [String: Any] {
-        try await request(method, params)
+    func relayRequest(_ method: String, params: [String: Any] = [:], timeoutNanoseconds: UInt64? = nil) async throws -> [String: Any] {
+        try await request(method, params, timeoutNanoseconds: timeoutNanoseconds)
     }
 
     /// Process-local registry: callers may only reconcile IDs already observed on their own runtime.

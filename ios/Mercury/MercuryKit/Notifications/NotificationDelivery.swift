@@ -14,6 +14,8 @@ final class NotificationCoordinator {
     /// boundaries. Nil (e.g. legacy call sites/tests) falls back to the plain
     /// same-server session-ID deep link.
     var routeContext: (serverID: UUID, profile: String)?
+    var sourceScope: NotificationSourceScope?
+    var shouldDeliver: (NotificationSessionIdentity) -> Bool = { _ in true }
     private var currentOrigin: String?
     private var watermarks: [String: SessionWatermark] = [:]
 
@@ -146,6 +148,10 @@ final class NotificationCoordinator {
         guard !notifications.isEmpty else {
             return
         }
+        // Capture provenance before the first suspension. Selection may change
+        // while iOS checks authorization or while a prior request is posted.
+        let context = routeContext
+        let scope = sourceScope
         guard await client.authorizationGranted() else {
             return
         }
@@ -157,14 +163,16 @@ final class NotificationCoordinator {
             else {
                 continue
             }
-            let route = routeContext.map {
+            let identity = scope.map { NotificationSessionIdentity(scope: $0, sessionID: notification.sessionID) }
+            if let identity, !shouldDeliver(identity) { continue }
+            let route = context.map {
                 SessionOpenRoute(
                     durableSessionID: notification.sessionID,
                     serverID: $0.serverID,
                     profile: $0.profile
                 )
             }
-            await client.post(notification, route: route)
+            await client.post(notification, route: route, identity: identity)
         }
     }
 

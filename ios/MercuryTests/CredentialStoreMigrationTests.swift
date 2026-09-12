@@ -4,6 +4,12 @@ import XCTest
 @testable import Mercury
 
 final class CredentialStoreMigrationTests: XCTestCase {
+    func testPrivateStoresPinTheAppOnlyAccessGroup() {
+        let query = MercuryPrivateKeychainScope.query(service: "fixture", account: "fixture")
+        XCTAssertFalse(MercuryPrivateKeychainScope.accessGroup.isEmpty)
+        XCTAssertEqual(query[kSecAttrAccessGroup as String] as? String, MercuryPrivateKeychainScope.accessGroup)
+    }
+
     func testElidedDefaultPortMigratesTheLegacyKeychainAccount() throws {
         let service = "com.unsupportedpastels.mercury.tests.\(UUID().uuidString)"
         let legacyAccount = "https://legacy.example:443"

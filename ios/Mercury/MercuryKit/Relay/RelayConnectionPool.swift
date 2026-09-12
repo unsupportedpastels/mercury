@@ -105,6 +105,14 @@ actor RelayConnectionPool {
         if selectionGeneration == token { selecting = false }
     }
 
+    /// Presentation may borrow an existing authenticated channel, never open
+    /// or resume a session merely to classify an alert.
+    func existingConnection(target: RelayPairedTarget, profile: String) -> ChatConnection? {
+        let requested = Scope(target: target, profile: profile)
+        guard !selecting, selectedScope == requested else { return nil }
+        return slots.values.first(where: { $0.scope == requested && $0.connection?.isClosed == false })?.connection
+    }
+
     func acquire(
         target: RelayPairedTarget, profile: String, channel: String? = nil
     ) async throws -> ChatConnection {

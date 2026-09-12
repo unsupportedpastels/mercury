@@ -1,6 +1,8 @@
 import Foundation
 import Observation
 import CoreFoundation
+import Security
+import MercuryNotificationPreviewKit
 
 /// Native APNs lifecycle only. Tokens travel exclusively in authenticated Relay RPCs.
 @MainActor @Observable
@@ -21,9 +23,20 @@ final class RelayPushCoordinator {
             device = target.deviceID; hostKey = target.hostPublicKey
         }
     }
-    struct Binding: Codable { let scope: Scope; let wake: String }
+    struct Binding: Codable {
+        let scope: Scope
+        let wake: String
+        var previewKeyID: String? = nil
+        var completion: Bool? = nil
+        var attention: Bool? = nil
+        var retiredKeyID: String? = nil
+        var retiredWake: String? = nil
+    }
     private(set) var status = "Relay push is off. Direct notifications remain best effort."
     private(set) var enabled = false
+    private(set) var previewEnabled: Bool
+    private(set) var includeTitle: Bool
+    private(set) var includeResponseExcerpt: Bool
     private var token: String?
     private var appleRegistrationUnavailable = false
     private var scope: Scope?
@@ -31,14 +44,22 @@ final class RelayPushCoordinator {
     private var connectionID: ObjectIdentifier?
     private var requests: [UUID: Request] = [:]
     private var generation = UUID()
+    private var forcePreviewRotation = false
     private var work: Task<Void, Never>?
     private var bindings: [Binding]
     private let defaults: UserDefaults
     private let sandbox: Bool
     private let storageKey = "mercury.apns.wake-bindings.v1"
+    private let previewKeys = PreviewKeychainRepository()
+    private let previewEnabledKey = "mercury.apns.preview.enabled.v1"
+    private let previewTitleKey = "mercury.apns.preview.title.v1"
+    private let previewExcerptKey = "mercury.apns.preview.excerpt.v1"
 
     init(defaults: UserDefaults = .standard, sandbox: Bool = RelayPushCoordinator.isSandboxBuild) {
         self.defaults = defaults; self.sandbox = sandbox
+        previewEnabled = defaults.bool(forKey: previewEnabledKey)
+        includeTitle = defaults.bool(forKey: previewTitleKey)
+        includeResponseExcerpt = defaults.bool(forKey: previewExcerptKey)
         bindings = (defaults.data(forKey: storageKey).flatMap { try? JSONDecoder().decode([Binding].self, from: $0) }) ?? []
     }
     nonisolated static var isSandboxBuild: Bool {
@@ -70,13 +91,42 @@ final class RelayPushCoordinator {
               CFGetTypeID(value) == CFBooleanGetTypeID() else { return false }
         return value.boolValue
     }
+    struct PreviewCapability: Equatable { let maxPlaintextBytes, maxTitleBytes, maxBodyBytes: Int }
+    nonisolated static func supportsArrivalInspection(_ status: [String: Any]) -> Bool {
+        guard let caps = status["capabilities"] as? [String: Any],
+              let route = caps["push_notification_routes"] as? [String: Any],
+              exactInteger(route["version"], equals: 1) != nil,
+              route["inspect_method"] as? String == "relay.push.inspect" else { return false }
+        return true
+    }
+    nonisolated static func previewCapability(_ status: [String: Any]) -> PreviewCapability? {
+        guard let caps = status["capabilities"] as? [String: Any], let p = caps["push_previews"] as? [String: Any],
+              exactInteger(p["version"], equals: 1) != nil,
+              p["register_method"] as? String == "relay.push.preview.register",
+              p["unregister_method"] as? String == "relay.push.unregister",
+              p["aead"] as? String == "CHACHA20-POLY1305",
+              let plaintext = exactInteger(p["max_plaintext_bytes"]), (1...1280).contains(plaintext),
+              let title = exactInteger(p["max_title_utf8_bytes"]), (1...160).contains(title),
+              let body = exactInteger(p["max_body_utf8_bytes"]), (1...640).contains(body) else { return nil }
+        return PreviewCapability(maxPlaintextBytes: plaintext, maxTitleBytes: title, maxBodyBytes: body)
+    }
+    private nonisolated static func exactInteger(_ value: Any?, equals: Int? = nil) -> Int? {
+        guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.rounded() == n.doubleValue else { return nil }
+        let result = n.intValue
+        return equals.map { $0 == result ? result : nil } ?? result
+    }
+    private nonisolated static func random(_ count: Int) -> Data? {
+        var data = Data(count: count)
+        let result = data.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, count, $0.baseAddress!) }
+        return result == errSecSuccess ? data : nil
+    }
     nonisolated static func resolvedSessionRoute(_ result: [String: Any]) -> ResolvedSessionRoute? {
         guard let resolved = result["resolved"] as? NSNumber,
               CFGetTypeID(resolved) == CFBooleanGetTypeID(), resolved.boolValue,
               let durable = result["durable_session_id"] as? String,
-              (1...256).contains(durable.utf8.count),
+              (1...PushPreviewConstants.maxRouteSessionBytes).contains(durable.utf8.count),
               let profile = result["profile"] as? String,
-              (1...64).contains(profile.utf8.count),
+              (1...PushPreviewConstants.maxRouteProfileBytes).contains(profile.utf8.count),
               !durable.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
               !profile.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
         else { return nil }
@@ -116,19 +166,35 @@ final class RelayPushCoordinator {
         guard enabled != value else { return }
         enabled = value; generation = UUID()
         if !value {
+            deletePreviewKeys()
             bindings.removeAll(); persist()
             status = "Relay push is off. Direct notifications remain best effort."
             for request in requests.values { enqueueUnregister(request) }
         } else { reconcile() }
         writeDiagnostic()
     }
+    func setPreview(enabled value: Bool, includeTitle title: Bool, includeResponseExcerpt excerpt: Bool) {
+        guard previewEnabled != value || includeTitle != title || includeResponseExcerpt != excerpt else { return }
+        if !value { deletePreviewKeys() }
+        previewEnabled = value; includeTitle = title; includeResponseExcerpt = excerpt
+        defaults.set(value, forKey: previewEnabledKey); defaults.set(title, forKey: previewTitleKey); defaults.set(excerpt, forKey: previewExcerptKey)
+        generation = UUID(); reconcile()
+    }
+    func rotatePreviewKey() { guard previewEnabled else { return }; forcePreviewRotation = true; generation = UUID(); reconcile() }
+    func setPreviewCategories(completion: Bool, attention: Bool) {
+        defaults.set(completion, forKey: "mercury.notif.preview.completion")
+        defaults.set(attention, forKey: "mercury.notif.preview.attention")
+        generation = UUID(); reconcile()
+    }
+    private var currentCompletion: Bool { defaults.object(forKey: "mercury.notif.preview.completion") as? Bool ?? true }
+    private var currentAttention: Bool { defaults.object(forKey: "mercury.notif.preview.attention") as? Bool ?? true }
     func receivedToken(_ data: Data) {
         guard !data.isEmpty else { registrationFailed(); return }
         let next = Self.tokenHex(data)
         guard token != next else { return }
-        // The first callback after a cold launch is not evidence of rotation.
-        // Preserve the persisted handle so an arriving notification can still route.
-        if token != nil { bindings.removeAll(); persist() }
+        // Preserve the active binding across cold launch and token rotation until
+        // the generation-fenced replacement registration succeeds. This also
+        // lets preview mode re-provision the same independent key.
         token = next; appleRegistrationUnavailable = false
         generation = UUID(); reconcile(); writeDiagnostic()
     }
@@ -137,6 +203,7 @@ final class RelayPushCoordinator {
         // including persisted cold-launch routes, and reject any pending RPC result.
         token = nil; generation = UUID()
         appleRegistrationUnavailable = true
+        deletePreviewKeys()
         bindings.removeAll(); persist()
         status = "Apple push is unavailable. Notifications remain best effort."
         // Do not cancel/replace the pending-task chain: cleanup must follow an
@@ -165,8 +232,19 @@ final class RelayPushCoordinator {
         guard enabled, let target else { return false }
         return bindings.contains { $0.scope == Scope(target) }
     }
+    func ownsDelivery(for target: RelayPairedTarget?, event: ChatEvent) -> Bool {
+        guard enabled, let target, let binding = bindings.first(where: { $0.scope == Scope(target) }) else { return false }
+        guard binding.previewKeyID != nil else { return true }
+        switch event {
+        case .messageComplete: return binding.completion == true
+        case .approvalRequest, .clarifyRequest: return binding.attention == true
+        case .unsupportedBlockingRequest(_, let kind, _, _): return binding.attention == true && (kind == .secret || kind == .sudo)
+        default: return false
+        }
+    }
     func remove(_ target: RelayPairedTarget) {
         let removed = Scope(target)
+        deletePreviewKeys(for: removed)
         bindings.removeAll { $0.scope == removed }; persist()
         if let request = requests.removeValue(forKey: target.id) { enqueueUnregister(request) }
         if scope == removed {
@@ -193,25 +271,87 @@ final class RelayPushCoordinator {
         work = Task { [weak self] in
             await previous?.value
             guard let self, self.generation == revision, self.enabled else { return }
+            var pendingPreviewKeyID: String?
+            defer {
+                if let pendingPreviewKeyID {
+                    self.previewKeys.delete(environment: "sandbox", wake: "pending", keyID: pendingPreviewKeyID)
+                }
+            }
             do {
                 let status = try await request("relay.status", [:])
                 guard self.generation == revision, self.enabled else { return }
-                guard Self.supports(status) else {
+                let capability = Self.previewCapability(status)
+                guard Self.supports(status) || (self.previewEnabled && capability != nil) else {
                     self.status = "This host does not support Relay push. Notifications remain best effort."
                     self.bindings.removeAll { $0.scope == scope }; self.persist(); return
                 }
-                let result = try await request("relay.push.register", ["device_token": token, "environment": "sandbox"])
+                var previewKeyID: String?
+                var previewKey: Data?
+                let result: [String: Any]
+                if self.previewEnabled, capability != nil {
+                    let now = Int64(Date().timeIntervalSince1970)
+                    let existing = self.forcePreviewRotation ? nil : self.bindings.first { $0.scope == scope && $0.previewKeyID != nil }
+                    let existingRecord = try existing.flatMap { binding in
+                        try self.previewKeys.load(environment: "sandbox", wake: binding.wake, keyID: binding.previewKeyID!, now: now)
+                    }
+                    let key: Data
+                    let keyID: String
+                    if let existingRecord, let existingKey = existingRecord.keyData {
+                        key = existingKey; keyID = existingRecord.keyID
+                    } else {
+                        guard let generatedKey = Self.random(32), let keyIDBytes = Self.random(16) else { throw URLError(.cannotCreateFile) }
+                        key = generatedKey; keyID = PushPreviewEnvelope.encode(keyIDBytes); pendingPreviewKeyID = keyID
+                        // A pending key is durable before provisioning; it is promoted to the authenticated wake scope only after exact response validation.
+                        try self.previewKeys.save(PreviewKeyRecord(key: key, keyID: keyID, wake: "pending", environment: "sandbox", createdAt: now))
+                    }
+                    result = try await request("relay.push.preview.register", [
+                        "device_token": token, "environment": "sandbox",
+                        "preview": ["version": 1, "key_id": keyID, "key": PushPreviewEnvelope.encode(key),
+                                    "completion": self.currentCompletion, "attention": self.currentAttention,
+                                    "include_title": self.includeTitle, "include_response_excerpt": self.includeResponseExcerpt]
+                    ])
+                    guard let response = result["preview"] as? [String: Any], Self.exactInteger(response["version"], equals: 1) != nil,
+                          response["key_id"] as? String == keyID else { throw URLError(.badServerResponse) }
+                    previewKeyID = keyID; previewKey = key
+                } else {
+                    guard !self.previewEnabled || (self.currentCompletion && self.currentAttention) else {
+                        self.status = "This host does not support selective encrypted previews. Local delivery remains active."
+                        self.bindings.removeAll { $0.scope == scope }; self.persist(); return
+                    }
+                    result = try await request("relay.push.register", ["device_token": token, "environment": "sandbox"])
+                }
                 guard self.generation == revision, self.enabled else { return }
                 guard let registered = result["registered"] as? NSNumber,
                       CFGetTypeID(registered) == CFBooleanGetTypeID(), registered.boolValue,
                       let wake = result["wake_handle"] as? String, Self.validWake(wake) else { throw URLError(.badServerResponse) }
+                let now = Int64(Date().timeIntervalSince1970)
+                if let keyID = previewKeyID, let key = previewKey {
+                    try self.previewKeys.save(PreviewKeyRecord(key: key, keyID: keyID, wake: wake, environment: "sandbox", createdAt: now))
+                    self.previewKeys.delete(environment: "sandbox", wake: "pending", keyID: keyID)
+                    for old in self.bindings where old.scope == scope && old.previewKeyID != keyID {
+                        if let retiredID = old.retiredKeyID, let retiredWake = old.retiredWake {
+                            self.previewKeys.delete(environment: "sandbox", wake: retiredWake, keyID: retiredID)
+                        }
+                        if let oldID = old.previewKeyID, let oldRecord = try? self.previewKeys.load(environment: "sandbox", wake: old.wake, keyID: oldID, now: now), let oldKey = oldRecord.keyData {
+                            try? self.previewKeys.save(PreviewKeyRecord(key: oldKey, keyID: oldID, wake: old.wake, environment: "sandbox", createdAt: oldRecord.createdAt ?? now, retireAt: now + 900))
+                        }
+                    }
+                }
+                let previousPreview = self.bindings.first { $0.scope == scope && $0.previewKeyID != nil }
+                let retainedID = previousPreview?.previewKeyID == previewKeyID ? previousPreview?.retiredKeyID : previousPreview?.previewKeyID
+                let retainedWake = previousPreview?.previewKeyID == previewKeyID ? previousPreview?.retiredWake : previousPreview?.wake
+                if previewKeyID == nil { self.deletePreviewKeys(for: scope) }
                 self.bindings.removeAll { $0.scope == scope || $0.wake == wake }
-                self.bindings.append(Binding(scope: scope, wake: wake)); self.persist()
-                self.status = "Relay push active (development). Alerts contain no session content."
+                self.bindings.append(Binding(scope: scope, wake: wake, previewKeyID: previewKeyID, completion: previewKeyID == nil ? nil : self.currentCompletion, attention: previewKeyID == nil ? nil : self.currentAttention, retiredKeyID: previewKeyID == nil ? nil : retainedID, retiredWake: previewKeyID == nil ? nil : retainedWake)); self.persist()
+                if previewKeyID != nil { self.forcePreviewRotation = false }
+                self.status = previewKeyID == nil ? "Relay push active (development). Alerts contain no session content." : "Encrypted previews active (development). Locked devices receive the generic alert."
             } catch {
                 guard self.generation == revision else { return }
-                self.bindings.removeAll { $0.scope == scope }; self.persist()
-                self.status = "Relay push unavailable. Notifications remain best effort; reconnect to retry."
+                if self.bindings.contains(where: { $0.scope == scope }) {
+                    self.status = "Relay push update failed; previous registration remains active."
+                } else {
+                    self.status = "Relay push unavailable. Notifications remain best effort; reconnect to retry."
+                }
             }
             self.writeDiagnostic()
         }
@@ -250,6 +390,17 @@ final class RelayPushCoordinator {
     }
 
     func waitForWork() async { await work?.value }
+    private func deletePreviewKeys(for selected: Scope? = nil) {
+        for binding in bindings where selected == nil || binding.scope == selected {
+            if let keyID = binding.previewKeyID { previewKeys.delete(environment: "sandbox", wake: binding.wake, keyID: keyID) }
+            if let keyID = binding.retiredKeyID, let wake = binding.retiredWake { previewKeys.delete(environment: "sandbox", wake: wake, keyID: keyID) }
+        }
+        bindings.removeAll { binding in
+            guard binding.previewKeyID != nil else { return false }
+            return selected == nil || binding.scope == selected
+        }
+        persist()
+    }
     private func persist() { defaults.set(try? JSONEncoder().encode(bindings), forKey: storageKey) }
     private func writeDiagnostic() {
         #if DEBUG && targetEnvironment(simulator)
