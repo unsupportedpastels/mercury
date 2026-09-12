@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import CoreFoundation
+import MercuryCore
 
 /// Native APNs lifecycle only. Tokens travel exclusively in authenticated Relay RPCs.
 @MainActor @Observable
@@ -59,28 +60,30 @@ final class RelayPushCoordinator {
         return wake
     }
     nonisolated static func supports(_ status: [String: Any]) -> Bool {
-        guard let caps = status["capabilities"] as? [String: Any],
-              let value = caps["push_notifications_v1"] as? NSNumber,
-              CFGetTypeID(value) == CFBooleanGetTypeID() else { return false }
-        return value.boolValue
+        MercuryCore.RelayPushRoutePolicy.shared.supports(status: sharedPushStatus(status))
     }
     nonisolated static func supportsSessionResolution(_ status: [String: Any]) -> Bool {
-        guard let caps = status["capabilities"] as? [String: Any],
-              let value = caps["push_notifications_v2"] as? NSNumber,
-              CFGetTypeID(value) == CFBooleanGetTypeID() else { return false }
-        return value.boolValue
+        MercuryCore.RelayPushRoutePolicy.shared.supportsSessionResolution(status: sharedPushStatus(status))
     }
     nonisolated static func resolvedSessionRoute(_ result: [String: Any]) -> ResolvedSessionRoute? {
-        guard let resolved = result["resolved"] as? NSNumber,
-              CFGetTypeID(resolved) == CFBooleanGetTypeID(), resolved.boolValue,
-              let durable = result["durable_session_id"] as? String,
-              (1...256).contains(durable.utf8.count),
-              let profile = result["profile"] as? String,
-              (1...64).contains(profile.utf8.count),
-              !durable.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
-              !profile.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
-        else { return nil }
-        return ResolvedSessionRoute(durableSessionID: durable, profile: profile)
+        var wire = result
+        wire["resolved"] = sharedPushValue(result["resolved"])
+        guard let route = MercuryCore.RelayPushRoutePolicy.shared.resolvedSessionRoute(result: wire) else { return nil }
+        return ResolvedSessionRoute(durableSessionID: route.durableSessionId, profile: route.profile)
+    }
+    // Foundation's NSNumber can bridge numeric 1 as Bool. Preserve its JSON type
+    // explicitly for Kotlin's plain-map API; all acceptance policy stays shared.
+    nonisolated private static func sharedPushValue(_ value: Any?) -> Any? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return value }
+        return KotlinBoolean(bool: number.boolValue)
+    }
+    nonisolated private static func sharedPushStatus(_ status: [String: Any]) -> [String: Any] {
+        var wire = status
+        if var caps = status["capabilities"] as? [String: Any] {
+            for key in ["push_notifications_v1", "push_notifications_v2"] { caps[key] = sharedPushValue(caps[key]) }
+            wire["capabilities"] = caps
+        }
+        return wire
     }
     static func resolveSessionRoute(wake: String, request: Request) async -> ResolvedSessionRoute? {
         guard validWake(wake) else { return nil }
