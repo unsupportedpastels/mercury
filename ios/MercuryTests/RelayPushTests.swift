@@ -31,7 +31,10 @@ final class RelayPushTests: XCTestCase {
         RelayPushCoordinator(defaults: UserDefaults(suiteName: "push-tests-\(UUID())")!, sandbox: sandbox)
     }
     func testAppModelSelectivePreviewDisableRetainsOwnershipUntilUnregisterAcknowledged() async throws {
-        for (completionEnabled, reenable) in [(true, false), (false, false), (true, true), (false, true)] {
+        for (completionEnabled, reenable, genericCapability) in [
+            (true, false, true), (false, false, true), (true, true, true), (false, true, true),
+            (true, false, false), (false, false, false), (true, true, false), (false, true, false)
+        ] {
             let defaults = UserDefaults(suiteName: "push-preferences-\(UUID())")!
             let c = RelayPushCoordinator(defaults: defaults), t = target()
             let model = AppModel(relayPush: c, notificationPreferencesStore: NotificationPreferencesStore(userDefaults: defaults))
@@ -48,10 +51,14 @@ final class RelayPushTests: XCTestCase {
             var releaseUnregister: CheckedContinuation<Void, Never>?
             let rpc: RelayPushCoordinator.Request = { method, params in
                 if offline { throw URLError(.notConnectedToInternet) }
-                if method == "relay.status" { return ["capabilities": ["push_notifications_v1": true, "push_previews": [
-                    "version": 1, "register_method": "relay.push.preview.register", "unregister_method": "relay.push.unregister",
-                    "aead": "CHACHA20-POLY1305", "max_plaintext_bytes": 1280, "max_title_utf8_bytes": 160, "max_body_utf8_bytes": 640
-                ]]] }
+                if method == "relay.status" {
+                    var capabilities: [String: Any] = ["push_previews": [
+                        "version": 1, "register_method": "relay.push.preview.register", "unregister_method": "relay.push.unregister",
+                        "aead": "CHACHA20-POLY1305", "max_plaintext_bytes": 1280, "max_title_utf8_bytes": 160, "max_body_utf8_bytes": 640
+                    ]]
+                    if genericCapability { capabilities["push_notifications_v1"] = true }
+                    return ["capabilities": capabilities]
+                }
                 if method == "relay.push.unregister" {
                     unregisters += 1
                     if unregisters == 1 {

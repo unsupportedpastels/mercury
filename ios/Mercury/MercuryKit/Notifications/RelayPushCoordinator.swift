@@ -370,7 +370,8 @@ final class RelayPushCoordinator {
         work = Task { [weak self] in
             await previous?.value
             do {
-                guard Self.supports(try await request("relay.status", [:])) else { return }
+                let capabilities = try await request("relay.status", [:])
+                guard Self.supports(capabilities) || Self.previewCapability(capabilities) != nil else { return }
                 let result = try await request("relay.push.unregister", [:])
                 guard let registered = result["registered"] as? NSNumber,
                       CFGetTypeID(registered) == CFBooleanGetTypeID(), !registered.boolValue else { throw URLError(.badServerResponse) }
@@ -391,7 +392,8 @@ final class RelayPushCoordinator {
         let pool = RelayConnectionPool()
         guard let connection = try? await pool.acquire(target: target, profile: "default", channel: "push-cleanup-" + UUID().uuidString) else { return }
         do {
-            if supports(try await connection.relayRequest("relay.status")) {
+            let capabilities = try await connection.relayRequest("relay.status")
+            if supports(capabilities) || previewCapability(capabilities) != nil {
                 let result = try await connection.relayRequest("relay.push.unregister", params: [:])
                 guard let registered = result["registered"] as? NSNumber,
                       CFGetTypeID(registered) == CFBooleanGetTypeID(), !registered.boolValue else {
