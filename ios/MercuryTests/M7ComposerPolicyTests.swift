@@ -3,6 +3,94 @@ import XCTest
 
 final class M7ComposerPolicyTests: XCTestCase {
     @MainActor
+    func testRejectedQueueRestoresAfterNewerDraftBecomesEmptyOnlyOnce() throws {
+        let state = ChatSessionState(sessionID: "session", title: "", isNewSession: false, incomingShare: nil)
+        let queued = state.queuedPromptState
+        let attempt = try XCTUnwrap(queued.lifecycle.begin(draft: "Rejected original"))
+        state.draft = "Newer draft"
+        guard case .restoreDraft(let original) = queued.lifecycle.resolve(attempt: attempt, accepted: false) else {
+            return XCTFail("Expected explicit rejection")
+        }
+        queued.draftToRestore = original
+        state.restoreDeferredQueuedDraft() // Production receipt observer.
+        XCTAssertEqual(state.draft, "Newer draft")
+        XCTAssertEqual(queued.draftToRestore, original)
+        state.draft = "" // Delete or normal send clears the newer composer.
+        XCTAssertEqual(state.draft, original)
+        XCTAssertNil(queued.draftToRestore)
+        state.draft = ""
+        XCTAssertEqual(state.draft, "", "Recovered text must never replay")
+    }
+
+    @MainActor
+    func testComposerBindingClearsUnsupportedQueueErrorBeforeNormalSend() throws {
+        let state = ChatSessionState(sessionID: "session", title: "", isNewSession: false, incomingShare: nil)
+        state.queuedPromptState.error = "This connection does not support queued prompts."
+        state.composerError = "Previous error"
+        let binding = state.composerErrorBinding
+        XCTAssertEqual(binding.wrappedValue, state.queuedPromptState.error)
+        binding.wrappedValue = nil // ComposerBar.send's production binding contract.
+        XCTAssertNil(state.composerErrorBinding.wrappedValue)
+        XCTAssertNil(state.queuedPromptState.error)
+        XCTAssertNil(state.composerError)
+    }
+
+    @MainActor
+    func testStaleComposerBindingCannotClearNewerAttemptOrScope() throws {
+        let state = ChatSessionState(sessionID: "session", title: "", isNewSession: false, incomingShare: nil)
+        state.queuedPromptState.error = "Old rejection"
+        let oldBinding = state.composerErrorBinding
+        _ = try XCTUnwrap(state.queuedPromptState.lifecycle.begin(draft: "New attempt"))
+        state.queuedPromptState.error = "New uncertainty"
+        state.composerError = "New composer error"
+        oldBinding.wrappedValue = nil
+        XCTAssertEqual(state.composerError, "New composer error")
+        XCTAssertEqual(state.queuedPromptState.error, "New uncertainty")
+        let otherBinding = state.composerErrorBinding
+        state.queuedPromptState = QueuedPromptState()
+        state.queuedPromptState.error = "Other scope"
+        state.composerError = "Other composer error"
+        otherBinding.wrappedValue = nil
+        XCTAssertEqual(state.composerError, "Other composer error")
+        XCTAssertEqual(state.queuedPromptState.error, "Other scope")
+    }
+
+    @MainActor
+    func testProductionDiscardClearsErrorWithoutRestorationAndFencesNewAttempt() throws {
+        let state = ChatSessionState(sessionID: "session", title: "", isNewSession: false, incomingShare: nil)
+        let queued = state.queuedPromptState
+        let old = try XCTUnwrap(queued.lifecycle.begin(draft: "Unconfirmed"))
+        queued.uncertain = true
+        queued.error = "Unconfirmed queue"
+        let discard = try XCTUnwrap(state.discardUncertainQueue)
+        discard()
+        XCTAssertNil(state.composerErrorBinding.wrappedValue)
+        XCTAssertFalse(queued.lifecycle.hasPendingAttempt)
+        state.restoreDeferredQueuedDraft()
+        XCTAssertEqual(state.draft, "")
+        _ = try XCTUnwrap(queued.lifecycle.begin(draft: "Newer"))
+        queued.uncertain = true
+        queued.error = "New uncertainty"
+        discard()
+        XCTAssertTrue(queued.lifecycle.hasPendingAttempt)
+        XCTAssertEqual(queued.error, "New uncertainty")
+        XCTAssertEqual(queued.lifecycle.resolve(attempt: old, accepted: true), .stale)
+    }
+
+    @MainActor
+    func testAcceptedQueueNeverRestoresWhenNewerComposerEmpties() throws {
+        let state = ChatSessionState(sessionID: "session", title: "", isNewSession: false, incomingShare: nil)
+        let attempt = try XCTUnwrap(state.queuedPromptState.lifecycle.begin(draft: "Accepted"))
+        state.draft = "Newer"
+        XCTAssertEqual(state.queuedPromptState.lifecycle.resolve(attempt: attempt, accepted: true), .accepted)
+        state.restoreDeferredQueuedDraft()
+        state.draft = ""
+        state.restoreDeferredQueuedDraft()
+        XCTAssertEqual(state.draft, "")
+        XCTAssertNil(state.queuedPromptState.draftToRestore)
+    }
+
+    @MainActor
     func testQueuedReceiptSurvivesPresentationReleaseAndRemainsScopeIsolated() throws {
         let store = QueuedPromptStateStore()
         let scope = QueuedPromptScope(relayTargetID: nil, origin: "https://hermes.example", profile: "default", durableID: "session")
