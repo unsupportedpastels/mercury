@@ -1,0 +1,11 @@
+{
+  "cases": [
+    {"name":"completion-cleanup","kind":"completion","text":"# Hidden heading\r\n\r\n**Ready**\n`Next`","title":"  Project Alpha  ","include_title":true,"include_excerpt":true,"expected_title":"Project Alpha","expected_body":"Ready\nNext"},
+    {"name":"title-markdown-and-controls","kind":"completion","text":"Answer","title":"\u0000## **Project `Beta`**\r\nignored","include_title":true,"include_excerpt":false,"expected_title":"Project Beta"},
+    {"name":"completion-private","kind":"completion","text":"Sensitive response","title":"Private","include_title":false,"include_excerpt":false},
+    {"name":"interrupt-sentinel","kind":"completion","text":"Operation interrupted: waiting for model response (fixture)","include_title":false,"include_excerpt":true,"expected_body":"Response completed"},
+    {"name":"approval-fixed","kind":"approval","text":"rm -rf secret-command","expected_title":"Hermes needs approval","expected_body":"Authorization is required to continue"},
+    {"name":"clarification-fixed","kind":"clarification","text":"private question","expected_title":"Hermes needs your input","expected_body":"Clarification is required to continue"},
+    {"name":"secure-fixed","kind":"secure","text":"password prompt","expected_title":"Hermes needs secure input","expected_body":"Secure input is required to continue"}
+  ]
+}

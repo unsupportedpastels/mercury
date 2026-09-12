@@ -58,6 +58,8 @@ final class ChatSessionState {
     var dictation: ComposerDictationCoordinator?
     var readAloud: ReadAloudController?
     var incomingShareApplied = false
+    let notificationVisibilityOwner = UUID()
+    var notificationSourceScope: NotificationSourceScope?
     var processRows: [ActivityProcess] = []
     var progress = MercuryCore.DurableProgressBridge.shared.initial()
     var progressRefreshing = false

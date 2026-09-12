@@ -142,11 +142,7 @@ struct KeychainServerCatalogPersistence: ServerCatalogPersisting {
     }
 
     private var baseQuery: [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: Self.account
-        ]
+        MercuryPrivateKeychainScope.query(service: Self.service, account: Self.account)
     }
 }
 

@@ -1,21 +1,26 @@
 import Foundation
 import UserNotifications
+import MercuryNotificationPreviewKit
 import UIKit
 
 /// Bridges `UNUserNotificationCenter` callbacks into `AppModel`.
 ///
 /// - A notification tap publishes its `mercury.sessionID` as an open request
 ///   that RootView/SessionListView navigate to.
-/// - While Mercury is foregrounded, a delivered notification still presents as
-///   a banner (the decision to post at all was already gated by the coordinator
-///   against the visible/foreground session, so anything that reaches here is
-///   for a session the user is *not* looking at and should surface).
+/// - Re-check visibility at delivery, not only when a local request was queued.
+///   Remote display routing comes only from authenticated local preview receipts.
 final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+    private let previewRoutes: PreviewRouteConsuming?
     /// Set after init (the SwiftUI App can't safely capture its `@State`
     /// AppModel during `init`). Invoked on the main actor for each tap.
     var onWake: (@MainActor (String) async -> Void)?
+    var onPreviewRoute: (@MainActor (String, String, String) async -> Void)?
 
     var onOpenSession: (@MainActor (String) -> Void)?
+    var shouldPresent: (@MainActor (NotificationSessionIdentity) -> Bool)?
+    var localRouteIdentity: (@MainActor (SessionOpenRoute) -> NotificationSessionIdentity?)?
+    var previewIdentity: (@MainActor (PreviewRouteRecord) -> NotificationSessionIdentity?)?
+    var remoteIdentity: (@MainActor (String, String) async -> NotificationSessionIdentity?)?
 
     /// Multi-server route handler: taps whose payload carries a canonical
     /// mercury://session route go here so they can cross server/profile
@@ -23,8 +28,9 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     var onOpenRoute: (@MainActor (SessionOpenRoute) -> Void)?
 
     static func presentationOptions(userInfo: [AnyHashable: Any]) -> UNNotificationPresentationOptions {
-        // Reserved push envelope never falls through to content-bearing local routes.
-        userInfo["mercury_wake"] != nil ? [] : [.banner, .sound, .list]
+        // Without an authenticated route we cannot selectively identify a session.
+        // Do not silently suppress every other session on older generic-push hosts.
+        [.banner, .sound, .list]
     }
 
     // Platform seams keep assertion ordering and expiry testable through didReceive.
@@ -37,6 +43,12 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     var routeSleep: @MainActor () async throws -> Void = { try await Task.sleep(nanoseconds: 15_000_000_000) }
 
     override init() {
+        previewRoutes = PreviewRouteStore()
+        super.init()
+    }
+
+    init(previewRoutes: PreviewRouteConsuming?) {
+        self.previewRoutes = previewRoutes
         super.init()
     }
 
@@ -45,7 +57,49 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler(Self.presentationOptions(userInfo: notification.request.content.userInfo))
+        let content = notification.request.content
+        let remote = notification.request.trigger is UNPushNotificationTrigger
+        Task { @MainActor in
+            completionHandler(await optionsForRemoteArrival(userInfo: content.userInfo, isRemote: remote))
+        }
+    }
+
+    @MainActor
+    func optionsForRemoteArrival(userInfo: [AnyHashable: Any], isRemote: Bool) async -> UNNotificationPresentationOptions {
+        guard isRemote || userInfo["mercury_wake"] != nil else {
+            return optionsForArrival(userInfo: userInfo, isRemote: false)
+        }
+        guard let wake = RelayPushCoordinator.wake(from: userInfo),
+              let event = userInfo["mercury_event"] as? String,
+              RelayPushCoordinator.validWake(event) else { return Self.presentationOptions(userInfo: userInfo) }
+        let receipt = (previewRoutes as? PreviewRouteReading)?.peek(event: event, wake: wake, now: Int64(Date().timeIntervalSince1970))
+        var identity = receipt.flatMap { previewIdentity?($0) }
+        if identity == nil { identity = await remoteIdentity?(wake, event) }
+        // Recheck current visibility after the encrypted read, not at enqueue
+        // or before suspension. Neither route source consumes a tap receipt.
+        if let identity, shouldPresent?(identity) == false { return [] }
+        return Self.presentationOptions(userInfo: userInfo)
+    }
+
+    @MainActor
+    func optionsForArrival(userInfo: [AnyHashable: Any], isRemote: Bool) -> UNNotificationPresentationOptions {
+        let identity: NotificationSessionIdentity?
+        if isRemote || userInfo["mercury_wake"] != nil {
+            // Never trust transport-supplied local routes, including preview.sid.
+            // A read does not consume the route needed by a later notification tap.
+            if let wake = RelayPushCoordinator.wake(from: userInfo),
+               let event = userInfo["mercury_event"] as? String,
+               let route = (previewRoutes as? PreviewRouteReading)?.peek(event: event, wake: wake, now: Int64(Date().timeIntervalSince1970)) {
+                identity = previewIdentity?(route)
+            } else { identity = nil }
+        } else if let local = NotificationSessionIdentity.fromLocalPayload(userInfo[NotificationSessionIdentity.payloadKey]) {
+            identity = local
+        } else if let raw = userInfo["mercury.route"] as? String,
+                  let url = URL(string: raw), let route = MercuryDeepLink.parse(url) {
+            identity = localRouteIdentity?(route)
+        } else { identity = nil }
+        if let identity, shouldPresent?(identity) == false { return [] }
+        return Self.presentationOptions(userInfo: userInfo)
     }
 
     func userNotificationCenter(
@@ -93,7 +147,15 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
 
     @MainActor
     private func routePayload(_ userInfo: [AnyHashable: Any]) async {
-        // Remote payloads can never supply a trusted local route.
+        // Remote payloads can never supply a trusted local route. Only the
+        // authenticated local receipt can select a preview session/profile.
+        if let wake = RelayPushCoordinator.wake(from: userInfo),
+           let event = userInfo["mercury_event"] as? String,
+           let onPreviewRoute,
+           let route = previewRoutes?.consume(event: event, wake: wake, now: Int64(Date().timeIntervalSince1970)) {
+            await onPreviewRoute(wake, route.sessionID, route.profile)
+            return
+        }
         if let wake = RelayPushCoordinator.wake(from: userInfo), let onWake {
             await onWake(wake)
         }

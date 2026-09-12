@@ -86,14 +86,18 @@ struct MercuryApp: App {
         delegate.onOpenRoute = { route in
             model.handleSessionRoute(route)
         }
+        model.configureNotificationPresentation(delegate)
         delegate.onWake = { wake in await model.handlePushWake(wake) }
+        delegate.onPreviewRoute = { wake, sid, profile in await model.handlePushPreviewRoute(wake: wake, durableSessionID: sid, profile: profile) }
     }
 
     var body: some Scene {
         WindowGroup {
             Group {
                 #if DEBUG
-                if ProcessInfo.processInfo.arguments.contains("-uitest-push") {
+                if ProcessInfo.processInfo.arguments.contains("-uitest-notification-arrival") {
+                    NotificationArrivalFixtureView()
+                } else if ProcessInfo.processInfo.arguments.contains("-uitest-push") {
                     RelayPushFixtureView()
                 } else if ProcessInfo.processInfo.arguments.contains("-uitest-dictation-send") {
                     DictationSendFixtureView()
@@ -111,7 +115,8 @@ struct MercuryApp: App {
                 .environment(appModel)
                 .task {
                     #if DEBUG
-                    if ProcessInfo.processInfo.arguments.contains("-uitest-push")
+                    if ProcessInfo.processInfo.arguments.contains("-uitest-notification-arrival")
+                        || ProcessInfo.processInfo.arguments.contains("-uitest-push")
                         || ProcessInfo.processInfo.arguments.contains("-uitest-dictation-send")
                         || ProcessInfo.processInfo.arguments.contains("-uitest-background-tasks")
                         || ProcessInfo.processInfo.arguments.contains("-uitest-chat-scroll")

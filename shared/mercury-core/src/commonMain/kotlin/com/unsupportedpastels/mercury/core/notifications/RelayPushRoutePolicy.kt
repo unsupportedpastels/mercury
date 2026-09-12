@@ -8,11 +8,11 @@ data class RelayPushSessionRoute(val durableSessionId: String, val profile: Stri
  * Plain wire maps accept actual booleans and strings only. Native adapters bridge
  * their JSON value types; they do not trim, canonicalize or validate route fields.
  * Missing, unresolved and malformed responses all retain the existing Home fallback.
- * This is separate from the encrypted-preview contract (whose session bound is 128).
+ * Preserve the preview branch's existing route bounds through its shared contract.
  */
 object RelayPushRoutePolicy {
-    const val MAX_SESSION_UTF8_BYTES = 256
-    const val MAX_PROFILE_UTF8_BYTES = 64
+    const val MAX_SESSION_UTF8_BYTES = PushPreviewContract.MAX_ROUTE_SESSION_UTF8_BYTES
+    const val MAX_PROFILE_UTF8_BYTES = PushPreviewContract.MAX_ROUTE_PROFILE_UTF8_BYTES
 
     fun supports(status: Map<*, *>?): Boolean = capability(status, "push_notifications_v1")
 

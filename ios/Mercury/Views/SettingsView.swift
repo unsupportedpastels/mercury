@@ -260,6 +260,7 @@ private struct NotificationSettingsView: View {
 
             if status.countsAsAuthorized && prefs.notificationsEnabled {
                 alertsSection
+                encryptedPreviewSection
             }
 
             Section {
@@ -372,6 +373,32 @@ private struct NotificationSettingsView: View {
         case .notDetermined, .unknown:
             return "Not requested yet. Mercury only asks for permission when you tap Enable — never at launch."
         }
+    }
+
+    @ViewBuilder
+    private var encryptedPreviewSection: some View {
+        Section {
+            Toggle("Encrypted previews", isOn: Binding(
+                get: { appModel.relayPush.previewEnabled },
+                set: { value in
+                    appModel.relayPush.setPreview(enabled: value, includeTitle: appModel.relayPush.includeTitle, includeResponseExcerpt: appModel.relayPush.includeResponseExcerpt)
+                    appModel.syncPushPreferences()
+                }
+            ))
+            if appModel.relayPush.previewEnabled {
+                Toggle("Conversation title", isOn: Binding(
+                    get: { appModel.relayPush.includeTitle },
+                    set: { appModel.relayPush.setPreview(enabled: true, includeTitle: $0, includeResponseExcerpt: appModel.relayPush.includeResponseExcerpt) }
+                ))
+                Toggle("Response excerpt", isOn: Binding(
+                    get: { appModel.relayPush.includeResponseExcerpt },
+                    set: { appModel.relayPush.setPreview(enabled: true, includeTitle: appModel.relayPush.includeTitle, includeResponseExcerpt: $0) }
+                ))
+                Button("Rotate preview key") { appModel.relayPush.rotatePreviewKey() }
+                Text("Preview content is encrypted through Relay. Apple and Relay can see delivery metadata and ciphertext. If this phone is locked or its key cannot be opened, Mercury deliberately shows only the generic alert. iOS Show Previews settings still control whether notification content is displayed. Conversation titles appear only when the host observed a validated title for that live session.")
+                    .font(.footnote).foregroundStyle(Color.secondary)
+            }
+        } header: { Text("Relay preview privacy") }
     }
 
     @ViewBuilder

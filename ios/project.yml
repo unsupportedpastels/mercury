@@ -19,6 +19,16 @@ settings:
     CURRENT_PROJECT_VERSION: 3
 
 targets:
+  MercuryNotificationPreviewKit:
+    type: framework
+    platform: iOS
+    sources:
+      - MercuryNotificationPreviewKit
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.unsupportedpastels.mercury.notificationpreviewkit
+
   MercuryShareKit:
     type: framework
     platform: iOS
@@ -36,6 +46,9 @@ targets:
       - Mercury
       - Resources
     dependencies:
+      - target: MercuryNotificationPreviewKit
+      - target: MercuryNotificationService
+        embed: true
       - target: MercuryShareKit
       - target: MercuryShare
         embed: true
@@ -92,6 +105,8 @@ targets:
         NSSpeechRecognitionUsageDescription: Mercury uses speech recognition to place dictated words into your message draft.
         NSCameraUsageDescription: Mercury uses the camera only to scan a Mercury Relay pairing QR code.
         MercuryAppGroupIdentifier: $(MERCURY_APP_GROUP_IDENTIFIER)
+        MercuryPrivateKeychainAccessGroup: $(AppIdentifierPrefix)com.unsupportedpastels.mercury
+        MercuryPreviewKeychainAccessGroup: $(AppIdentifierPrefix)com.unsupportedpastels.mercury.preview
         # Plain-HTTP is a supported configuration for LAN self-hosted servers
         # (the "Use HTTPS" checkbox off). Scoped ATS exception: local
         # networking only — cleartext to public hosts stays blocked.
@@ -128,6 +143,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         MercuryAppGroupIdentifier: $(MERCURY_APP_GROUP_IDENTIFIER)
+        MercuryPreviewKeychainAccessGroup: $(AppIdentifierPrefix)com.unsupportedpastels.mercury.preview
         NSExtension:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
@@ -136,6 +152,34 @@ targets:
               NSExtensionActivationSupportsText: true
               NSExtensionActivationSupportsImageWithMaxCount: 5
               NSExtensionActivationSupportsFileWithMaxCount: 5
+
+  MercuryNotificationService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - MercuryNotificationService
+    dependencies:
+      - target: MercuryNotificationPreviewKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.unsupportedpastels.mercury.notification-service
+        CODE_SIGN_ENTITLEMENTS: MercuryNotificationService/MercuryNotificationService.entitlements
+      configs:
+        Debug:
+          MERCURY_PREVIEW_APNS_ENVIRONMENT: sandbox
+        Release:
+          MERCURY_PREVIEW_APNS_ENVIRONMENT: production
+    info:
+      path: MercuryNotificationService/Info.plist
+      properties:
+        CFBundleDisplayName: Mercury Notification Preview
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        MercuryAPNSEnvironment: $(MERCURY_PREVIEW_APNS_ENVIRONMENT)
+        MercuryPreviewKeychainAccessGroup: $(AppIdentifierPrefix)com.unsupportedpastels.mercury.preview
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
 
   MercuryTests:
     type: bundle.unit-test
@@ -152,6 +196,8 @@ targets:
         buildPhase: resources
       - path: ../shared/mercury-core/src/commonTest/resources/relay-protocol/secure-channel-corpus.json
         buildPhase: resources
+      - path: ../shared/mercury-core/src/commonTest/resources/push-preview/v1-vector.json
+        buildPhase: resources
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -161,6 +207,7 @@ targets:
     dependencies:
       - target: Mercury
       - target: MercuryShareKit
+      - target: MercuryNotificationPreviewKit
 
   # Live integration tests: hit an operator-supplied Hermes origin and Nous Portal.
   # Kept in a separate target so the default MercuryTests suite stays hermetic

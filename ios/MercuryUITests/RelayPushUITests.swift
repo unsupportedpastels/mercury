@@ -8,10 +8,10 @@ final class RelayPushUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["push-fixture-status"].waitForExistence(timeout: 15))
         return app
     }
-    func testGenericForegroundSuppressionAndDirectFallback() {
+    func testGenericForegroundWithoutRouteAndDirectFallback() {
         let app = launch()
         app.buttons["Deliver generic foreground push"].tap()
-        XCTAssertEqual(app.staticTexts["push-fixture-presentation"].label, "Generic banner suppressed")
+        XCTAssertEqual(app.staticTexts["push-fixture-presentation"].label, "Generic banner preserved")
         app.buttons["Deliver direct local notification"].tap()
         XCTAssertEqual(app.staticTexts["push-fixture-presentation"].label, "Direct local banner preserved")
     }

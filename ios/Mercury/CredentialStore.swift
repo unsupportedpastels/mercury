@@ -1,6 +1,24 @@
 import Foundation
 import Security
 
+/// The app-only access group remains first in the app entitlement so items
+/// written by earlier releases keep their default group. Every private store
+/// pins it explicitly; only preview keys use the extension-shared group.
+enum MercuryPrivateKeychainScope {
+    static var accessGroup: String {
+        (Bundle.main.object(forInfoDictionaryKey: "MercuryPrivateKeychainAccessGroup") as? String) ?? ""
+    }
+
+    static func query(service: String, account: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecAttrAccessGroup as String: accessGroup,
+        ]
+    }
+}
+
 /// An origin-scoped access/refresh token pair.
 ///
 /// `expiresAt` (epoch seconds) and `provider` were added additively for native
@@ -144,10 +162,6 @@ struct KeychainCredentialStore: CredentialStoring {
     }
 
     private func baseQuery(account: String) -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
+        MercuryPrivateKeychainScope.query(service: service, account: account)
     }
 }

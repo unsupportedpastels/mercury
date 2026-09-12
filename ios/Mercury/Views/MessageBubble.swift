@@ -20,6 +20,12 @@ struct MessageBubble: View {
             content
             if !isUser { Spacer(minLength: 48) }
         }
+        // Expand the row, not the painted bubble. The leading spacer keeps
+        // outgoing text at the trailing edge while reserving a wrapping gutter.
+        .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+        #if DEBUG
+        .modifier(MessageBubbleFrameProbe(role: role, text: text, part: "row"))
+        #endif
     }
 
     @ViewBuilder
@@ -29,15 +35,20 @@ struct MessageBubble: View {
                 .font(.body)
                 .foregroundStyle(Color.primary)
                 .textSelection(.enabled)
-                // The bubble is inside an HStack with a leading spacer. Give
-                // Text an explicit width proposal and let every line expand
-                // vertically instead of allowing SwiftUI to truncate it.
-                .frame(maxWidth: .infinity, alignment: .leading)
+                // Accept the HStack's bounded width, but retain the text's
+                // ideal height so wrapped lines never truncate. Short text
+                // keeps its intrinsic width inside the background.
                 .fixedSize(horizontal: false, vertical: true)
+                #if DEBUG
+                .modifier(MessageBubbleFrameProbe(role: role, text: text, part: "text"))
+                #endif
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(Color.surfaceMid)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
+                #if DEBUG
+                .modifier(MessageBubbleFrameProbe(role: role, text: text, part: "bubble"))
+                #endif
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 if isStreaming {
@@ -51,6 +62,9 @@ struct MessageBubble: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            #if DEBUG
+            .modifier(MessageBubbleFrameProbe(role: role, text: text, part: "content"))
+            #endif
         }
     }
 }

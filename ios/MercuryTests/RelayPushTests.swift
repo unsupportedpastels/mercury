@@ -1,9 +1,25 @@
 import XCTest
 import UserNotifications
+import MercuryNotificationPreviewKit
 @testable import Mercury
+
+private final class PushPreferenceClient: LocalNotificationScheduling, @unchecked Sendable {
+    func requestAuthorization() async -> Bool { true }
+    func authorizationGranted() async -> Bool { true }
+    func authorizationStatus() async -> MercuryNotificationAuthorizationStatus { .authorized }
+    func post(_ notification: PendingNotification) async {}
+    func cancel(sessionID: String) async {}
+}
 
 @MainActor
 final class RelayPushTests: XCTestCase {
+    private final class RouteReader: PreviewRouteConsuming {
+        var route: PreviewRouteRecord?
+        init(_ route: PreviewRouteRecord?) { self.route = route }
+        func consume(event: String, wake: String, now: Int64) -> PreviewRouteRecord? {
+            defer { route = nil }; return route
+        }
+    }
     private let wake = String(repeating: "w", count: 43)
     private func target() -> RelayPairedTarget {
         RelayPairedTarget(id: UUID(), label: "Push fixture", relayOrigin: "https://relay.example.test",
@@ -14,6 +30,98 @@ final class RelayPushTests: XCTestCase {
     private func coordinator(sandbox: Bool = true) -> RelayPushCoordinator {
         RelayPushCoordinator(defaults: UserDefaults(suiteName: "push-tests-\(UUID())")!, sandbox: sandbox)
     }
+    func testAppModelSelectivePreviewDisableRetainsOwnershipUntilUnregisterAcknowledged() async throws {
+        for (completionEnabled, reenable, genericCapability) in [
+            (true, false, true), (false, false, true), (true, true, true), (false, true, true),
+            (true, false, false), (false, false, false), (true, true, false), (false, true, false)
+        ] {
+            let defaults = UserDefaults(suiteName: "push-preferences-\(UUID())")!
+            let c = RelayPushCoordinator(defaults: defaults), t = target()
+            let model = AppModel(relayPush: c, notificationPreferencesStore: NotificationPreferencesStore(userDefaults: defaults))
+            model.injectNotificationCoordinator(NotificationCoordinator(client: PushPreferenceClient(), store: UserDefaultsWatermarkStore(userDefaults: defaults)))
+            await model.refreshNotificationAuthorizationStatus()
+            c.setPreview(enabled: true, includeTitle: false, includeResponseExcerpt: false)
+            model.updateNotificationPreferences {
+                $0.notificationsEnabled = true; $0.completionEnabled = completionEnabled; $0.attentionEnabled = !completionEnabled
+            }
+            let first = NSObject(), next = NSObject()
+            var offline = false, unregisters = 0, registers = 0
+            var keyID = ""
+            let unregisterStarted = expectation(description: "unregister began")
+            var releaseUnregister: CheckedContinuation<Void, Never>?
+            let rpc: RelayPushCoordinator.Request = { method, params in
+                if offline { throw URLError(.notConnectedToInternet) }
+                if method == "relay.status" {
+                    var capabilities: [String: Any] = ["push_previews": [
+                        "version": 1, "register_method": "relay.push.preview.register", "unregister_method": "relay.push.unregister",
+                        "aead": "CHACHA20-POLY1305", "max_plaintext_bytes": 1280, "max_title_utf8_bytes": 160, "max_body_utf8_bytes": 640
+                    ]]
+                    if genericCapability { capabilities["push_notifications_v1"] = true }
+                    return ["capabilities": capabilities]
+                }
+                if method == "relay.push.unregister" {
+                    unregisters += 1
+                    if unregisters == 1 {
+                        await withCheckedContinuation { releaseUnregister = $0; unregisterStarted.fulfill() }
+                    }
+                    return ["registered": false]
+                }
+                XCTAssertEqual(method, "relay.push.preview.register", "Selective choices must never enable generic push")
+                registers += 1
+                let preview = params["preview"] as! [String: Any]
+                keyID = preview["key_id"] as! String
+                return ["registered": true, "wake_handle": self.wake, "preview": ["version": 1, "key_id": keyID]]
+            }
+            c.select(t); c.receivedToken(Data([1]))
+            c.connected(target: t, identity: ObjectIdentifier(first), request: rpc)
+            await c.waitForWork()
+            let completion = ChatEvent.messageComplete(sessionID: "fixture", text: "done", status: "finished", error: nil, reasoning: nil, warning: nil, failureReason: nil, recoverable: false, billing: nil)
+            let attention = ChatEvent.clarifyRequest(sessionID: "fixture", requestID: "request", question: "prompt", choices: [], multiSelect: false)
+            XCTAssertTrue(c.ownsDelivery(for: t))
+            offline = true
+            // Same sequence as Settings: revoke preview keys, then sync real preferences.
+            c.setPreview(enabled: false, includeTitle: false, includeResponseExcerpt: false)
+            model.syncPushPreferences()
+            XCTAssertFalse(c.enabled, "Desired remote registration is off")
+            XCTAssertNil(try PreviewKeychainRepository().load(environment: "sandbox", wake: wake, keyID: keyID, now: Int64(Date().timeIntervalSince1970)))
+            await c.waitForWork()
+            for _ in 0..<3 { model.syncPushPreferences() }
+            await c.waitForWork()
+            XCTAssertEqual(c.ownsDelivery(for: t, event: completion), completionEnabled)
+            XCTAssertEqual(c.ownsDelivery(for: t, event: attention), !completionEnabled)
+            XCTAssertEqual(c.target(for: wake, targets: [t])?.id, t.id)
+            XCTAssertEqual(registers, 1)
+            let cold = RelayPushCoordinator(defaults: defaults)
+            XCTAssertEqual(cold.target(for: wake, targets: [t])?.id, t.id)
+            offline = false
+            c.connected(target: t, identity: ObjectIdentifier(next), request: rpc)
+            await fulfillment(of: [unregisterStarted], timeout: 2)
+            XCTAssertTrue(c.ownsDelivery(for: t), "An in-flight unregister is not an ACK")
+            if reenable {
+                c.setPreview(enabled: true, includeTitle: false, includeResponseExcerpt: false)
+                model.syncPushPreferences()
+            }
+            releaseUnregister?.resume()
+            await c.waitForWork()
+            XCTAssertEqual(unregisters, 1)
+            XCTAssertEqual(c.ownsDelivery(for: t), reenable)
+            XCTAssertEqual(c.target(for: wake, targets: [t])?.id, reenable ? t.id : nil)
+            XCTAssertEqual(registers, reenable ? 2 : 1)
+            if reenable {
+                XCTAssertEqual(c.ownsDelivery(for: t, event: completion), completionEnabled)
+                XCTAssertEqual(c.ownsDelivery(for: t, event: attention), !completionEnabled)
+                // Explicit master disable still drops ownership synchronously,
+                // even after a selective disable / enable / ACK race.
+                model.updateNotificationPreferences { $0.notificationsEnabled = false }
+                XCTAssertFalse(c.ownsDelivery(for: t))
+                XCTAssertNil(c.target(for: wake, targets: [t]))
+                await c.waitForWork()
+                XCTAssertEqual(unregisters, 2)
+                XCTAssertFalse(c.ownsDelivery(for: t))
+            }
+        }
+    }
+
     func testAppleFailureAfterSuccessClearsPersistedOwnershipAndUnregisters() async {
         let defaults = UserDefaults(suiteName: "failed-push-\(UUID())")!
         let c = RelayPushCoordinator(defaults: defaults), t = target(), owner = NSObject()
@@ -183,11 +291,45 @@ final class RelayPushTests: XCTestCase {
             XCTAssertFalse(RelayPushCoordinator.validWake(invalid))
         }
     }
-    func testGenericPushForegroundSuppressedAndDirectLocalPreserved() {
+    func testGenericPushWithoutAuthenticatedRouteAndDirectLocalPreserved() {
         let payload: [AnyHashable: Any] = ["aps": ["alert": ["title": "Mercury", "body": "An update is available. Open Mercury to continue."], "sound": "default"], "mercury_wake": wake]
         XCTAssertEqual(RelayPushCoordinator.wake(from: payload), wake)
-        XCTAssertTrue(NotificationDelegate.presentationOptions(userInfo: payload).isEmpty)
+        XCTAssertEqual(NotificationDelegate.presentationOptions(userInfo: payload), [.banner, .sound, .list])
         XCTAssertTrue(NotificationDelegate.presentationOptions(userInfo: ["mercury.sessionID": "local"]).contains(.banner))
+    }
+    func testSystemResponseCompletesBeforeIndependentWakeRouting() async {
+        let delegate = NotificationDelegate(previewRoutes: RouteReader(nil))
+        var completed = false
+        let routed = expectation(description: "retained route task")
+        delegate.onWake = { _ in
+            XCTAssertTrue(completed)
+            routed.fulfill()
+        }
+        delegate.handlePayload(["mercury_wake": wake]) { completed = true }
+        XCTAssertTrue(completed, "System completion must not wait for routing or the network")
+        await fulfillment(of: [routed], timeout: 2)
+    }
+
+    func testPreviewTapUsesOnlyAuthenticatedRouteStoreNotTransportFields() async {
+        let event = String(repeating: "e", count: 43)
+        let spoofed: [AnyHashable: Any] = ["mercury_wake": wake, "mercury_event": event,
+            "mercury.preview.sid": "spoof", "mercury.preview.profile": "spoof"]
+        let noRoute = NotificationDelegate(previewRoutes: RouteReader(nil))
+        var fallbackWake: String?
+        let fallbackRouted = expectation(description: "fallback routed")
+        noRoute.onWake = { fallbackWake = $0; fallbackRouted.fulfill() }
+        noRoute.handlePayload(spoofed) {}
+        await fulfillment(of: [fallbackRouted], timeout: 2)
+        XCTAssertEqual(fallbackWake, wake)
+
+        let stored = PreviewRouteRecord(event: event, wake: wake, sessionID: "durable", profile: "default", expiresAt: Int64(Date().timeIntervalSince1970) + 60)
+        let delegate = NotificationDelegate(previewRoutes: RouteReader(stored))
+        var opened: (String, String, String)?
+        let previewRouted = expectation(description: "preview routed")
+        delegate.onPreviewRoute = { opened = ($0, $1, $2); previewRouted.fulfill() }
+        delegate.handlePayload(spoofed) {}
+        await fulfillment(of: [previewRouted], timeout: 2)
+        XCTAssertEqual(opened?.0, wake); XCTAssertEqual(opened?.1, "durable"); XCTAssertEqual(opened?.2, "default")
     }
     func testCapabilityMustBeExplicitBoolean() {
         XCTAssertTrue(RelayPushCoordinator.supports(["capabilities": ["push_notifications_v1": true]]))
@@ -195,6 +337,54 @@ final class RelayPushTests: XCTestCase {
             XCTAssertFalse(RelayPushCoordinator.supports(["capabilities": ["push_notifications_v1": value]]))
         }
         XCTAssertFalse(RelayPushCoordinator.supports([:]))
+    }
+    func testPreviewCapabilityRequiresExactMethodsAlgorithmAndClientBounds() {
+        let exact: [String: Any] = ["capabilities": ["push_previews": [
+            "version": 1, "register_method": "relay.push.preview.register", "unregister_method": "relay.push.unregister",
+            "aead": "CHACHA20-POLY1305", "max_plaintext_bytes": 1280, "max_title_utf8_bytes": 160, "max_body_utf8_bytes": 640
+        ]]]
+        XCTAssertNotNil(RelayPushCoordinator.previewCapability(exact))
+        var cap = (exact["capabilities"] as! [String: Any])["push_previews"] as! [String: Any]
+        for (field, value) in [("version", "1"), ("aead", "AES-GCM"), ("max_plaintext_bytes", 1281)] as [(String, Any)] {
+            var invalid = cap; invalid[field] = value
+            XCTAssertNil(RelayPushCoordinator.previewCapability(["capabilities": ["push_previews": invalid]]))
+        }
+        cap["future"] = true
+        XCTAssertNotNil(RelayPushCoordinator.previewCapability(["capabilities": ["push_previews": cap]]))
+    }
+    func testPreviewRegistrationUsesExactAuthenticatedRPCAndSelectivePreferences() async {
+        let c = coordinator(), t = target(), owner = NSObject()
+        c.setPreview(enabled: true, includeTitle: true, includeResponseExcerpt: false)
+        c.setPreviewCategories(completion: true, attention: false)
+        c.select(t); c.setEnabled(true); c.receivedToken(Data([0xab]))
+        var captured: [String: Any]?, provisionedKeyIDs: [String] = []
+        c.connected(target: t, identity: ObjectIdentifier(owner)) { method, params in
+            if method == "relay.status" { return ["capabilities": ["push_previews": [
+                "version": 1, "register_method": "relay.push.preview.register", "unregister_method": "relay.push.unregister",
+                "aead": "CHACHA20-POLY1305", "max_plaintext_bytes": 1280, "max_title_utf8_bytes": 160, "max_body_utf8_bytes": 640
+            ]]] }
+            XCTAssertEqual(method, "relay.push.preview.register"); captured = params
+            let preview = params["preview"] as! [String: Any]
+            provisionedKeyIDs.append(preview["key_id"] as! String)
+            return ["registered": true, "wake_handle": self.wake, "preview": ["version": 1, "key_id": preview["key_id"]!]]
+        }
+        await c.waitForWork()
+        let params = try? XCTUnwrap(captured), preview = params.flatMap { $0["preview"] as? [String: Any] }
+        XCTAssertEqual(Set(params?.keys.map { $0 } ?? []), ["device_token", "environment", "preview"])
+        XCTAssertEqual(Set(preview?.keys.map { $0 } ?? []), ["version", "key_id", "key", "completion", "attention", "include_title", "include_response_excerpt"])
+        XCTAssertEqual(preview?["completion"] as? Bool, true); XCTAssertEqual(preview?["attention"] as? Bool, false)
+        XCTAssertEqual(preview?["include_title"] as? Bool, true); XCTAssertEqual(preview?["include_response_excerpt"] as? Bool, false)
+        XCTAssertEqual(PushPreviewEnvelope.decode(preview?["key"] as? String ?? "")?.count, 32)
+        XCTAssertEqual(PushPreviewEnvelope.decode(preview?["key_id"] as? String ?? "")?.count, 16)
+        XCTAssertTrue(c.ownsDelivery(for: t))
+        let completion = ChatEvent.messageComplete(sessionID: "fixture", text: "done", status: "complete", error: nil, reasoning: nil, warning: nil, failureReason: nil, recoverable: false, billing: nil)
+        let attention = ChatEvent.clarifyRequest(sessionID: "fixture", requestID: "request", question: "prompt", choices: [], multiSelect: false)
+        XCTAssertTrue(c.ownsDelivery(for: t, event: completion))
+        XCTAssertFalse(c.ownsDelivery(for: t, event: attention))
+        c.receivedToken(Data([0xac])); await c.waitForWork()
+        XCTAssertEqual(provisionedKeyIDs.count, 2)
+        XCTAssertEqual(provisionedKeyIDs[0], provisionedKeyIDs[1], "APNs token rotation must reuse the independent preview key")
+        c.setPreview(enabled: false, includeTitle: false, includeResponseExcerpt: false)
     }
     func testSessionResolutionRequiresV2AndUsesExactEncryptedRPC() async {
         var calls: [(String, [String: Any])] = []
@@ -255,7 +445,7 @@ final class RelayPushTests: XCTestCase {
     }
 
     func testRouteAdapterPreservesUTF8BoundsAndDoesNotTrimOrCanonicalize() {
-        for (field, limit) in [("durable_session_id", 256), ("profile", 64)] {
+        for (field, limit) in [("durable_session_id", 128), ("profile", 64)] {
             for (value, accepted) in [("", false), (String(repeating: "a", count: limit), true),
                                       (String(repeating: "a", count: limit + 1), false),
                                       (String(repeating: "é", count: limit / 2), true),
@@ -345,6 +535,69 @@ final class RelayPushTests: XCTestCase {
         XCTAssertNil(c.target(for: wake, targets: [t]))
         await c.waitForWork(); XCTAssertEqual(unregisters, 2)
     }
+    func testDisablingPreviewsOfflinePreservesRemoteOwnershipAndTapRoute() throws {
+        let defaults = UserDefaults(suiteName: "preview-offline-\(UUID())")!
+        let target = target()
+        let binding = RelayPushCoordinator.Binding(scope: .init(target), wake: wake, previewKeyID: "fixture-key", completion: true, attention: false)
+        defaults.set(try JSONEncoder().encode([binding]), forKey: "mercury.apns.wake-bindings.v1")
+        defaults.set(true, forKey: "mercury.apns.preview.enabled.v1")
+        let coordinator = RelayPushCoordinator(defaults: defaults)
+        coordinator.setEnabled(true)
+        coordinator.setPreview(enabled: false, includeTitle: false, includeResponseExcerpt: false)
+        XCTAssertTrue(coordinator.ownsDelivery(for: target))
+        XCTAssertEqual(coordinator.target(for: wake, targets: [target])?.id, target.id)
+        let cold = RelayPushCoordinator(defaults: defaults)
+        cold.setEnabled(true)
+        XCTAssertTrue(cold.ownsDelivery(for: target))
+    }
+
+    func testReusedPreviewKeyMovesWakeWithBoundedRetirementAndCleanup() async throws {
+        let defaults = UserDefaults(suiteName: "preview-wake-\(UUID())")!
+        let c = RelayPushCoordinator(defaults: defaults), t = target(), owner = NSObject()
+        let firstWake = PushPreviewEnvelope.encode(Data(repeating: 8, count: 32))
+        let secondWake = PushPreviewEnvelope.encode(Data(repeating: 9, count: 32))
+        let keys = PreviewKeychainRepository()
+        var identifiers: [String] = []
+        defer {
+            for id in identifiers {
+                keys.delete(environment: "sandbox", wake: firstWake, keyID: id)
+                keys.delete(environment: "sandbox", wake: secondWake, keyID: id)
+            }
+        }
+        c.setPreview(enabled: true, includeTitle: true, includeResponseExcerpt: false)
+        c.select(t); c.setEnabled(true); c.receivedToken(Data([1]))
+        c.connected(target: t, identity: ObjectIdentifier(owner)) { method, params in
+            if method == "relay.status" { return ["capabilities": ["push_notifications_v1": true, "push_previews": [
+                "version": 1, "register_method": "relay.push.preview.register", "unregister_method": "relay.push.unregister",
+                "aead": "CHACHA20-POLY1305", "max_plaintext_bytes": 1280, "max_title_utf8_bytes": 160, "max_body_utf8_bytes": 640
+            ]]] }
+            if method == "relay.push.register" { return ["registered": true, "wake_handle": secondWake] }
+            let preview = try XCTUnwrap(params["preview"] as? [String: Any])
+            let id = try XCTUnwrap(preview["key_id"] as? String)
+            identifiers.append(id)
+            return ["registered": true, "wake_handle": identifiers.count == 2 ? secondWake : firstWake,
+                    "preview": ["version": 1, "key_id": id]]
+        }
+        await c.waitForWork()
+        c.receivedToken(Data([2]))
+        await c.waitForWork()
+        XCTAssertEqual(identifiers.count, 2)
+        XCTAssertEqual(identifiers.first, identifiers.last)
+        let bindings = try JSONDecoder().decode([RelayPushCoordinator.Binding].self,
+            from: XCTUnwrap(defaults.data(forKey: "mercury.apns.wake-bindings.v1")))
+        XCTAssertEqual(bindings.first?.retiredWake, firstWake)
+        let id = try XCTUnwrap(identifiers.first)
+        let now = Int64(Date().timeIntervalSince1970)
+        XCTAssertNotNil(try keys.load(environment: "sandbox", wake: firstWake, keyID: id, now: now)?.retireAt)
+        c.receivedToken(Data([3]))
+        await c.waitForWork()
+        XCTAssertNotNil(try keys.load(environment: "sandbox", wake: firstWake, keyID: id, now: now), "Returning to a retired wake must not delete the newly active key")
+        c.setPreview(enabled: false, includeTitle: false, includeResponseExcerpt: false)
+        XCTAssertNil(try keys.load(environment: "sandbox", wake: firstWake, keyID: id, now: now))
+        XCTAssertNil(try keys.load(environment: "sandbox", wake: secondWake, keyID: id, now: now))
+        await c.waitForWork()
+    }
+
     func testTokenRotationAndReconnectReregister() async {
         let c = coordinator(), t = target(), a = NSObject(), b = NSObject()
         var tokens: [String] = []
@@ -406,7 +659,7 @@ final class RelayPushTests: XCTestCase {
         cold.setEnabled(true); cold.receivedToken(Data([1]))
         XCTAssertEqual(cold.target(for: wake, targets: [t])?.id, t.id)
     }
-    func testFailedReregistrationRestoresLocalFallback() async {
+    func testFailedReregistrationPreservesPreviousGoodBinding() async {
         let c = coordinator(), t = target(), first = NSObject(), next = NSObject()
         c.select(t); c.setEnabled(true); c.receivedToken(Data([1]))
         c.connected(target: t, identity: ObjectIdentifier(first)) { method, _ in
@@ -416,7 +669,9 @@ final class RelayPushTests: XCTestCase {
         await c.waitForWork()
         c.connected(target: t, identity: ObjectIdentifier(next)) { _, _ in throw URLError(.notConnectedToInternet) }
         await c.waitForWork()
-        XCTAssertFalse(c.ownsDelivery(for: t))
+        XCTAssertTrue(c.ownsDelivery(for: t))
+        XCTAssertEqual(c.target(for: wake, targets: [t])?.id, t.id)
+        XCTAssertTrue(c.status.contains("previous registration remains active"))
     }
     func testSelectionChangeRejectsStaleResponse() async {
         let c = coordinator(), t = target(), owner = NSObject()

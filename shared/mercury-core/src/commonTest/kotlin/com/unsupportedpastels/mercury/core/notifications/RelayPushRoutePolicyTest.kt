@@ -38,8 +38,8 @@ class RelayPushRoutePolicyTest {
         }
     }
 
-    @Test fun routeLimitsAreUTF8BytesNotCharactersOrPreviewLimits() {
-        for ((field, limit) in listOf("durable_session_id" to 256, "profile" to 64)) {
+    @Test fun routeLimitsAreUTF8BytesAndPreservePreviewContract() {
+        for ((field, limit) in listOf("durable_session_id" to 128, "profile" to 64)) {
             for ((value, accepted) in listOf("" to false, "a".repeat(limit) to true, "a".repeat(limit + 1) to false,
                 "é".repeat(limit / 2) to true, ("é".repeat(limit / 2) + "a") to false,
                 "\uD83D\uDE00".repeat(limit / 4) to true, ("\uD83D\uDE00".repeat(limit / 4) + "a") to false)) {

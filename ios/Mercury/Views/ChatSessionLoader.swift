@@ -150,7 +150,7 @@ extension ChatView {
     @MainActor
     func catchUpAfterForeground() async {
         guard state.didOpen, !state.closedByUs else { return }
-        appModel.setVisibleSession(notificationSessionID)
+        appModel.updateNotificationSession(notificationSessionID, owner: state.notificationVisibilityOwner)
         if !isNewSession {
             _ = await loadTranscript(
                 durableSessionID: state.durableID ?? sessionID,

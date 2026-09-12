@@ -7,10 +7,15 @@ protocol LocalNotificationScheduling: Sendable {
     func authorizationStatus() async -> MercuryNotificationAuthorizationStatus
     func post(_ notification: PendingNotification) async
     func post(_ notification: PendingNotification, route: SessionOpenRoute?) async
+    func post(_ notification: PendingNotification, route: SessionOpenRoute?, identity: NotificationSessionIdentity?) async
     func cancel(sessionID: String) async
 }
 
 extension LocalNotificationScheduling {
+    func post(_ notification: PendingNotification, route: SessionOpenRoute?, identity: NotificationSessionIdentity?) async {
+        await post(notification, route: route)
+    }
+
     /// Route-aware post with a compatibility default so existing fakes and
     /// clients keep conforming; the real client overrides this to embed the
     /// multi-server route in the notification payload.
@@ -80,6 +85,10 @@ final class LocalNotificationClient: LocalNotificationScheduling, @unchecked Sen
     }
 
     func post(_ notification: PendingNotification, route: SessionOpenRoute?) async {
+        await post(notification, route: route, identity: nil)
+    }
+
+    func post(_ notification: PendingNotification, route: SessionOpenRoute?, identity: NotificationSessionIdentity?) async {
         let content = UNMutableNotificationContent()
         content.title = notification.heading
         if !notification.sessionTitle.isEmpty {
@@ -99,6 +108,7 @@ final class LocalNotificationClient: LocalNotificationScheduling, @unchecked Sen
             // so the tap handler and .onOpenURL share one strict parser.
             userInfo["mercury.route"] = url.absoluteString
         }
+        if let payload = identity?.payload { userInfo[NotificationSessionIdentity.payloadKey] = payload }
         content.userInfo = userInfo
 
         if case .completion = notification.kind {

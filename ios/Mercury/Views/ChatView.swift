@@ -227,10 +227,14 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.canvas, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
+        .onAppear {
+            if state.notificationSourceScope == nil { state.notificationSourceScope = appModel.notificationSourceScope }
+            appModel.showNotificationSession(notificationSessionID, scope: state.notificationSourceScope, owner: state.notificationVisibilityOwner)
+        }
         .task {
             // Visibility can change while SwiftUI retains this view and restarts
             // its task. Restore it even when the connection is already owned.
-            appModel.setVisibleSession(notificationSessionID)
+            appModel.updateNotificationSession(notificationSessionID, owner: state.notificationVisibilityOwner)
             // SwiftUI may recreate the task while the view is still mounted.
             // Android's ViewModel refuses a second open for an already-owned
             // session; make the same admission decision before any await.
@@ -270,13 +274,13 @@ struct ChatView: View {
                 turnInFlight: state.turnInFlight,
                 isSending: state.isSending
             ) == .preserveConnectionAndObserver {
-                appModel.setVisibleSession(nil)
+                appModel.hideNotificationSession(owner: state.notificationVisibilityOwner)
                 return
             }
             // Deliberate teardown for an idle session: no reconnect may fire
             // after dismissal.
             state.closedByUs = true
-            appModel.setVisibleSession(nil)
+            appModel.hideNotificationSession(owner: state.notificationVisibilityOwner)
             state.reconnectTask?.cancel()
             state.reconnectTask = nil
             state.slashCompletionTask?.cancel()

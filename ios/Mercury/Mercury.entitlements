@@ -8,5 +8,10 @@
     <array>
         <string>$(MERCURY_APP_GROUP_IDENTIFIER)</string>
     </array>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)com.unsupportedpastels.mercury</string>
+        <string>$(AppIdentifierPrefix)com.unsupportedpastels.mercury.preview</string>
+    </array>
 </dict>
 </plist>
