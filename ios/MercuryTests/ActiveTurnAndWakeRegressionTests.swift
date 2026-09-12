@@ -165,6 +165,80 @@ final class ActiveTurnAndWakeRegressionTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testProductionLocalCallbacksRecordIntentBeforeAcknowledgementWithoutAssertion() throws {
+        for canonical in [false, true] {
+            let model = AppModel()
+            let delegate = NotificationDelegate()
+            MercuryApp.configureNotificationRouting(delegate, model: model)
+            delegate.beginTask = { _ in .invalid }
+            delegate.endTask = { _ in XCTFail("Local intent needs no assertion") }
+            let route = SessionOpenRoute(durableSessionID: "local-session", serverID: UUID(), profile: "default")
+            let content = UNMutableNotificationContent()
+            content.userInfo = canonical
+                ? ["mercury.route": MercuryDeepLink.sessionURL(durableSessionID: route.durableSessionID, serverID: route.serverID, profile: route.profile)!.absoluteString]
+                : ["mercury.sessionID": "local-session"]
+            let request = UNNotificationRequest(identifier: "local", content: content, trigger: nil)
+            let notification = try XCTUnwrap(UNNotification(coder: NotificationResponseFixtureCoder(["request": request, "date": Date()])))
+            let response = try XCTUnwrap(UNNotificationResponse(coder: NotificationResponseFixtureCoder([
+                "notification": notification, "actionIdentifier": UNNotificationDefaultActionIdentifier
+            ])))
+            var completions = 0
+            delegate.userNotificationCenter(.current(), didReceive: response) {
+                completions += 1
+                if canonical { XCTAssertEqual(model.pendingSessionRoute, route) }
+                else { XCTAssertEqual(model.notificationOpenRequest?.sessionID, "local-session") }
+            }
+            XCTAssertEqual(completions, 1)
+        }
+    }
+
+    @MainActor
+    func testProductionDirectCallbacksAreSynchronousAndRemoteLocalInjectionIsIgnored() async throws {
+        for remote in [false, true] {
+            for denied in [false, true] {
+                let model = AppModel()
+                let delegate = NotificationDelegate()
+                MercuryApp.configureNotificationRouting(delegate, model: model)
+                var assertions = 0
+                var ends = 0
+                delegate.beginTask = { _ in
+                    assertions += 1
+                    return denied ? .invalid : UIBackgroundTaskIdentifier(rawValue: 55)
+                }
+                delegate.endTask = { _ in ends += 1 }
+                let route = SessionOpenRoute(durableSessionID: "canonical", serverID: UUID(), profile: "work")
+                // Also call the exact closures installed by MercuryApp: a new
+                // scheduling hop here must fail even if delegate routing changes.
+                delegate.onOpenSession?("session")
+                XCTAssertEqual(model.notificationOpenRequest?.sessionID, "session")
+                model.clearOpenSessionRequest()
+                let content = UNMutableNotificationContent()
+                content.userInfo = ["mercury.route": MercuryDeepLink.sessionURL(durableSessionID: route.durableSessionID, serverID: route.serverID, profile: route.profile)!.absoluteString,
+                                    "mercury.sessionID": "untrusted-fallback"]
+                let trigger: UNNotificationTrigger? = remote
+                    ? try XCTUnwrap(UNPushNotificationTrigger(coder: NotificationResponseFixtureCoder([:]))) : nil
+                let request = UNNotificationRequest(identifier: "trust", content: content, trigger: trigger)
+                let notification = try XCTUnwrap(UNNotification(coder: NotificationResponseFixtureCoder(["request": request, "date": Date()])))
+                let response = try XCTUnwrap(UNNotificationResponse(coder: NotificationResponseFixtureCoder([
+                    "notification": notification, "actionIdentifier": UNNotificationDefaultActionIdentifier
+                ])))
+                var completions = 0
+                delegate.userNotificationCenter(.current(), didReceive: response) {
+                    completions += 1
+                    XCTAssertEqual(model.pendingSessionRoute, remote ? nil : route)
+                    XCTAssertNil(model.notificationOpenRequest)
+                }
+                for _ in 0..<10 { await Task.yield() }
+                XCTAssertEqual(model.pendingSessionRoute, remote ? nil : route)
+                XCTAssertNil(model.notificationOpenRequest)
+                XCTAssertEqual(assertions, remote ? 1 : 0)
+                XCTAssertEqual(ends, remote && !denied ? 1 : 0)
+                XCTAssertEqual(completions, 1)
+            }
+        }
+    }
+
     private func wakeResponse() throws -> UNNotificationResponse {
         let content = UNMutableNotificationContent()
         content.userInfo = ["mercury_wake": String(repeating: "a", count: 43)]
@@ -181,5 +255,6 @@ private final class NotificationResponseFixtureCoder: NSCoder {
     init(_ values: [String: Any]) { self.values = values; super.init() }
     override var allowsKeyedCoding: Bool { true }
     override func containsValue(forKey key: String) -> Bool { values[key] != nil }
+    override func decodeBool(forKey key: String) -> Bool { values[key] as? Bool ?? false }
     override func decodeObject(forKey key: String) -> Any? { values[key] }
 }

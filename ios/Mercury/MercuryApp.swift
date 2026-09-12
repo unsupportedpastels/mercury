@@ -60,13 +60,7 @@ struct MercuryApp: App {
         // notification before iOS suspends the app. No server changes, no new
         // socket — best-effort widening only.
         runner.reconcile = { await model.performGraceReconciliation() }
-        delegate.onOpenSession = { sessionID in
-            Task { @MainActor in model.requestOpenSession(sessionID) }
-        }
-        delegate.onOpenRoute = { route in
-            Task { @MainActor in model.handleSessionRoute(route) }
-        }
-        delegate.onWake = { wake in await model.handlePushWake(wake) }
+        Self.configureNotificationRouting(delegate, model: model)
         MercuryApplicationDelegate.onToken = { model.relayPush.receivedToken($0) }
         MercuryApplicationDelegate.onFailure = { model.relayPush.registrationFailed() }
         Task {
@@ -82,6 +76,17 @@ struct MercuryApp: App {
         UNUserNotificationCenter.current().delegate = delegate
         Self.applyLaunchArgOverrides(to: model)
         Self.registerBackgroundReconciliation(for: model)
+    }
+
+    @MainActor
+    static func configureNotificationRouting(_ delegate: NotificationDelegate, model: AppModel) {
+        delegate.onOpenSession = { sessionID in
+            model.requestOpenSession(sessionID)
+        }
+        delegate.onOpenRoute = { route in
+            model.handleSessionRoute(route)
+        }
+        delegate.onWake = { wake in await model.handlePushWake(wake) }
     }
 
     var body: some Scene {
