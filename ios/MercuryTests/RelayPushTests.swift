@@ -377,6 +377,69 @@ final class RelayPushTests: XCTestCase {
         XCTAssertNil(c.target(for: wake, targets: [t]))
         await c.waitForWork(); XCTAssertEqual(unregisters, 2)
     }
+    func testDisablingPreviewsOfflinePreservesRemoteOwnershipAndTapRoute() throws {
+        let defaults = UserDefaults(suiteName: "preview-offline-\(UUID())")!
+        let target = target()
+        let binding = RelayPushCoordinator.Binding(scope: .init(target), wake: wake, previewKeyID: "fixture-key", completion: true, attention: false)
+        defaults.set(try JSONEncoder().encode([binding]), forKey: "mercury.apns.wake-bindings.v1")
+        defaults.set(true, forKey: "mercury.apns.preview.enabled.v1")
+        let coordinator = RelayPushCoordinator(defaults: defaults)
+        coordinator.setEnabled(true)
+        coordinator.setPreview(enabled: false, includeTitle: false, includeResponseExcerpt: false)
+        XCTAssertTrue(coordinator.ownsDelivery(for: target))
+        XCTAssertEqual(coordinator.target(for: wake, targets: [target])?.id, target.id)
+        let cold = RelayPushCoordinator(defaults: defaults)
+        cold.setEnabled(true)
+        XCTAssertTrue(cold.ownsDelivery(for: target))
+    }
+
+    func testReusedPreviewKeyMovesWakeWithBoundedRetirementAndCleanup() async throws {
+        let defaults = UserDefaults(suiteName: "preview-wake-\(UUID())")!
+        let c = RelayPushCoordinator(defaults: defaults), t = target(), owner = NSObject()
+        let firstWake = PushPreviewEnvelope.encode(Data(repeating: 8, count: 32))
+        let secondWake = PushPreviewEnvelope.encode(Data(repeating: 9, count: 32))
+        let keys = PreviewKeychainRepository()
+        var identifiers: [String] = []
+        defer {
+            for id in identifiers {
+                keys.delete(environment: "sandbox", wake: firstWake, keyID: id)
+                keys.delete(environment: "sandbox", wake: secondWake, keyID: id)
+            }
+        }
+        c.setPreview(enabled: true, includeTitle: true, includeResponseExcerpt: false)
+        c.select(t); c.setEnabled(true); c.receivedToken(Data([1]))
+        c.connected(target: t, identity: ObjectIdentifier(owner)) { method, params in
+            if method == "relay.status" { return ["capabilities": ["push_notifications_v1": true, "push_previews": [
+                "version": 1, "register_method": "relay.push.preview.register", "unregister_method": "relay.push.unregister",
+                "aead": "CHACHA20-POLY1305", "max_plaintext_bytes": 1280, "max_title_utf8_bytes": 160, "max_body_utf8_bytes": 640
+            ]]] }
+            if method == "relay.push.register" { return ["registered": true, "wake_handle": secondWake] }
+            let preview = try XCTUnwrap(params["preview"] as? [String: Any])
+            let id = try XCTUnwrap(preview["key_id"] as? String)
+            identifiers.append(id)
+            return ["registered": true, "wake_handle": identifiers.count == 2 ? secondWake : firstWake,
+                    "preview": ["version": 1, "key_id": id]]
+        }
+        await c.waitForWork()
+        c.receivedToken(Data([2]))
+        await c.waitForWork()
+        XCTAssertEqual(identifiers.count, 2)
+        XCTAssertEqual(identifiers.first, identifiers.last)
+        let bindings = try JSONDecoder().decode([RelayPushCoordinator.Binding].self,
+            from: XCTUnwrap(defaults.data(forKey: "mercury.apns.wake-bindings.v1")))
+        XCTAssertEqual(bindings.first?.retiredWake, firstWake)
+        let id = try XCTUnwrap(identifiers.first)
+        let now = Int64(Date().timeIntervalSince1970)
+        XCTAssertNotNil(try keys.load(environment: "sandbox", wake: firstWake, keyID: id, now: now)?.retireAt)
+        c.receivedToken(Data([3]))
+        await c.waitForWork()
+        XCTAssertNotNil(try keys.load(environment: "sandbox", wake: firstWake, keyID: id, now: now), "Returning to a retired wake must not delete the newly active key")
+        c.setPreview(enabled: false, includeTitle: false, includeResponseExcerpt: false)
+        XCTAssertNil(try keys.load(environment: "sandbox", wake: firstWake, keyID: id, now: now))
+        XCTAssertNil(try keys.load(environment: "sandbox", wake: secondWake, keyID: id, now: now))
+        await c.waitForWork()
+    }
+
     func testTokenRotationAndReconnectReregister() async {
         let c = coordinator(), t = target(), a = NSObject(), b = NSObject()
         var tokens: [String] = []

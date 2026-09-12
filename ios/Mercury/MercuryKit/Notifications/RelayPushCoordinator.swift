@@ -328,8 +328,9 @@ final class RelayPushCoordinator {
                 if let keyID = previewKeyID, let key = previewKey {
                     try self.previewKeys.save(PreviewKeyRecord(key: key, keyID: keyID, wake: wake, environment: "sandbox", createdAt: now))
                     self.previewKeys.delete(environment: "sandbox", wake: "pending", keyID: keyID)
-                    for old in self.bindings where old.scope == scope && old.previewKeyID != keyID {
-                        if let retiredID = old.retiredKeyID, let retiredWake = old.retiredWake {
+                    for old in self.bindings where old.scope == scope && (old.previewKeyID != keyID || old.wake != wake) {
+                        if let retiredID = old.retiredKeyID, let retiredWake = old.retiredWake,
+                           retiredID != keyID || retiredWake != wake {
                             self.previewKeys.delete(environment: "sandbox", wake: retiredWake, keyID: retiredID)
                         }
                         if let oldID = old.previewKeyID, let oldRecord = try? self.previewKeys.load(environment: "sandbox", wake: old.wake, keyID: oldID, now: now), let oldKey = oldRecord.keyData {
@@ -338,8 +339,9 @@ final class RelayPushCoordinator {
                     }
                 }
                 let previousPreview = self.bindings.first { $0.scope == scope && $0.previewKeyID != nil }
-                let retainedID = previousPreview?.previewKeyID == previewKeyID ? previousPreview?.retiredKeyID : previousPreview?.previewKeyID
-                let retainedWake = previousPreview?.previewKeyID == previewKeyID ? previousPreview?.retiredWake : previousPreview?.wake
+                let sameKeyScope = previousPreview?.previewKeyID == previewKeyID && previousPreview?.wake == wake
+                let retainedID = sameKeyScope ? previousPreview?.retiredKeyID : previousPreview?.previewKeyID
+                let retainedWake = sameKeyScope ? previousPreview?.retiredWake : previousPreview?.wake
                 if previewKeyID == nil { self.deletePreviewKeys(for: scope) }
                 self.bindings.removeAll { $0.scope == scope || $0.wake == wake }
                 self.bindings.append(Binding(scope: scope, wake: wake, previewKeyID: previewKeyID, completion: previewKeyID == nil ? nil : self.currentCompletion, attention: previewKeyID == nil ? nil : self.currentAttention, retiredKeyID: previewKeyID == nil ? nil : retainedID, retiredWake: previewKeyID == nil ? nil : retainedWake)); self.persist()
@@ -395,11 +397,9 @@ final class RelayPushCoordinator {
             if let keyID = binding.previewKeyID { previewKeys.delete(environment: "sandbox", wake: binding.wake, keyID: keyID) }
             if let keyID = binding.retiredKeyID, let wake = binding.retiredWake { previewKeys.delete(environment: "sandbox", wake: wake, keyID: keyID) }
         }
-        bindings.removeAll { binding in
-            guard binding.previewKeyID != nil else { return false }
-            return selected == nil || binding.scope == selected
-        }
-        persist()
+        // Key deletion is a privacy boundary, not proof of host unregister.
+        // Keep delivery/category ownership and wake routing until replacement
+        // registration or explicit revocation updates the binding.
     }
     private func persist() { defaults.set(try? JSONEncoder().encode(bindings), forKey: storageKey) }
     private func writeDiagnostic() {
