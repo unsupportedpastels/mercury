@@ -42,6 +42,14 @@ final class FirstResponseNavigationBoundaryUITests: XCTestCase {
         try navigate(mode: "stale")
     }
 
+    func testLongAuthoritativeResumeDoesNotOfferMismatchedDurablePagination() throws {
+        try navigate(mode: "long")
+    }
+
+    func testEmptyResumeHistoryFallbackStillPaginates() throws {
+        try navigate(mode: "history")
+    }
+
     private func navigate(mode: String) throws {
         _ = try control(["action": "reset", "mode": mode])
         defer { _ = try? control(["action": "release"]) }
@@ -117,6 +125,27 @@ final class FirstResponseNavigationBoundaryUITests: XCTestCase {
         add(attachment)
         capture("reopened-after-followup-\(mode)", app)
         assertAnswer(app)
+        if mode == "long" {
+            let loadEarlier = app.buttons["Load earlier messages"]
+            XCTAssertTrue(loadEarlier.waitForExistence(timeout: 10),
+                          "The resume's first 25 local rows should be revealable")
+            loadEarlier.tap()
+            XCTAssertFalse(loadEarlier.waitForExistence(timeout: 2),
+                           "Resume-owned rows must not expose the durable page's offset")
+            let afterReveal = try control()
+            let reads = afterReveal["reads"] as? [[String: Any]] ?? []
+            XCTAssertFalse(reads.contains { ($0["offset"] as? Int ?? 0) > 0 },
+                           "No mismatched earlier-page request may be made")
+        } else if mode == "history" {
+            let loadEarlier = app.buttons["Load earlier messages"]
+            XCTAssertTrue(loadEarlier.waitForExistence(timeout: 10))
+            loadEarlier.tap()
+            XCTAssertTrue(app.staticTexts["Long synthetic row 001."].waitForExistence(timeout: 10))
+            let afterPage = try control()
+            let reads = afterPage["reads"] as? [[String: Any]] ?? []
+            XCTAssertTrue(reads.contains { ($0["offset"] as? Int) == 100 },
+                          "History-owned rows must retain ordinary durable pagination")
+        }
     }
 
     private func assertAnswer(_ app: XCUIApplication) {

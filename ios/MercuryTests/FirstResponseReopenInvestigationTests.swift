@@ -60,6 +60,47 @@ final class FirstResponseReopenInvestigationTests: XCTestCase {
         }
     }
 
+    func testAuthoritativeResumeInvalidatesDurablePaginationAndMetadataCannotRestoreIt() {
+        let reopened = ChatView(sessionID: "synthetic-durable", title: "Synthetic")
+        reopened.state.adoptHistoryPagination(loadedCount: 100, hasMore: true)
+        let resumeRows = (1...125).map {
+            TranscriptState.RestoredMessage(
+                role: $0.isMultiple(of: 2) ? "assistant" : "user",
+                content: "Resume row \($0)"
+            )
+        }
+
+        reopened.publishResumeDisplayRows(resumeRows)
+        XCTAssertNil(reopened.state.historyPaginationRequest())
+        XCTAssertEqual(reopened.state.loadedTranscriptCount, 0)
+        XCTAssertFalse(reopened.state.hasMoreHistory)
+
+        reopened.applyHistoryPagination(loadedCount: 100, hasMore: true, sourceAuthority: .resume)
+        XCTAssertNil(reopened.state.historyPaginationRequest(),
+                     "A metadata-only durable read must not restore a mismatched cursor")
+        XCTAssertFalse(reopened.state.hasMoreHistory)
+        XCTAssertEqual(reopened.state.transcript.rows.count, 125)
+    }
+
+    func testHistoryPublicationRestoresPaginationAndOwnershipChangeRejectsInflightPage() throws {
+        let reopened = ChatView(sessionID: "synthetic-durable", title: "Synthetic")
+        reopened.applyHistoryPagination(loadedCount: 100, hasMore: true, sourceAuthority: .history)
+        let request = try XCTUnwrap(reopened.state.historyPaginationRequest())
+        XCTAssertEqual(request.loadedCount, 100)
+
+        reopened.publishResumeDisplayRows([
+            TranscriptState.RestoredMessage(role: "assistant", content: "Authoritative resume")
+        ])
+        XCTAssertFalse(reopened.state.acceptsHistoryPaginationResponse(generation: request.generation))
+
+        reopened.applyDurableDisplayRows([
+            TranscriptState.RestoredMessage(role: "assistant", content: "History fallback")
+        ], sourceAuthority: .history)
+        reopened.applyHistoryPagination(loadedCount: 50, hasMore: true, sourceAuthority: .history)
+        XCTAssertEqual(reopened.state.historyPaginationRequest()?.loadedCount, 50)
+        XCTAssertTrue(reopened.state.hasMoreHistory)
+    }
+
     func testEmptyResumeFallsBackAndInitialExplicitHistoryCanReplaceOrRewind() {
         let reopened = ChatView(sessionID: "synthetic-durable", title: "Synthetic")
         let full = reopened.transcriptRows(from: wireRows(tools: true))

@@ -165,7 +165,7 @@ extension ChatView {
                     expectedVersion: state.progress.observationVersion)
                 let resumedRows = transcriptRows(from: resumed.messages)
                 if !resumedRows.isEmpty {
-                    state.transcript.loadTranscript(resumedRows)
+                    publishResumeDisplayRows(resumedRows)
                 }
                 if resumed.running || resumed.inflight != nil {
                     // A turn was already executing when we attached; reopen the
@@ -178,10 +178,10 @@ extension ChatView {
                     )
                 } else {
                     // Resume owns display rows when nonempty. The bounded
-                    // durable read still recovers progress/tool metadata and
-                    // history cursors; it is not an interchangeable display
-                    // projection. Empty resume retains full history fallback. The
-                    // candidate is not published yet, so pass it explicitly:
+                    // durable read still recovers progress/tool metadata, but
+                    // its cursor cannot paginate a different display projection.
+                    // Empty resume retains full history fallback. The candidate
+                    // is not published yet, so pass it explicitly:
                     // in relay mode a standalone read here would supersede
                     // this very connection and loop the reconnect.
                     _ = await loadTranscript(

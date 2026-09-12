@@ -33,6 +33,18 @@ def reset(mode="fresh"):
 def rows():
     if not STATE["completed"]:
         return []
+    if STATE["mode"] in {"long", "history"}:
+        result = [
+            {
+                "id": index,
+                "role": "user" if index % 2 else "assistant",
+                "content": f"Long synthetic row {index:03d}.",
+            }
+            for index in range(1, 124)
+        ]
+        result.append({"id": 124, "role": "user", "content": PROMPT})
+        result.append({"id": 125, "role": "assistant", "content": ANSWER})
+        return result
     result = [
         {"id": 1, "role": "user", "content": PROMPT},
         {"id": 2, "role": "assistant", "content": "Synthetic intermediate commentary.",
@@ -97,7 +109,7 @@ class NavigationHandler(base.Handler):
             return super().do_POST()
         body = self.read_body_json()
         action = body.get("action")
-        if action == "reset" and body.get("mode") in {"fresh", "stale", "duplicate"}:
+        if action == "reset" and body.get("mode") in {"fresh", "stale", "duplicate", "long", "history"}:
             reset(body["mode"])
         elif action == "arm":
             with LOCK:
@@ -121,6 +133,8 @@ class NavigationSession(base.WsSession):
         if method == "session.resume":
             with LOCK:
                 history = rows()
+                if STATE["mode"] == "history" and STATE["armed"]:
+                    history = []
                 if STATE["armed"]:
                     STATE["resumed"] = True
             # Official resume projects assistant/user to text, tool to name/context.

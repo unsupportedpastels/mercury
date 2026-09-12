@@ -42,6 +42,11 @@ extension ChatView {
 @Observable
 @MainActor
 final class ChatSessionState {
+    enum TranscriptPaginationOwner {
+        case unavailable
+        case historyProjection
+    }
+
     // MARK: Transcript state
     //
     // Row modeling and event mutation live in TranscriptState (pure value
@@ -239,6 +244,34 @@ final class ChatSessionState {
     var hasMoreHistory = false
     var isLoadingHistory = false
     var historyError: String?
+    private(set) var transcriptPaginationOwner: TranscriptPaginationOwner = .unavailable
+    private(set) var transcriptPaginationGeneration = 0
+
+    func invalidateTranscriptPagination() {
+        transcriptPaginationGeneration &+= 1
+        transcriptPaginationOwner = .unavailable
+        loadedTranscriptCount = 0
+        hasMoreHistory = false
+        historyError = nil
+    }
+
+    func adoptHistoryPagination(loadedCount: Int, hasMore: Bool) {
+        transcriptPaginationGeneration &+= 1
+        transcriptPaginationOwner = .historyProjection
+        loadedTranscriptCount = max(0, loadedCount)
+        hasMoreHistory = hasMore
+        historyError = nil
+    }
+
+    func historyPaginationRequest() -> (generation: Int, loadedCount: Int)? {
+        guard transcriptPaginationOwner == .historyProjection else { return nil }
+        return (transcriptPaginationGeneration, loadedTranscriptCount)
+    }
+
+    func acceptsHistoryPaginationResponse(generation: Int) -> Bool {
+        transcriptPaginationOwner == .historyProjection
+            && transcriptPaginationGeneration == generation
+    }
 
     init(
         sessionID: String,

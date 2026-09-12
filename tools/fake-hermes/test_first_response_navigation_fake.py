@@ -57,7 +57,10 @@ class FirstResponseNavigationFakeWireTests(unittest.TestCase):
         initial = self.history()["messages"]
         self.assertEqual(initial[-1]["content"], lab.ANSWER)
         _, resumed = self.resume()
-        self.assertEqual(resumed["messages"][-1]["text"], lab.ANSWER)
+        if mode == "history":
+            self.assertEqual(resumed["messages"], [])
+        else:
+            self.assertEqual(resumed["messages"][-1]["text"], lab.ANSWER)
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             pending = pool.submit(self.history)
             deadline = time.monotonic() + 1
@@ -94,6 +97,24 @@ class FirstResponseNavigationFakeWireTests(unittest.TestCase):
         older = self.history(limit=2, offset=2)["messages"]
         oldest = self.history(limit=2, offset=4)["messages"]
         self.assertEqual([r["id"] for r in oldest + older + newest], [1, 2, 3, 4, 5])
+
+    def test_long_resume_overlaps_bounded_durable_window(self):
+        initial, followup = self.drive("long")
+        self.assertEqual(len(initial), 100)
+        self.assertEqual(initial, followup)
+        self.assertEqual(initial[0]["id"], 26)
+        self.assertEqual(initial[-1]["id"], 125)
+        _, resumed = self.resume()
+        self.assertEqual(len(resumed["messages"]), 125)
+        self.assertEqual(resumed["messages"][0]["text"], "Long synthetic row 001.")
+
+    def test_empty_resume_leaves_durable_history_paginatable(self):
+        initial, followup = self.drive("history")
+        self.assertEqual(len(initial), 100)
+        self.assertEqual(initial, followup)
+        oldest = self.history(limit=50, offset=100)["messages"]
+        self.assertEqual(len(oldest), 25)
+        self.assertEqual(oldest[0]["id"], 1)
 
 
 if __name__ == "__main__":
