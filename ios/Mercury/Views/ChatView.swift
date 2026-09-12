@@ -167,12 +167,8 @@ struct ChatView: View {
             let now = Int64(clock.date.timeIntervalSince1970 * 1000)
             ComposerBar(
                 draft: $state.draft,
-                errorMessage: Binding(get: { state.queuedPromptState.error ?? state.composerError }, set: { state.composerError = $0 }),
-                onDiscardUncertainQueue: state.queuedPromptState.uncertain ? {
-                    state.queuedPromptState.lifecycle.discard()
-                    state.queuedPromptState.uncertain = false
-                    state.queuedPromptState.error = nil
-                } : nil,
+                errorMessage: state.composerErrorBinding,
+                onDiscardUncertainQueue: state.discardUncertainQueue,
                 noticeMessage: state.queuedPromptState.notice ?? state.composerNotice,
                 isSending: state.composerIsBusy,
                 onSend: {
@@ -262,11 +258,8 @@ struct ChatView: View {
             guard phase == .active else { return }
             Task { await catchUpAfterForeground() }
         }
-        .onChange(of: state.queuedPromptState.draftToRestore, initial: true) { _, draft in
-            if let draft, state.draft.isEmpty {
-                state.draft = draft
-                state.queuedPromptState.draftToRestore = nil
-            }
+        .onChange(of: state.queuedPromptState.draftToRestore, initial: true) {
+            state.restoreDeferredQueuedDraft()
         }
         .onChange(of: state.draft) {
             scheduleSlashCompletion(for: state.draft)

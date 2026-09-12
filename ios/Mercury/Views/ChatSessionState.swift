@@ -51,7 +51,9 @@ final class ChatSessionState {
 
     var transcript: TranscriptState
     var loadError: String?
-    var draft: String
+    var draft: String {
+        didSet { restoreDeferredQueuedDraft() }
+    }
     var composerError: String?
     var dictation: ComposerDictationCoordinator?
     var readAloud: ReadAloudController?
@@ -76,6 +78,41 @@ final class ChatSessionState {
     var isComposerActionPending = false
     var promptSubmission = PromptSubmissionLifecycle()
     var queuedPromptState = QueuedPromptState()
+
+    var composerErrorBinding: Binding<String?> {
+        let queued = queuedPromptState
+        let lifecycle = queued.lifecycle
+        let displayedQueueError = queued.error
+        return Binding(get: { queued.error ?? self.composerError }, set: { value in
+            // A rendered composer must not clear a newer attempt or another scope.
+            guard self.queuedPromptState === queued, queued.lifecycle == lifecycle else { return }
+            self.composerError = value
+            if value == nil, !queued.lifecycle.hasPendingAttempt, queued.error == displayedQueueError {
+                queued.error = nil
+            }
+        })
+    }
+
+    var discardUncertainQueue: (() -> Void)? {
+        let queued = queuedPromptState
+        let lifecycle = queued.lifecycle
+        guard queued.uncertain else { return nil }
+        return {
+            guard self.queuedPromptState === queued, queued.lifecycle == lifecycle else { return }
+            queued.lifecycle.discard()
+            queued.uncertain = false
+            queued.error = nil
+        }
+    }
+
+    /// Only conclusively rejected queue text enters this slot. Consume it before
+    /// publishing to avoid restoring twice; never overwrite a newer typed draft.
+    func restoreDeferredQueuedDraft() {
+        guard draft.isEmpty, let original = queuedPromptState.draftToRestore else { return }
+        queuedPromptState.draftToRestore = nil
+        draft = original
+    }
+
     var transcriptWindowStartID: String?
     var userMessageScrollGeneration = 0
     var connectionNote: String?
