@@ -19,6 +19,14 @@ struct ChatTranscriptScrollFixtureView: View {
     }
 
     var body: some View {
+        if ProcessInfo.processInfo.arguments.contains("-uitest-bubble-layout") {
+            MessageBubbleLayoutFixtureView()
+        } else {
+            scrollFixture
+        }
+    }
+
+    private var scrollFixture: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 Button("Append synthetic stream chunk") {
