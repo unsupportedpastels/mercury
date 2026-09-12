@@ -13,6 +13,7 @@ enum class ComposerRejection {
 /** What the composer should do with the current draft. */
 sealed interface ComposerAction {
     data class Submit(val text: String) : ComposerAction
+    data class Queue(val text: String) : ComposerAction
     data class Steer(val text: String) : ComposerAction
     data object OpenModelPicker : ComposerAction
     data class SetReasoning(val effort: String) : ComposerAction
@@ -21,8 +22,8 @@ sealed interface ComposerAction {
 
 /**
  * Deterministic composer routing shared by both clients. Local commands never
- * leak into `prompt.submit`, and text typed during an active turn always goes
- * to `session.steer`.
+ * leak into `prompt.submit`. Ordinary active-turn text queues a separate turn;
+ * only explicit `/steer` becomes in-turn guidance.
  */
 object ComposerRoutingPolicy {
     fun route(draft: String, turnActive: Boolean, hasAttachments: Boolean): ComposerAction {
@@ -39,8 +40,8 @@ object ComposerRoutingPolicy {
         }
         if (turnActive) {
             if (hasAttachments) return ComposerAction.Reject(ComposerRejection.AttachmentsUnavailableWhileSteering)
-            if (trimmed.isEmpty()) return ComposerAction.Reject(ComposerRejection.BlankSteer)
-            return ComposerAction.Steer(trimmed)
+            if (trimmed.isEmpty()) return ComposerAction.Reject(ComposerRejection.BlankPrompt)
+            return ComposerAction.Queue(trimmed)
         }
         if (trimmed.isEmpty() && !hasAttachments) return ComposerAction.Reject(ComposerRejection.BlankPrompt)
         return ComposerAction.Submit(trimmed)

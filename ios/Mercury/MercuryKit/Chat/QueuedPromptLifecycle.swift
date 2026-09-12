@@ -17,6 +17,10 @@ struct QueuedPromptLifecycle: Sendable, Equatable {
 
     private var nextAttemptID: UInt64 = 0
     private var currentAttempt: Attempt?
+    var hasPendingAttempt: Bool { currentAttempt != nil }
+
+    /// Explicit user discard only. It does not cancel or replay server work.
+    mutating func discard() { currentAttempt = nil }
 
     mutating func begin(draft: String) -> Attempt? {
         guard currentAttempt == nil else { return nil }

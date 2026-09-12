@@ -1,10 +1,11 @@
 import SwiftUI
+import MercuryCore
 
 extension ChatView {
     // MARK: Sending
 
     func sendDraft() {
-        guard !state.isComposerActionPending else { return }
+        guard !state.isComposerActionPending, !state.queuedPromptSubmission.hasPendingAttempt else { return }
         let action = M7ComposerPolicy.route(
             draft: state.draft,
             turnActive: state.turnInFlight,
@@ -59,23 +60,36 @@ extension ChatView {
         state.isComposerActionPending = true
         Task {
             do {
-                _ = try await connection.submitPrompt(
+                let submission = try await connection.submitPrompt(
                     runtimeSessionID: runtimeSessionID,
                     text: text,
                     queued: true
                 )
+                let outcome = MercuryCore.QueueAcknowledgementPolicy.shared.classify(status: submission.status)
                 await MainActor.run {
+                    guard outcome.accepted else {
+                        state.queueAcknowledgementUncertain = true
+                        state.composerError = outcome.notice
+                        return // Retain the attempt and its draft; unknown is not safe to retry.
+                    }
                     guard state.queuedPromptSubmission.resolve(attempt: attempt, accepted: true) != .stale else { return }
                     state.isComposerActionPending = false
-                    state.composerNotice = "Message queued for after the active turn."
+                    state.composerNotice = outcome.notice
+                }
+            } catch is ChatMethodNotFoundError {
+                await MainActor.run {
+                    let result = state.queuedPromptSubmission.resolve(attempt: attempt, accepted: false)
+                    guard case .restoreDraft(let original) = result else { return }
+                    state.isComposerActionPending = false
+                    state.composerError = "This connection does not support queued prompts."
+                    if state.draft.isEmpty { state.draft = original }
                 }
             } catch {
                 await MainActor.run {
-                    let resolution = state.queuedPromptSubmission.resolve(attempt: attempt, accepted: false)
-                    guard case .restoreDraft(let original) = resolution else { return }
-                    state.isComposerActionPending = false
-                    state.composerError = "Could not queue message — check the connection and try again."
-                    if state.draft.isEmpty { state.draft = original }
+                    // A transport error does not establish rejection. Keep the
+                    // captured draft in the attempt, not in a replayable composer.
+                    state.queueAcknowledgementUncertain = true
+                    state.composerError = "Queue acknowledgement unavailable — check the transcript before sending again."
                 }
             }
         }

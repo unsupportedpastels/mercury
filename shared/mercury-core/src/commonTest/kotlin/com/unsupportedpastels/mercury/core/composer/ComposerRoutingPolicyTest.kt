@@ -7,6 +7,14 @@ import kotlin.test.assertTrue
 
 class ComposerRoutingPolicyTest {
     @Test
+    fun ordinaryActivePromptIsASeparateQueuedTurn() {
+        val action = ComposerRoutingPolicy.route("next task", true, false)
+        assertEquals("Queue", action::class.simpleName)
+        assertEquals(ComposerAction.OpenModelPicker, ComposerRoutingPolicy.route("/model", true, true))
+        assertEquals(ComposerAction.SetReasoning("high"), ComposerRoutingPolicy.route("/reasoning HIGH", true, true))
+    }
+
+    @Test
     fun normalDraftSubmitsTrimmedPrompt() {
         assertEquals(ComposerAction.Submit("Ship it"), ComposerRoutingPolicy.route("  Ship it  ", turnActive = false, hasAttachments = false))
         assertEquals(ComposerAction.Submit(""), ComposerRoutingPolicy.route("  ", turnActive = false, hasAttachments = true))
@@ -19,7 +27,7 @@ class ComposerRoutingPolicyTest {
     @Test
     fun activeTurnRoutesGuidanceToSteer() {
         assertEquals(
-            ComposerAction.Steer("Focus on the failing test"),
+            ComposerAction.Queue("Focus on the failing test"),
             ComposerRoutingPolicy.route("  Focus on the failing test  ", turnActive = true, hasAttachments = false),
         )
         assertEquals(

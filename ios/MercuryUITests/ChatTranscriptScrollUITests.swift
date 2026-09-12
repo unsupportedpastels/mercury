@@ -92,6 +92,21 @@ final class ChatTranscriptScrollUITests: XCTestCase {
         add(screenshot)
     }
 
+    func testMeasuredWindowKeepsOlderHistoryAccessibleAndJumpReturnsToLatest() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-uitest-chat-scroll", "-uitest-chat-scroll-stress"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Synthetic latest message"].waitForExistence(timeout: 15))
+        let oldest = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Synthetic message 1\n")).firstMatch
+        XCTAssertFalse(oldest.exists, "The latest measured window must not instantiate all loaded history")
+        app.buttons["Load earlier messages"].tap()
+        XCTAssertTrue(oldest.waitForExistence(timeout: 5), "Earlier rows remain available without refetching or discarding history")
+        app.buttons["Scroll to latest message"].tap()
+        let latestWindow = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: oldest)
+        XCTAssertEqual(XCTWaiter.wait(for: [latestWindow], timeout: 5), .completed)
+        XCTAssertTrue(app.staticTexts["Synthetic latest message"].exists)
+    }
+
     private func assertFollowingAfterGrowth(_ jump: XCUIElement) {
         let atBottom = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == false"), object: jump

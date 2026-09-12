@@ -90,7 +90,9 @@ final class AppModel {
     private let relayTargetStore: RelayTargetStore
     private let startupChoiceStore: StartupConnectionChoiceStore
     private var relayPairingModel: RelayAppModel?
-    private(set) var serverCatalog: ServerCatalog = .empty
+    private(set) var serverCatalog: ServerCatalog = .empty {
+        didSet { startupCatalogsLoaded = true }
+    }
     private(set) var relayTargets: [RelayPairedTarget] = []
     private(set) var relayTargetsError: String?
     private(set) var startupState: StartupConnectionState = .loading
@@ -333,8 +335,8 @@ final class AppModel {
             localSettingsError = nil
             return
         }
-        if let active = serverCatalog.activeEntry,
-           active.id == route.serverID,
+        if activeRelayTarget == nil, let active = serverCatalog.activeEntry,
+           serverOrigin == active.origin, active.id == route.serverID,
            case .connected = connectionPhase {
             if route.profile == activeProfile {
                 pendingSessionRoute = nil
@@ -354,7 +356,8 @@ final class AppModel {
             return
         }
         pendingSessionRoute = route
-        if let active = serverCatalog.activeEntry, active.id == entry.id {
+        if activeRelayTarget == nil, serverOrigin == entry.origin,
+           let active = serverCatalog.activeEntry, active.id == entry.id {
             // Right server, not connected yet (probing / sign-in required).
             // The route completes when the phase reaches .connected.
             return
@@ -367,8 +370,9 @@ final class AppModel {
 
     /// Completes a retained route once server, profile, and connection line up.
     func completePendingRouteIfReady() {
-        guard let route = pendingSessionRoute,
+        guard activeRelayTarget == nil, let route = pendingSessionRoute,
               let active = serverCatalog.activeEntry,
+              serverOrigin == active.origin,
               active.id == route.serverID,
               case .connected = connectionPhase else { return }
         if route.profile != activeProfile {
@@ -516,8 +520,16 @@ final class AppModel {
                 cacheEnabled,
                 savedChoice
             )
+            // Catalog readiness is independent of automatic target selection.
+            // A Relay wake may invalidate selection, but must not strand later
+            // direct links. Never overwrite a catalog already published by an
+            // explicit add/remove/switch while this load was suspended.
+            if !startupCatalogsLoaded { serverCatalog = catalog ?? .empty }
             guard decisionGeneration == startupDecisionGeneration,
-                  !startupUserInteraction else { return }
+                  !startupUserInteraction else {
+                if let route = pendingSessionRoute { handleSessionRoute(route) }
+                return
+            }
 
             serverCatalog = catalog ?? .empty
             relayTargets = relays ?? []
