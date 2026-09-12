@@ -163,6 +163,12 @@ struct ChatView: View {
             ComposerBar(
                 draft: $state.draft,
                 errorMessage: Binding(get: { state.composerError }, set: { state.composerError = $0 }),
+                onDiscardUncertainQueue: state.queueAcknowledgementUncertain ? {
+                    state.queuedPromptSubmission.discard()
+                    state.queueAcknowledgementUncertain = false
+                    state.isComposerActionPending = false
+                    state.composerError = nil
+                } : nil,
                 noticeMessage: state.composerNotice,
                 isSending: state.composerIsBusy,
                 onSend: {

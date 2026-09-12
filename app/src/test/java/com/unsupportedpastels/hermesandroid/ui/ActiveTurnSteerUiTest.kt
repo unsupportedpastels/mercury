@@ -77,7 +77,7 @@ class ActiveTurnSteerUiTest {
         }
 
         onNodeWithComposerInput().performTextInput("/steer Focus on the failing test")
-        composeRule.onNodeWithContentDescription("Send message").assertIsDisplayed().performClick()
+        composeRule.onNodeWithContentDescription("Steer active turn").assertIsDisplayed().performClick()
 
         composeRule.onNodeWithContentDescription("Stop Hermes response").assertIsDisplayed()
         composeRule.onAllNodesWithContentDescription("Send message").assertCountEquals(0)

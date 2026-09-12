@@ -74,6 +74,8 @@ final class ChatSessionState {
     var isComposerActionPending = false
     var promptSubmission = PromptSubmissionLifecycle()
     var queuedPromptSubmission = QueuedPromptLifecycle()
+    var queueAcknowledgementUncertain = false
+    var transcriptWindowStartID: String?
     var userMessageScrollGeneration = 0
     var connectionNote: String?
 

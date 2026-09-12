@@ -199,6 +199,7 @@ internal fun SessionDetailScreen(
     onRemoveHostReference: (String) -> Unit,
     onSend: (String) -> Unit,
     onSteer: (String) -> Unit,
+    onDiscardUncertainQueue: () -> Unit = {},
     onReasoningSelected: (String) -> Unit,
     onFastSelected: (Boolean) -> Unit,
     onOpenModelPicker: () -> Unit,
@@ -687,6 +688,15 @@ internal fun SessionDetailScreen(
                         }
                     }
                 }
+                    if (chat.queueAcknowledgementUncertain) {
+                        TextButton(onClick = {
+                            pendingSend?.let { if (draft == it.draft) onDraftChanged("") }
+                            pendingSend = null
+                            onDiscardUncertainQueue()
+                        }) { Text("Discard local queue attempt") }
+                        Text("Does not cancel or resend server work. Check the transcript before repeating the message.",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
             chat.notice?.let { notice ->
                 Text(
                     notice,
@@ -741,8 +751,8 @@ internal fun SessionDetailScreen(
             val composerEnabled = true
             val submissionEnabled = canSend && !chat.isLoading && !connectionBusy && pendingSend == null
             val attachmentsEnabled = submissionEnabled && !chat.isSending
-            // Text typed during a controlled turn steers it (shared routing decision);
-            // an empty composer, or one holding attachments, shows Stop instead.
+            // Ordinary active-turn text queues; explicit /steer remains guidance.
+            // Empty input or attachments retain the existing Stop affordance.
             val canSubmitDuringActiveTurn = !chat.isSending || (controlledTurn && attachments.isEmpty())
             val showStopControl = controlledTurn && (
                 attachments.isNotEmpty() ||
@@ -997,8 +1007,11 @@ internal fun SessionDetailScreen(
                                             "Attachments are unavailable while steering an active turn."
                                     }
                                 }
-                                is ComposerAction.Submit -> {
-                                    val message = action.text
+                                is ComposerAction.Submit, is ComposerAction.Queue -> {
+                                    val message = when (action) {
+                                        is ComposerAction.Submit -> action.text
+                                        is ComposerAction.Queue -> action.text
+                                    }
                                     // Match the host's reference-prefixed prompt, but
                                     // only clear the unchanged local text draft.
                                     val submittedText = (hostReferences + message.takeIf(String::isNotBlank))
@@ -1019,6 +1032,7 @@ internal fun SessionDetailScreen(
                             }
                         },
                         enabled = submissionEnabled &&
+                            !chat.isQueueSubmitting &&
                             !stopping &&
                             canSubmitDuringActiveTurn &&
                             (draft.isNotBlank() || attachments.isNotEmpty()),
@@ -1030,7 +1044,16 @@ internal fun SessionDetailScreen(
                         ),
                         modifier = Modifier
                             .size(40.dp)
-                            .semantics { contentDescription = "Send message" },
+                            .semantics {
+                                contentDescription = when (ComposerRoutingPolicy.route(
+                                    draft, chat.isSending && controlledTurn,
+                                    attachments.isNotEmpty() || hostReferences.isNotEmpty(),
+                                )) {
+                                    is ComposerAction.Queue -> "Queue message"
+                                    is ComposerAction.Steer -> "Steer active turn"
+                                    else -> "Send message"
+                                }
+                            },
                     ) {
                         Icon(Icons.Outlined.ArrowUpward, contentDescription = null)
                     }

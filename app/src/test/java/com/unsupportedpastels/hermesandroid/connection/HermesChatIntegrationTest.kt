@@ -1880,6 +1880,65 @@ class HermesChatIntegrationTest {
     }
 
     @Test
+    fun composerQueuesOnceWithoutInterruptingOrReplacingActiveTranscript() = runTest(dispatcher) {
+        val session = ControllerChatSession()
+        val viewModel = chatViewModel(session)
+        advanceUntilIdle()
+        viewModel.openSession(durableId)
+        advanceUntilIdle()
+        viewModel.sendMessage(durableId, "Long-running prompt")
+        advanceUntilIdle()
+        val before = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        session.queueAck = CompletableDeferred()
+        viewModel.sendComposerMessage(durableId, "Next task")
+        viewModel.sendComposerMessage(durableId, "Next task")
+        runCurrent()
+        assertEquals(listOf(session.runtimeSessionId to "Next task"), session.queueCalls)
+        assertTrue(session.steerCalls.isEmpty())
+        assertTrue(viewModel.snapshots.value.chatSessions.getValue(durableId).isQueueSubmitting)
+        assertEquals(before.messages, viewModel.snapshots.value.chatSessions.getValue(durableId).messages)
+        session.emit(HermesChatEvent.MessageComplete(session.runtimeSessionId, "First done", "completed"))
+        runCurrent()
+        assertFalse(viewModel.snapshots.value.chatSessions.getValue(durableId).isSending)
+        session.emit(HermesChatEvent.MessageStart(session.runtimeSessionId, null))
+        runCurrent()
+        assertTrue(viewModel.snapshots.value.chatSessions.getValue(durableId).isSending)
+        session.queueAck!!.complete(PromptSubmission("streaming"))
+        advanceUntilIdle()
+        val after = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        assertEquals(before.acceptedSubmissionCount + 1, after.acceptedSubmissionCount)
+        assertEquals("Next task", after.acceptedSubmissionText)
+        assertEquals("Message accepted and started immediately.", after.notice)
+        assertFalse(after.isQueueSubmitting)
+    }
+
+    @Test
+    fun unknownQueueAckDoesNotAuthorizeDuplicateSend() = runTest(dispatcher) {
+        val session = ControllerChatSession()
+        val viewModel = chatViewModel(session)
+        advanceUntilIdle()
+        viewModel.openSession(durableId)
+        advanceUntilIdle()
+        viewModel.sendMessage(durableId, "Long-running prompt")
+        advanceUntilIdle()
+        val before = viewModel.snapshots.value.chatSessions.getValue(durableId).acceptedSubmissionCount
+        session.queueAck = CompletableDeferred(PromptSubmission("future-status"))
+        viewModel.sendComposerMessage(durableId, "Next task")
+        advanceUntilIdle()
+        viewModel.sendComposerMessage(durableId, "Next task")
+        advanceUntilIdle()
+        assertEquals(1, session.queueCalls.size)
+        val after = viewModel.snapshots.value.chatSessions.getValue(durableId)
+        assertEquals(before, after.acceptedSubmissionCount)
+        assertTrue(after.isQueueSubmitting)
+        assertTrue(after.error!!.contains("check the transcript"))
+        viewModel.discardUncertainQueue(durableId)
+        assertFalse(viewModel.snapshots.value.chatSessions.getValue(durableId).isQueueSubmitting)
+        assertEquals(1, session.queueCalls.size)
+        assertTrue(session.interruptCalls.isEmpty())
+    }
+
+    @Test
     fun steerControllerTargetsExactSendingRuntimeWithoutAppendingTranscriptMessage() = runTest(dispatcher) {
         val session = ControllerChatSession()
         val viewModel = chatViewModel(session)
@@ -3502,6 +3561,12 @@ private class ControllerChatSession(
     val approvalRequestIds = mutableListOf<String?>()
     val blockingCalls = mutableListOf<Triple<UnsupportedBlockingKind, String, String>>()
     val interruptCalls = mutableListOf<RuntimeSessionId>()
+    val queueCalls = mutableListOf<Pair<RuntimeSessionId, String>>()
+    var queueAck: CompletableDeferred<PromptSubmission>? = null
+    override suspend fun queuePrompt(runtimeSessionId: RuntimeSessionId, text: String): PromptSubmission {
+        queueCalls += runtimeSessionId to text
+        return queueAck?.await() ?: PromptSubmission("queued")
+    }
     val steerCalls = mutableListOf<Pair<RuntimeSessionId, String>>()
     val usageCalls = mutableListOf<RuntimeSessionId>()
     val contextCalls = mutableListOf<RuntimeSessionId>()

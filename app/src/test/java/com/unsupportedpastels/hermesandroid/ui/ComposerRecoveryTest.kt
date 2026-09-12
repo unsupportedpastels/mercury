@@ -173,14 +173,25 @@ class ComposerRecoveryTest {
 
     @Test fun controlledActiveTurnKeepsSteerAndStopBehavior() {
         chat.value = ChatSessionSnapshot(isSending = true)
-        // An empty composer during a controlled turn shows Stop; any text steers.
+        // Empty input keeps Stop; only explicit /steer becomes guidance.
         draft.value = ""
         render(controller = true)
         rule.onNodeWithContentDescription("Stop Hermes response").assertIsEnabled()
         rule.onNode(hasSetTextAction()).performTextReplacement("/steer focus")
-        rule.onNodeWithContentDescription("Send message").assertIsEnabled().performClick()
+        rule.onNodeWithContentDescription("Steer active turn").assertIsEnabled().performClick()
         // Guidance goes to the steer RPC (shared routing) and the draft clears at once.
         rule.runOnIdle { assertEquals(0, sends); assertEquals(1, steers); assertEquals("", draft.value) }
+    }
+
+    @Test fun ordinaryActiveTextExposesQueueAndWaitsForAcceptance() {
+        chat.value = ChatSessionSnapshot(isSending = true)
+        draft.value = "Next task"
+        render(controller = true)
+        rule.onNodeWithContentDescription("Queue message").assertIsEnabled().performClick()
+        rule.runOnIdle { assertEquals(1, sends); assertEquals(0, steers); assertEquals("Next task", draft.value) }
+        rule.runOnIdle { chat.value = chat.value.copy(acceptedSubmissionCount = 1, acceptedSubmissionText = "Next task") }
+        rule.runOnIdle { assertEquals("", draft.value) }
+        rule.onNodeWithContentDescription("Stop Hermes response").assertIsEnabled()
     }
 
     @Test fun steerWithoutAnActiveTurnShowsTheSharedRejectionReason() {

@@ -37,6 +37,22 @@ final class M7ComposerPolicyTests: XCTestCase {
         )
     }
 
+    func testLocalCommandsRemainLocalDuringActiveTurn() {
+        XCTAssertEqual(M7ComposerPolicy.route(draft: "/model", turnActive: true, hasAttachments: true), .openModelPicker)
+        XCTAssertEqual(M7ComposerPolicy.route(draft: "/reasoning HIGH", turnActive: true, hasAttachments: true), .setReasoning(effort: "high"))
+    }
+
+    func testExplicitDiscardDoesNotRestoreOrLetOldAckSettleNewAttempt() throws {
+        var lifecycle = QueuedPromptLifecycle()
+        let old = try XCTUnwrap(lifecycle.begin(draft: "Unconfirmed"))
+        XCTAssertTrue(lifecycle.hasPendingAttempt)
+        lifecycle.discard()
+        XCTAssertFalse(lifecycle.hasPendingAttempt)
+        _ = try XCTUnwrap(lifecycle.begin(draft: "Different prompt"))
+        XCTAssertEqual(lifecycle.resolve(attempt: old, accepted: true), .stale)
+        XCTAssertTrue(lifecycle.hasPendingAttempt)
+    }
+
     func testQueuedPromptLifecycleRestoresOnlyTheFailedOwnedDraft() throws {
         var lifecycle = QueuedPromptLifecycle()
         let first = try XCTUnwrap(lifecycle.begin(draft: "queued follow-up"))

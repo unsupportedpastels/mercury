@@ -19,6 +19,7 @@ import MercuryCore
 struct ComposerBar: View {
     @Binding var draft: String
     @Binding var errorMessage: String?
+    var onDiscardUncertainQueue: (() -> Void)? = nil
     var noticeMessage: String? = nil
     let isSending: Bool
     let onSend: () -> Void
@@ -88,6 +89,12 @@ struct ComposerBar: View {
                     .transition(.opacity)
             }
 
+
+            if let onDiscardUncertainQueue {
+                Button("Discard local queue attempt", action: onDiscardUncertainQueue)
+                    .font(.footnote)
+                    .accessibilityHint("Does not cancel or resend server work. Check the transcript before repeating the message.")
+            }
 
             if !attachments.isEmpty && !isSteering {
                 AttachmentChipRow(

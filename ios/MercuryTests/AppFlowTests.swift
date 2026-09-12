@@ -168,6 +168,25 @@ final class AppFlowTests: XCTestCase {
         XCTAssertNil(model.localSettingsError)
     }
 
+    func testExplicitStartupInteractionDoesNotStarveLaterDirectRoute() async throws {
+        let persistence = AppFlowCatalogPersistence()
+        let store = ServerCatalogStore(persistence: persistence, legacyOrigin: nil)
+        let entry = try await store.add(origin: origin, label: "Notification host")
+        MockURLProtocol.handler = jsonHandler([
+            "/api/status": (200, #"{"version":"v0.9.3","auth_required":false}"#),
+        ])
+        let model = makeModel(session: makeSession(), catalogPersistence: persistence)
+        model.showStartupPicker() // Same bootstrap invalidation boundary as a Relay wake.
+        await model.bootstrapSavedServer()
+        model.handleSessionRoute(.init(durableSessionID: "direct-after-wake", serverID: entry.id, profile: "default"))
+        for _ in 0..<100 where model.notificationOpenRequest == nil {
+            await Task.yield()
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(model.notificationOpenRequest?.sessionID, "direct-after-wake")
+        XCTAssertNil(model.pendingSessionRoute)
+    }
+
     // MARK: - Successful probes
 
     func testUnauthenticatedProbeSetsConnectedAndStoresVersion() async {

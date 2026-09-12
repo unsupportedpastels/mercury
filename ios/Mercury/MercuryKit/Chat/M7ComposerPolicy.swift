@@ -25,18 +25,14 @@ struct M7ComposerPolicy {
     /// Routing is the shared decision (`MercuryCore.ComposerRoutingPolicy`);
     /// this maps its sealed result onto the Swift action.
     static func route(draft: String, turnActive: Bool, hasAttachments: Bool) -> Action {
-        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let explicitSteer = trimmed.split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).first == "/steer"
-        if turnActive, !explicitSteer {
-            if hasAttachments { return .reject(.attachmentsUnavailableWhileSteering) }
-            return trimmed.isEmpty ? .reject(.blankPrompt) : .queue(text: trimmed)
-        }
         let action = MercuryCore.ComposerRoutingPolicy.shared.route(
             draft: draft, turnActive: turnActive, hasAttachments: hasAttachments
         )
         switch action {
         case let submit as MercuryCore.ComposerActionSubmit:
             return .submit(text: submit.text)
+        case let queue as MercuryCore.ComposerActionQueue:
+            return .queue(text: queue.text)
         case let steer as MercuryCore.ComposerActionSteer:
             return .steer(text: steer.text)
         case is MercuryCore.ComposerActionOpenModelPicker:

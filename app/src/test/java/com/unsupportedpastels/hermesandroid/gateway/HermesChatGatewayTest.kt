@@ -527,10 +527,12 @@ class HermesChatGatewayTest {
     fun relaySubmissionIdIsExplicitAndAbsentFromDirectSubmissions() = runTest {
         val socket = ScriptedSocket()
         val submissionIds = mutableListOf<String?>()
+        val queuedFlags = mutableListOf<String?>()
         socket.onSend = { frame ->
             val request = Json.parseToJsonElement(frame).jsonObject
             if (request["method"]?.jsonPrimitive?.content == "prompt.submit") {
                 submissionIds += request["params"]!!.jsonObject["submission_id"]?.jsonPrimitive?.content
+                queuedFlags += request["params"]!!.jsonObject["queued"]?.jsonPrimitive?.content
                 val id = request["id"]!!.jsonPrimitive.content
                 socket.offer("""{"jsonrpc":"2.0","id":"$id","result":{"status":"streaming"}}""")
             }
@@ -544,7 +546,9 @@ class HermesChatGatewayTest {
         ).connect()
         connection.submitPrompt(RuntimeSessionId("runtime-1"), "relay", false, "logical-submission-1")
         connection.submitPrompt(RuntimeSessionId("runtime-1"), "direct")
-        assertEquals(listOf("logical-submission-1", null), submissionIds)
+        assertEquals("streaming", connection.queuePrompt(RuntimeSessionId("runtime-1"), "next").status)
+        assertEquals(listOf("logical-submission-1", null, null), submissionIds)
+        assertEquals(listOf(null, null, "true"), queuedFlags)
         connection.close()
     }
 
