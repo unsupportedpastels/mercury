@@ -47,11 +47,13 @@ struct OfflineCachedMessage: Codable, Equatable, Sendable {
     let role: OfflineCachedMessageRole
     let text: String
     let reasoningText: String
+    let displayKind: String?
 
-    init(role: OfflineCachedMessageRole, text: String, reasoningText: String = "") {
+    init(role: OfflineCachedMessageRole, text: String, reasoningText: String = "", displayKind: String? = nil) {
         self.role = role
         self.text = text
         self.reasoningText = reasoningText
+        self.displayKind = displayKind
     }
 }
 

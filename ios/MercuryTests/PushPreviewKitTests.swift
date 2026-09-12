@@ -22,6 +22,106 @@ final class PushPreviewKitTests: XCTestCase {
         let preview = try PushPreviewProcessor.decrypt(userInfo: info, environment: "sandbox", now: 2_000_000_010, keys: Keys(record), replay: Replay())
         XCTAssertEqual(preview.title, "Mercury test"); XCTAssertEqual(preview.body, "Preview ready")
     }
+    func testBundledHostMultilineCiphertextsOpenThroughNativeProcessor() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "host-multiline", withExtension: "json"))
+        let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: String]])
+        XCTAssertEqual(rows.count, 4)
+        XCTAssertEqual(Set(rows.compactMap { $0["name"] }), Set(["single", "lf", "crlf", "three"]))
+        for row in rows {
+            func field(_ name: String) throws -> String { try XCTUnwrap(row[name]) }
+            let keyID = try field("kid"), wake = try field("wake")
+            let envelope: [AnyHashable: Any] = [
+                "mercury_wake": wake, "mercury_event": try field("event"),
+                "mercury_preview": ["v": 1, "alg": "C20P", "kid": keyID,
+                                    "nonce": try field("nonce"), "ct": try field("ct")]
+            ]
+            let key = try XCTUnwrap(PushPreviewEnvelope.decode(try field("key")))
+            let record = PreviewKeyRecord(key: key, keyID: keyID, wake: wake, environment: "sandbox", createdAt: 0)
+            let replay = Replay()
+            let preview = try PushPreviewProcessor.decrypt(
+                userInfo: envelope, environment: "sandbox", now: 2_000_000_010, keys: Keys(record), replay: replay
+            )
+            XCTAssertEqual(preview.body, try field("expected_body"), row["name"] ?? "")
+            XCTAssertEqual(preview.title, "Synthetic preview")
+            XCTAssertEqual(preview.routeSessionID, "synthetic-session")
+            XCTAssertEqual(preview.routeProfile, "default")
+            XCTAssertEqual(replay.seen.count, 1)
+        }
+    }
+
+    // These negative cases use authenticated ciphertext too, exercising the exact
+    // native opener rather than a standalone text validator or an emulated parser.
+    private func encryptedField(_ name: String, value: String) throws -> [AnyHashable: Any] {
+        var plain: [String: Any] = [
+            "v": 1, "kind": "completion", "iat": 2_000_000_000, "exp": 2_000_000_120,
+            "title": "Synthetic preview", "body": "Alpha\nBeta",
+            "route": ["sid": "synthetic-session", "profile": "default"]
+        ]
+        if name == "sid" || name == "profile" {
+            var route = plain["route"] as! [String: String]
+            route[name] = value
+            plain["route"] = route
+        } else {
+            plain[name] = value
+        }
+        let key = SymmetricKey(data: Data(0..<32))
+        let envelope = try PushPreviewEnvelope(userInfo: info)
+        let sealed = try ChaChaPoly.seal(
+            JSONSerialization.data(withJSONObject: plain), using: key,
+            nonce: ChaChaPoly.Nonce(data: XCTUnwrap(PushPreviewEnvelope.decode(nonce))),
+            authenticating: PushPreviewProcessor.aad(environment: "sandbox", envelope: envelope)
+        )
+        var result = info
+        var metadata = result["mercury_preview"] as! [String: Any]
+        metadata["ct"] = PushPreviewEnvelope.encode(sealed.ciphertext + sealed.tag)
+        result["mercury_preview"] = metadata
+        return result
+    }
+
+    func testNativeOpenerStillRejectsControlsAndLFOutsideBody() throws {
+        let record = PreviewKeyRecord(key: Data(0..<32), keyID: kid, wake: wake, environment: "sandbox", createdAt: 0)
+        let controls = ["\u{0}", "\t", "\r", "\u{b}", "\u{c}", "\u{1f}", "\u{7f}",
+                        "\u{85}", "\u{200b}", "\u{202e}", "\u{feff}", "\u{1d173}"]
+        for field in ["title", "body", "sid", "profile"] {
+            let rejected = controls + ["\r\n"] + (field == "body" ? [] : ["\n"])
+            for control in rejected {
+                let replay = Replay()
+                let envelope = try encryptedField(field, value: "A" + control + "B")
+                XCTAssertThrowsError(try PushPreviewProcessor.decrypt(
+                    userInfo: envelope, environment: "sandbox", now: 2_000_000_010, keys: Keys(record), replay: replay
+                ), field) { error in
+                    XCTAssertEqual(error as? PushPreviewFailure, .malformedPlaintext)
+                }
+                XCTAssertTrue(replay.seen.isEmpty)
+            }
+        }
+    }
+
+    func testNativeOpenerPreservesUTF8FieldBoundsIncludingLF() throws {
+        let record = PreviewKeyRecord(key: Data(0..<32), keyID: kid, wake: wake, environment: "sandbox", createdAt: 0)
+        for (field, limit) in [("title", 160), ("body", 640), ("sid", 128), ("profile", 64)] {
+            let boundary = field == "body"
+                ? String(repeating: "é", count: 319) + "\na"
+                : String(repeating: "é", count: limit / 2)
+            for (value, accepted) in [(boundary, true), (boundary + "a", false), ("", false)] {
+                let envelope = try encryptedField(field, value: value)
+                let open = { try PushPreviewProcessor.decrypt(
+                    userInfo: envelope, environment: "sandbox", now: 2_000_000_010, keys: Keys(record), replay: Replay()
+                ) }
+                if accepted {
+                    let preview = try open()
+                    let actual = ["title": preview.title, "body": preview.body,
+                                  "sid": preview.routeSessionID, "profile": preview.routeProfile]
+                    XCTAssertEqual(actual[field] ?? nil, value, field)
+                } else {
+                    XCTAssertThrowsError(try open(), field) { error in
+                        XCTAssertEqual(error as? PushPreviewFailure, .malformedPlaintext)
+                    }
+                }
+            }
+        }
+    }
+
     func testHostGeneratedCiphertextOpensThroughNativeProcessor() throws {
         let environmentPath = ProcessInfo.processInfo.environment["MERCURY_HOST_PREVIEW_VECTOR"]
         let appSupportPath = FileManager.default.urls(

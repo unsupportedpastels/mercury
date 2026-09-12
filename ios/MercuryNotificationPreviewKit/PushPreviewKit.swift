@@ -1,4 +1,5 @@
 import Foundation
+import MercuryCore
 import CryptoKit
 import Security
 #if canImport(Darwin)
@@ -72,21 +73,21 @@ public struct PushPreviewPlaintext: Equatable {
               let expNumber = object["exp"] as? NSNumber, let exp = exactInt64(expNumber)
         else { throw PushPreviewFailure.malformedPlaintext }
         guard exp >= iat, exp - iat <= 300, iat <= now + 60, iat >= now - 300, now <= exp else { throw PushPreviewFailure.invalidTime }
-        func bounded(_ name: String, max: Int) throws -> String? {
+        // KMP owns byte bounds and the frozen scalar policy. Do not sanitize or
+        // normalize decrypted text: LF is accepted only by the body validator.
+        let fields = PushPreviewFieldPolicy.shared
+        func bounded(_ name: String, valid: (String) -> Bool) throws -> String? {
             guard let raw = object[name] else { return nil }
-            guard let value = raw as? String, !value.isEmpty, value.utf8.count <= max,
-                  !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw PushPreviewFailure.malformedPlaintext }
+            guard let value = raw as? String, valid(value) else { throw PushPreviewFailure.malformedPlaintext }
             return value
         }
-        let title = try bounded("title", max: PushPreviewConstants.maxTitleBytes)
-        let body = try bounded("body", max: PushPreviewConstants.maxBodyBytes)
+        let title = try bounded("title", valid: { fields.validTitle(value: $0) })
+        let body = try bounded("body", valid: { fields.validBody(value: $0) })
         var routeSessionID: String?, routeProfile: String?
         if let rawRoute = object["route"] {
             guard let r = rawRoute as? [String: Any], Set(r.keys) == ["sid", "profile"],
-                  let sid = r["sid"] as? String, (1...PushPreviewConstants.maxRouteSessionBytes).contains(sid.utf8.count),
-                  let profile = r["profile"] as? String, (1...PushPreviewConstants.maxRouteProfileBytes).contains(profile.utf8.count),
-                  !sid.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
-                  !profile.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw PushPreviewFailure.malformedPlaintext }
+                  let sid = r["sid"] as? String, fields.validSessionId(value: sid),
+                  let profile = r["profile"] as? String, fields.validProfile(value: profile) else { throw PushPreviewFailure.malformedPlaintext }
             routeSessionID = sid; routeProfile = profile
         }
         return Self(kind: kind, title: title, body: body, routeSessionID: routeSessionID, routeProfile: routeProfile, issuedAt: iat, expiresAt: exp)

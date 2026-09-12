@@ -18,14 +18,58 @@ settings:
     MARKETING_VERSION: "0.2.5"
     CURRENT_PROJECT_VERSION: 3
 
+# One producer shared by app, PreviewKit and extension. Never depend on the
+# app's build phases: the app itself depends on both notification targets.
+aggregateTargets:
+  MercuryCoreBuild:
+    targets: []
+    settings:
+      base:
+        SDKROOT: iphoneos
+        SUPPORTED_PLATFORMS: iphoneos iphonesimulator
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        USER_SCRIPT_SANDBOXING: NO
+    buildScripts:
+      - name: Build MercuryCore KMP framework
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/MercuryCore.framework/MercuryCore
+          - $(BUILT_PRODUCTS_DIR)/MercuryCore.framework/Headers/MercuryCore.h
+          - $(BUILT_PRODUCTS_DIR)/MercuryCore.framework/Modules/module.modulemap
+        script: |
+          set -eu
+          # Static KMP frameworks must be linked, not embedded or signed.
+          if ! command -v java >/dev/null 2>&1 && [ -z "${JAVA_HOME:-}" ]; then
+            echo "error: building MercuryCore requires a JDK (brew install openjdk@17)"
+            exit 1
+          fi
+          case "$SDK_NAME" in
+            iphonesimulator*) KT_TARGET=IosSimulatorArm64; KT_DIR=iosSimulatorArm64 ;;
+            iphoneos*)        KT_TARGET=IosArm64;          KT_DIR=iosArm64 ;;
+            *) echo "error: unsupported SDK_NAME=$SDK_NAME for MercuryCore"; exit 1 ;;
+          esac
+          CONF_LC=$(printf %s "$CONFIGURATION" | tr '[:upper:]' '[:lower:]')
+          cd "$SRCROOT/.."
+          ./gradlew ":shared:mercury-core:link${CONFIGURATION}Framework${KT_TARGET}"
+          # Stage into this Xcode build's products, never a previous app build.
+          mkdir -p "$BUILT_PRODUCTS_DIR"
+          rsync -a --delete "$SRCROOT/../shared/mercury-core/build/bin/$KT_DIR/${CONF_LC}Framework/MercuryCore.framework" "$BUILT_PRODUCTS_DIR/"
+
 targets:
   MercuryNotificationPreviewKit:
-    type: framework
+    type: framework.static
     platform: iOS
     sources:
       - MercuryNotificationPreviewKit
+    dependencies:
+      - target: MercuryCoreBuild
     settings:
       base:
+        # A static adapter avoids a second Kotlin runtime inside a dynamic
+        # PreviewKit alongside the app's own static MercuryCore linkage.
+        MACH_O_TYPE: staticlib
+        APPLICATION_EXTENSION_API_ONLY: YES
+        FRAMEWORK_SEARCH_PATHS: $(inherited) $(BUILT_PRODUCTS_DIR)
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.unsupportedpastels.mercury.notificationpreviewkit
 
@@ -47,6 +91,9 @@ targets:
       - Resources
     dependencies:
       - target: MercuryNotificationPreviewKit
+        embed: false
+      - sdk: MercuryCore.framework
+        embed: false
       - target: MercuryNotificationService
         embed: true
       - target: MercuryShareKit
@@ -57,42 +104,13 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.unsupportedpastels.mercury
         CODE_SIGN_ENTITLEMENTS: Mercury/Mercury.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        # Where Gradle drops the static MercuryCore KMP framework for Xcode
-        # consumption (see AGENTS.md, cross-platform rule).
-        FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/mercury-core/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
+        # Produced by MercuryCoreBuild before PreviewKit or app compilation.
+        FRAMEWORK_SEARCH_PATHS: $(inherited) $(BUILT_PRODUCTS_DIR)
       configs:
         Debug:
           MERCURY_APNS_ENVIRONMENT: development
         Release:
           MERCURY_APNS_ENVIRONMENT: production
-    # Builds the KMP framework before compiling Swift. MercuryCore is a hard
-    # dependency (AttachmentPolicy is a facade over it), so a JDK is required
-    # to build the iOS app — fail here with a clear message instead of a
-    # confusing "no such module MercuryCore" later.
-    preBuildScripts:
-      - name: Build MercuryCore KMP framework
-        basedOnDependencyAnalysis: false
-        script: |
-          set -eu
-          # Not embedAndSignAppleFrameworkForXcode: that task disables itself
-          # for a static framework with signing disallowed. Link the flavor
-          # Xcode asked for and copy it to the FRAMEWORK_SEARCH_PATHS dir.
-          if command -v java >/dev/null 2>&1 || [ -n "${JAVA_HOME:-}" ]; then
-            case "$SDK_NAME" in
-              iphonesimulator*) KT_TARGET=IosSimulatorArm64; KT_DIR=iosSimulatorArm64 ;;
-              iphoneos*)        KT_TARGET=IosArm64;          KT_DIR=iosArm64 ;;
-              *) echo "warning: unsupported SDK_NAME=$SDK_NAME for MercuryCore"; exit 0 ;;
-            esac
-            CONF_LC=$(printf %s "$CONFIGURATION" | tr '[:upper:]' '[:lower:]')
-            cd "$SRCROOT/.."
-            ./gradlew ":shared:mercury-core:link${CONFIGURATION}Framework${KT_TARGET}"
-            OUT="$SRCROOT/../shared/mercury-core/build/xcode-frameworks/$CONFIGURATION/$SDK_NAME"
-            mkdir -p "$OUT"
-            rsync -a --delete "$SRCROOT/../shared/mercury-core/build/bin/$KT_DIR/${CONF_LC}Framework/MercuryCore.framework" "$OUT/"
-          else
-            echo "error: building Mercury requires a JDK (brew install openjdk@17) to compile the MercuryCore KMP framework"
-            exit 1
-          fi
     info:
       path: Mercury/Info.plist
       properties:
@@ -160,8 +178,13 @@ targets:
       - MercuryNotificationService
     dependencies:
       - target: MercuryNotificationPreviewKit
+        embed: false
+      - sdk: MercuryCore.framework
+        embed: false
     settings:
       base:
+        APPLICATION_EXTENSION_API_ONLY: YES
+        FRAMEWORK_SEARCH_PATHS: $(inherited) $(BUILT_PRODUCTS_DIR)
         PRODUCT_BUNDLE_IDENTIFIER: com.unsupportedpastels.mercury.notification-service
         CODE_SIGN_ENTITLEMENTS: MercuryNotificationService/MercuryNotificationService.entitlements
       configs:
@@ -198,16 +221,19 @@ targets:
         buildPhase: resources
       - path: ../shared/mercury-core/src/commonTest/resources/push-preview/v1-vector.json
         buildPhase: resources
+      - path: ../shared/mercury-core/src/commonTest/resources/push-preview/host-multiline.json
+        buildPhase: resources
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
         # @testable import Mercury exposes public signatures backed by the
         # static KMP module, so the test compiler must resolve MercuryCore too.
-        FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/mercury-core/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
+        FRAMEWORK_SEARCH_PATHS: $(inherited) $(BUILT_PRODUCTS_DIR)
     dependencies:
       - target: Mercury
       - target: MercuryShareKit
       - target: MercuryNotificationPreviewKit
+        embed: false
 
   # Live integration tests: hit an operator-supplied Hermes origin and Nous Portal.
   # Kept in a separate target so the default MercuryTests suite stays hermetic

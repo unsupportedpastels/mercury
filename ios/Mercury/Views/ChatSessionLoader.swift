@@ -22,7 +22,8 @@ extension ChatView {
         durableSessionID requestedID: String? = nil,
         preservingActiveTurn: Bool = false,
         using liveConnection: ChatConnection? = nil,
-        allowStandaloneRelayRead: Bool = false
+        allowStandaloneRelayRead: Bool = false,
+        sourceAuthority: TranscriptReadAuthority = .history
     ) async -> Bool {
         let isRelay = appModel.activeRelayTarget != nil
         guard isRelay || appModel.serverOrigin != nil else {
@@ -35,7 +36,7 @@ extension ChatView {
         let requestedScope = backgroundTaskScope
         let requestedSelection = appModel.relaySelectionGeneration
         let turnWasActive = preservingActiveTurn && (state.isSending || state.transcript.hasStreamingAssistant)
-        if !preservingActiveTurn, let origin = appModel.serverOrigin {
+        if sourceAuthority.publishesTranscript, !preservingActiveTurn, let origin = appModel.serverOrigin {
             let cached = await appModel.cachedTranscript(
                 origin: origin,
                 profile: appModel.activeProfile,
@@ -46,7 +47,7 @@ extension ChatView {
                     TranscriptState.RestoredMessage(
                         role: $0.role.rawValue,
                         content: $0.text,
-                        reasoningText: $0.reasoningText
+                        reasoningText: $0.reasoningText, displayKind: $0.displayKind
                     )
                 })
                 state.initialScrollDone = true
@@ -87,21 +88,17 @@ extension ChatView {
                     role: message.role,
                     content: message.content,
                     toolName: message.toolName,
-                    reasoningText: message.reasoningText
+                    reasoningText: message.reasoningText, displayKind: message.displayKind
                 )
             }
-            if preservingActiveTurn {
-                state.isSending = state.transcript.reconcileForegroundTranscript(
-                    restored,
-                    turnWasActive: turnWasActive
-                )
-            } else {
-                state.transcript.loadTranscript(restored)
-            }
-            state.loadedTranscriptCount = relayPage?.nextOffset ?? history.count
-            state.hasMoreHistory = relayPage?.hasMore ?? TranscriptHistoryPolicy.hasMoreHistory(fetchedCount: history.count)
-            state.historyError = nil
-            await cacheCurrentTranscript()
+            applyDurableDisplayRows(restored, sourceAuthority: sourceAuthority,
+                                    preservingActiveTurn: preservingActiveTurn, turnWasActive: turnWasActive)
+            applyHistoryPagination(
+                loadedCount: relayPage?.nextOffset ?? history.count,
+                hasMore: relayPage?.hasMore ?? TranscriptHistoryPolicy.hasMoreHistory(fetchedCount: history.count),
+                sourceAuthority: sourceAuthority
+            )
+            if sourceAuthority.publishesTranscript { await cacheCurrentTranscript() }
             state.initialScrollDone = !state.transcript.rows.isEmpty
             state.loadError = nil
             return true
@@ -110,6 +107,44 @@ extension ChatView {
             state.loadError = "Could not load transcript for this session."
             return false
         }
+    }
+
+    /// Publication boundary shared by initial history and the post-resume read.
+    @MainActor
+    func applyDurableDisplayRows(
+        _ restored: [TranscriptState.RestoredMessage],
+        sourceAuthority: TranscriptReadAuthority = .history,
+        preservingActiveTurn: Bool = false,
+        turnWasActive: Bool = false
+    ) {
+        guard sourceAuthority.publishesTranscript else { return }
+        if preservingActiveTurn {
+            state.isSending = state.transcript.reconcileForegroundTranscript(restored, turnWasActive: turnWasActive)
+        } else {
+            state.transcript.loadTranscript(restored)
+        }
+    }
+
+    /// A durable cursor is valid only when the same read also published the
+    /// rows it indexes. Metadata-only post-resume reads cannot claim paging.
+    @MainActor
+    func applyHistoryPagination(
+        loadedCount: Int,
+        hasMore: Bool,
+        sourceAuthority: TranscriptReadAuthority
+    ) {
+        guard sourceAuthority.publishesTranscript else { return }
+        state.adoptHistoryPagination(loadedCount: loadedCount, hasMore: hasMore)
+    }
+
+    /// Resume rows are an authoritative display projection, but do not carry
+    /// a durable-history cursor. Disable backfill before a metadata read can
+    /// suspend or fail.
+    @MainActor
+    func publishResumeDisplayRows(_ rows: [TranscriptState.RestoredMessage]) {
+        guard !rows.isEmpty else { return }
+        state.invalidateTranscriptPagination()
+        state.transcript.loadTranscript(rows)
     }
 
     /// Fetches one transcript page over the relay's in-process read
@@ -171,10 +206,13 @@ extension ChatView {
     /// insertion.
     func loadEarlierHistory() async {
         guard !state.isLoadingHistory, !(state.hasMoreHistory == false && state.historyError == nil) else { return }
+        guard let paginationRequest = state.historyPaginationRequest() else { return }
         let isRelay = appModel.activeRelayTarget != nil
         guard isRelay || appModel.serverOrigin != nil else { return }
         let transcriptID = state.durableID ?? sessionID
         guard !transcriptID.isEmpty else { return }
+        let requestedScope = backgroundTaskScope
+        let requestedSelection = appModel.relaySelectionGeneration
         state.isLoadingHistory = true
         defer { state.isLoadingHistory = false }
         do {
@@ -187,7 +225,7 @@ extension ChatView {
                 let page = try await relayTranscriptMessages(
                     transcriptID: transcriptID,
                     limit: TranscriptHistoryPolicy.pageSize,
-                    offset: TranscriptHistoryPolicy.nextOffset(loadedCount: state.loadedTranscriptCount),
+                    offset: TranscriptHistoryPolicy.nextOffset(loadedCount: paginationRequest.loadedCount),
                     using: live
                 )
                 relayPage = page
@@ -198,9 +236,14 @@ extension ChatView {
                 let sessions = SessionsClient(client: client, profile: appModel.activeProfile)
                 fetchedOlder = try await sessions.olderTranscript(
                     sessionID: transcriptID,
-                    offset: TranscriptHistoryPolicy.nextOffset(loadedCount: state.loadedTranscriptCount)
+                    offset: TranscriptHistoryPolicy.nextOffset(loadedCount: paginationRequest.loadedCount)
                 )
             }
+            guard !Task.isCancelled,
+                  backgroundTaskScope == requestedScope,
+                  appModel.relaySelectionGeneration == requestedSelection,
+                  (state.durableID ?? sessionID) == transcriptID,
+                  state.acceptsHistoryPaginationResponse(generation: paginationRequest.generation) else { return }
             let older = TranscriptPageOrdering.forDisplay(fetchedOlder)
             if let page = relayPage {
                 state.loadedTranscriptCount = page.nextOffset
@@ -215,7 +258,7 @@ extension ChatView {
                     role: message.role,
                     content: message.content,
                     toolName: message.toolName,
-                    reasoningText: message.reasoningText
+                    reasoningText: message.reasoningText, displayKind: message.displayKind
                 )
             }
             state.transcript.prependHistory(restored)
@@ -225,6 +268,7 @@ extension ChatView {
             }
             state.historyError = nil
         } catch {
+            guard state.acceptsHistoryPaginationResponse(generation: paginationRequest.generation) else { return }
             state.historyError = "Could not load earlier messages. Tap to retry."
         }
     }
@@ -242,7 +286,8 @@ extension ChatView {
             )
         let messages = state.transcript.rows.compactMap { row -> OfflineCachedMessage? in
             guard let role = OfflineCachedMessageRole(rawValue: row.role.lowercased()) else { return nil }
-            return OfflineCachedMessage(role: role, text: row.text, reasoningText: row.reasoningText)
+            return OfflineCachedMessage(role: role, text: row.text, reasoningText: row.reasoningText,
+                                        displayKind: row.displayKind)
         }
         await appModel.cacheTranscript(
             origin: origin,

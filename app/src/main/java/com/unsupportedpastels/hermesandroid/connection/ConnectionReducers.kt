@@ -85,6 +85,7 @@ internal fun chatMessageFromJson(row: JsonObject): ChatMessage? {
         role = role,
         text = text.orEmpty(),
         reasoningText = reasoning.orEmpty(),
+        displayKind = (row["display_kind"] as? JsonPrimitive)?.contentOrNull,
     )
 }
 
@@ -140,7 +141,8 @@ internal fun parseRelayTranscriptRows(result: JsonObject): List<ChatMessage> =
             ) {
                 return@mapNotNull null
             }
-            ChatMessage(role = role, text = text.orEmpty(), reasoningText = reasoning.orEmpty())
+            ChatMessage(role = role, text = text.orEmpty(), reasoningText = reasoning.orEmpty(),
+                displayKind = (row["display_kind"] as? JsonPrimitive)?.contentOrNull)
         }
 
 private fun JsonObject.assistantReasoningText(): String? =

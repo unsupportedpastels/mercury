@@ -64,7 +64,8 @@ internal sealed interface FoldedEntry {
 internal fun foldTranscriptTurns(messages: List<ChatMessage>, turnActive: Boolean): List<FoldedEntry> {
     val rows = messages.mapIndexed { index, message ->
         TranscriptRow(index.toLong(), message.role.name.lowercase(), message.text,
-            completed = !message.isStreaming, reasoningText = message.reasoningText)
+            completed = !message.isStreaming, reasoningText = message.reasoningText,
+            displayKind = message.displayKind)
     }
     val folded = com.unsupportedpastels.mercury.core.transcript.foldTranscriptTurns(rows, turnActive)
     return folded.mapIndexed { position, entry ->
@@ -159,8 +160,16 @@ internal fun TurnActivityGroup(
                                         innerExpanded, { innerExpanded = !innerExpanded })
                                 }
                                 if (group.message.text.isNotBlank()) {
-                                    MarkdownMessage(group.message.text, loadManagedImage = loadManagedImage,
-                                        loadManagedVideo = loadManagedVideo, peekManagedVideo = peekManagedVideo)
+                                    if (com.unsupportedpastels.mercury.core.transcript.InternalCompletionNotice.isNotice(
+                                            group.message.role.name.lowercase(), group.message.text, group.message.displayKind)) {
+                                        androidx.compose.foundation.text.selection.SelectionContainer {
+                                            Text(group.message.text, style = MaterialTheme.typography.bodySmall,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                                        }
+                                    } else {
+                                        MarkdownMessage(group.message.text, loadManagedImage = loadManagedImage,
+                                            loadManagedVideo = loadManagedVideo, peekManagedVideo = peekManagedVideo)
+                                    }
                                 }
                             }
                             is TranscriptEntry.ToolRun -> TranscriptToolRunGroup(

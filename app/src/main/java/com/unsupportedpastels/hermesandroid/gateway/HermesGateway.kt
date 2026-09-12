@@ -69,6 +69,7 @@ data class ChatMessage(
     val text: String,
     val isStreaming: Boolean = false,
     val reasoningText: String = "",
+    val displayKind: String? = null,
 )
 
 data class ChatBillingNotice(

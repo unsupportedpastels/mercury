@@ -10,6 +10,25 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 
 class PushPreviewCorpusTest {
+    @Test fun hostProducedMultilineFieldsUseSharedWirePolicy() {
+        val text = checkNotNull(javaClass.classLoader!!.getResourceAsStream("push-preview/host-multiline.json"))
+            .bufferedReader().use { it.readText() }
+        val rows = Json.parseToJsonElement(text).jsonArray
+        assertEquals(setOf("single", "lf", "crlf", "three"), rows.map { it.jsonObject["name"]!!.jsonPrimitive.content }.toSet())
+        assertEquals(4, rows.size)
+        for (rowElement in rows) {
+            val row = rowElement.jsonObject
+            val plain = Json.parseToJsonElement(row["plaintext"]!!.jsonPrimitive.content).jsonObject
+            val body = plain["body"]!!.jsonPrimitive.content
+            assertEquals(row["expected_body"]!!.jsonPrimitive.content, body)
+            assertEquals(true, PushPreviewFieldPolicy.validBody(body))
+            assertEquals(true, PushPreviewFieldPolicy.validTitle(plain["title"]!!.jsonPrimitive.content))
+            val route = plain["route"]!!.jsonObject
+            assertEquals(true, PushPreviewFieldPolicy.validSessionId(route["sid"]!!.jsonPrimitive.content))
+            assertEquals(true, PushPreviewFieldPolicy.validProfile(route["profile"]!!.jsonPrimitive.content))
+        }
+    }
+
     @Test fun canonicalPolicyCorpus() {
         val text = checkNotNull(javaClass.classLoader!!.getResourceAsStream("push-preview/policy-corpus.json")).bufferedReader().use { it.readText() }
         val rows = Json.parseToJsonElement(text).jsonObject["cases"]!!.jsonArray

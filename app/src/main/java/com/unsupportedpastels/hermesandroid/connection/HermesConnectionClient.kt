@@ -1639,6 +1639,7 @@ class HttpHermesConnectionClient(
                 role = role,
                 text = text.orEmpty(),
                 reasoningText = reasoning.orEmpty(),
+                displayKind = (row["display_kind"] as? JsonPrimitive)?.contentOrNull,
             )
         }
         return TranscriptEnvelope(messages, progress)

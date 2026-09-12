@@ -5831,7 +5831,7 @@ class HermesConnectionViewModel(
                     originGeneration,
                     operationGeneration,
                 )
-                applyResume(durableSessionId, resumed)
+                val sourceAuthority = applyResume(durableSessionId, resumed)
                 if (resumed.running || relayTarget != null) {
                     sessionControllerRegistry.activateController(
                         PerSessionController(
@@ -5857,13 +5857,20 @@ class HermesConnectionViewModel(
                     // Resume projections can omit persisted tool results. Reconcile via the read-only window.
                     refreshSessionProgress(durableSessionId)
                 } else {
+                    // Always recover bounded durable progress/tool metadata. A nonempty
+                    // official resume owns display rows; this raw projection is not a
+                    // replacement snapshot (and this reader does not publish cache).
                     val messages = loadTranscriptWithProgress(origin, originGeneration, token, durableSessionId, profile)
                     if (!isCurrentChatOperation(durableSessionId, origin, originGeneration, operationGeneration)) {
                         closeChatSessionNonCancellably(candidate)
                         return
                     }
                     updateChat(durableSessionId) {
-                        it.copy(messages = messages, isSending = false, error = null)
+                        it.copy(
+                            messages = if (sourceAuthority.publishesTranscript) messages else it.messages,
+                            isSending = false,
+                            error = null,
+                        )
                     }
                     closeChatSessionNonCancellably(candidate)
                 }
@@ -5974,7 +5981,10 @@ class HermesConnectionViewModel(
         }
     }
 
-    private fun applyResume(durableSessionId: DurableSessionId, resumed: ResumedChatSession) {
+    private fun applyResume(
+        durableSessionId: DurableSessionId,
+        resumed: ResumedChatSession,
+    ): com.unsupportedpastels.mercury.core.transcript.TranscriptReadAuthority {
         automaticChatReconnects.remove(durableSessionId)
         val resumedMessages = resumed.messages.mapNotNull(::chatMessageFromJson)
         updateChat(durableSessionId) { current ->
@@ -6035,6 +6045,7 @@ class HermesConnectionViewModel(
         // Replay intentionally omits foreground events; authoritative running=false
         // must provide the missing terminal fence without another explicit Send.
         if (activeRelayTarget != null && !resumed.running) clearSendingState(durableSessionId)
+        return com.unsupportedpastels.mercury.core.transcript.TranscriptReadPolicy.afterResume(resumedMessages.isNotEmpty())
     }
 
     private fun updateSessionTitle(

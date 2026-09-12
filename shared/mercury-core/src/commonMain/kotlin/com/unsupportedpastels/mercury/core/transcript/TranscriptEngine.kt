@@ -37,6 +37,8 @@ data class TranscriptRow(
     val toolName: String? = null,
     /** Accumulated chain-of-thought for this assistant segment. */
     val reasoningText: String = "",
+    /** Official Hermes presentation metadata; never changes the wire role/content. */
+    val displayKind: String? = null,
 )
 
 enum class ToolRowState { Running, Completed }
@@ -62,6 +64,7 @@ data class RestoredMessage(
     val content: String,
     val toolName: String? = null,
     val reasoningText: String = "",
+    val displayKind: String? = null,
 )
 
 data class TranscriptSnapshot(
@@ -447,6 +450,7 @@ object TranscriptEngine {
             completed = true,
             toolName = message.toolName,
             reasoningText = message.reasoningText,
+            displayKind = message.displayKind,
         )
     }
 

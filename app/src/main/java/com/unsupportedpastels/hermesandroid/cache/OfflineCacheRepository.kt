@@ -296,6 +296,7 @@ class EncryptedOfflineCacheRepository(
         role = message.role.name,
         text = boundText(message.text, OfflineCachePolicy.MAX_BODY_BYTES),
         reasoningText = boundText(message.reasoningText, OfflineCachePolicy.MAX_BODY_BYTES),
+        displayKind = message.displayKind?.let { boundText(it, 256) },
     )
 
     private fun boundMessages(messages: List<ChatMessage>): List<StoredMessage> {
@@ -307,7 +308,8 @@ class EncryptedOfflineCacheRepository(
             .forEach { message ->
                 val stored = boundMessage(message)
                 val bytes = stored.text.toByteArray(StandardCharsets.UTF_8).size +
-                    stored.reasoningText.toByteArray(StandardCharsets.UTF_8).size
+                    stored.reasoningText.toByteArray(StandardCharsets.UTF_8).size +
+                    stored.displayKind.orEmpty().toByteArray(StandardCharsets.UTF_8).size
                 if (selected.isEmpty() || retainedBytes + bytes <= transcriptBudget) {
                     selected.addFirst(stored)
                     retainedBytes += bytes
@@ -439,12 +441,14 @@ private data class StoredMessage(
     val role: String,
     val text: String,
     val reasoningText: String = "",
+    val displayKind: String? = null,
 ) {
     fun toMessage(): ChatMessage? = runCatching {
         ChatMessage(
             role = ChatMessageRole.valueOf(role),
             text = text,
             reasoningText = reasoningText,
+            displayKind = displayKind,
         )
     }.getOrNull()
 }

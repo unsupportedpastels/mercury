@@ -1,4 +1,5 @@
 import SwiftUI
+import MercuryCore
 
 /// Quiet per-turn disclosure below the settled answer, not a persistent work card.
 struct TurnActivityView: View {
@@ -61,7 +62,11 @@ struct ActivityTranscriptContent: View {
                         ReasoningDisclosure(reasoningText: row.reasoningText, streaming: !row.completed)
                     }
                     if !row.text.isEmpty {
-                        if row.role.lowercased() == "assistant", row.completed {
+                        if InternalCompletionNotice.shared.isNotice(row: row.core) {
+                            // Internal details are not a human chat bubble, even expanded.
+                            Text(row.text).font(.callout.monospaced()).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else if row.role.lowercased() == "assistant", row.completed {
                             media(row.text)
                         } else {
                             MessageBubble(role: row.role, text: row.text, isStreaming: !row.completed)

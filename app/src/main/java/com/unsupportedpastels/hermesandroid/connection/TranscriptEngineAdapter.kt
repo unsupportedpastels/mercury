@@ -58,6 +58,7 @@ private fun seedTranscript(messages: List<ChatMessage>, previous: TranscriptPres
             text = message.text,
             completed = !message.isStreaming,
             reasoningText = message.reasoningText,
+            displayKind = message.displayKind,
         )
     }
     return TranscriptSnapshot(rows = rows, nextRowId = nextId)
@@ -73,6 +74,7 @@ private fun TranscriptRow.toMessage() = ChatMessage(
     text = text,
     isStreaming = !completed,
     reasoningText = reasoningText,
+    displayKind = displayKind,
 )
 
 private fun ChatMessageRole.toWireRole(): String = when (this) {

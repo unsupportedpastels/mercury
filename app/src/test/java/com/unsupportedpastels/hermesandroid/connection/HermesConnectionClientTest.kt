@@ -38,6 +38,25 @@ import com.unsupportedpastels.hermesandroid.gateway.CronJobScope
 
 class HermesConnectionClientTest {
     @Test
+    fun officialTranscriptCarriesCompletionPresentationMetadataWithoutChangingContent() = runTest {
+        val engine = MockEngine { request ->
+            assertEquals("/api/sessions/session/messages", request.url.encodedPath)
+            respond(
+                """{"messages":[{"role":"user","content":"New envelope","display_kind":"async_delegation_complete"}]}""",
+                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+        val message = HttpHermesConnectionClient(HttpClient(engine)).loadTranscript(
+            ServerOrigin.parse("https://hermes.example"), null, DurableSessionId("session"),
+        ).single()
+        assertEquals(ChatMessageRole.User, message.role)
+        assertEquals("New envelope", message.text)
+        assertEquals("async_delegation_complete", message.displayKind)
+        assertTrue(com.unsupportedpastels.mercury.core.transcript.InternalCompletionNotice.isNotice(
+            message.role.name.lowercase(), message.text, message.displayKind))
+    }
+
+    @Test
     fun renamePinAndDeleteUseProfileScopedOfficialSessionContracts() = runTest {
         val requests = mutableListOf<String>()
         val engine = MockEngine { request ->
