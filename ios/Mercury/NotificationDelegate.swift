@@ -47,30 +47,32 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func handlePayload(_ userInfo: [AnyHashable: Any], completionHandler: @escaping () -> Void) {
-        if userInfo["mercury_wake"] != nil {
-            if let wake = RelayPushCoordinator.wake(from: userInfo), let onWake {
-                // Keep the notification response alive until the bounded wake
-                // routing work completes; cold launches otherwise lose their
-                // execution window immediately after merely opening the app.
-                Task { @MainActor in
-                    await onWake(wake)
-                    completionHandler()
-                }
-            } else { completionHandler() }
-            return
-        }
-        if let routeString = userInfo["mercury.route"] as? String,
+        // System acknowledgement is independent of disk access and network routing.
+        // The unstructured task strongly retains this delegate and its callbacks
+        // until routing finishes, even if the notification response is released.
+        completionHandler()
+        Task { @MainActor [self] in await routePayload(userInfo) }
+    }
+
+    @MainActor
+    private func routePayload(_ userInfo: [AnyHashable: Any]) async {
+        if userInfo["mercury_wake"] == nil,
+           let routeString = userInfo["mercury.route"] as? String,
            let url = URL(string: routeString),
            let route = MercuryDeepLink.parse(url),
            let routeHandler = onOpenRoute {
-            Task { @MainActor in routeHandler(route) }
-            completionHandler()
+            routeHandler(route)
             return
         }
-        let sessionID = userInfo["mercury.sessionID"] as? String
-        if let sessionID, !sessionID.isEmpty, let handler = onOpenSession {
-            Task { @MainActor in handler(sessionID) }
+        if userInfo["mercury_wake"] != nil {
+            if let wake = RelayPushCoordinator.wake(from: userInfo), let onWake {
+                await onWake(wake)
+            }
+            return
         }
-        completionHandler()
+        if let sessionID = userInfo["mercury.sessionID"] as? String,
+           !sessionID.isEmpty, let handler = onOpenSession {
+            handler(sessionID)
+        }
     }
 }
