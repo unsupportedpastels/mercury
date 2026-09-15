@@ -56,27 +56,42 @@ final class RelayPushCoordinator {
     private var bindings: [Binding]
     private var retiredPreviewScopes: [RetiredPreviewScope]
     private let now: () -> Int64
-    private let retiredScopesKey = "mercury.apns.retired-preview-scopes.v1"
+    private let retiredScopesKey: String
     // A retired key may authenticate one final arrival during its existing
     // 15-minute grace. That arrival's receipt has its own seven-day lifetime.
     static let retiredRouteRetention = PreviewRouteStore.maxRetentionSeconds + 900
     static let maxRetiredScopes = 64
     static let maxRetiredScopeBytes = 32 * 1024
     private let defaults: UserDefaults
-    private let sandbox: Bool
-    private let storageKey = "mercury.apns.wake-bindings.v1"
+    private let environment: String?
+    private let storageKey: String
     private let previewKeys = PreviewKeychainRepository()
     private let previewEnabledKey = "mercury.apns.preview.enabled.v1"
     private let previewTitleKey = "mercury.apns.preview.title.v1"
     private let previewExcerptKey = "mercury.apns.preview.excerpt.v1"
 
-    init(defaults: UserDefaults = .standard, sandbox: Bool = RelayPushCoordinator.isSandboxBuild,
+    init(defaults: UserDefaults = .standard,
+         environment: String? = Bundle.main.object(forInfoDictionaryKey: "MercuryAPNSEnvironment") as? String,
          now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970) }) {
-        self.defaults = defaults; self.sandbox = sandbox; self.now = now
+        let parsed = Self.environmentValue(environment)
+        let storageKey = "mercury.apns.wake-bindings.v2.\(parsed ?? "invalid")"
+        let retiredScopesKey = "mercury.apns.retired-preview-scopes.v2.\(parsed ?? "invalid")"
+        self.defaults = defaults; self.environment = parsed; self.now = now
+        self.storageKey = storageKey; self.retiredScopesKey = retiredScopesKey
         previewEnabled = defaults.bool(forKey: previewEnabledKey)
         includeTitle = defaults.bool(forKey: previewTitleKey)
         includeResponseExcerpt = defaults.bool(forKey: previewExcerptKey)
-        bindings = (defaults.data(forKey: storageKey).flatMap { try? JSONDecoder().decode([Binding].self, from: $0) }) ?? []
+        if parsed == "sandbox", defaults.object(forKey: storageKey) == nil,
+           let legacy = defaults.data(forKey: "mercury.apns.wake-bindings.v1") {
+            defaults.set(legacy, forKey: storageKey)
+            defaults.removeObject(forKey: "mercury.apns.wake-bindings.v1")
+        }
+        if parsed == "sandbox", defaults.object(forKey: retiredScopesKey) == nil,
+           let legacy = defaults.data(forKey: "mercury.apns.retired-preview-scopes.v1") {
+            defaults.set(legacy, forKey: retiredScopesKey)
+            defaults.removeObject(forKey: "mercury.apns.retired-preview-scopes.v1")
+        }
+        bindings = parsed.flatMap { _ in defaults.data(forKey: storageKey).flatMap { try? JSONDecoder().decode([Binding].self, from: $0) } } ?? []
         retiredPreviewScopes = (defaults.data(forKey: retiredScopesKey).flatMap { data -> [RetiredPreviewScope]? in
             // Bound decoding as well as the resulting collection. An oversized
             // legacy value is discarded, never reimported or granted a new TTL.
@@ -93,12 +108,12 @@ final class RelayPushCoordinator {
         }
         persist()
     }
-    nonisolated static var isSandboxBuild: Bool {
-        #if DEBUG
-        true
-        #else
-        false
-        #endif
+    convenience init(defaults: UserDefaults, sandbox: Bool,
+                     now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970) }) {
+        self.init(defaults: defaults, environment: sandbox ? "sandbox" : "production", now: now)
+    }
+    nonisolated static func environmentValue(_ value: String?) -> String? {
+        MercuryCore.PushEnvironmentPolicy.shared.canonicalValue(value: value)
     }
     nonisolated static func tokenHex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
     nonisolated static func validWake(_ value: String) -> Bool {
@@ -115,6 +130,13 @@ final class RelayPushCoordinator {
     }
     nonisolated static func supportsSessionResolution(_ status: [String: Any]) -> Bool {
         MercuryCore.RelayPushRoutePolicy.shared.supportsSessionResolution(status: sharedPushStatus(status))
+    }
+    nonisolated static func genericRegisterVersion(_ status: [String: Any], environment: String) -> Int {
+        let data = try? JSONSerialization.data(withJSONObject: status)
+        let json = data.flatMap { String(data: $0, encoding: .utf8) }
+        return Int(MercuryCore.PushEnvironmentPolicy.shared.genericRegisterVersionJson(
+            environmentValue: environment, legacySupported: supports(status), statusJson: json
+        ))
     }
     struct PreviewCapability: Equatable { let maxPlaintextBytes, maxTitleBytes, maxBodyBytes: Int }
     nonisolated static func supportsArrivalInspection(_ status: [String: Any]) -> Bool {
@@ -303,9 +325,9 @@ final class RelayPushCoordinator {
     }
     private func reconcile() {
         guard enabled else { return }
-        guard sandbox else {
-            bindings.removeAll(); persist()
-            status = "Relay push currently supports development builds only. Production tokens are not sent."
+        guard let environment else {
+            bindings.removeAll(); retiredPreviewScopes.removeAll(); persist()
+            status = "Push environment is unavailable. Notifications remain best effort; update this build."
             return
         }
         guard let token else {
@@ -323,15 +345,18 @@ final class RelayPushCoordinator {
             var pendingPreviewKeyID: String?
             defer {
                 if let pendingPreviewKeyID {
-                    self.previewKeys.delete(environment: "sandbox", wake: "pending", keyID: pendingPreviewKeyID)
+                    self.previewKeys.delete(environment: environment, wake: "pending", keyID: pendingPreviewKeyID)
                 }
             }
             do {
                 let status = try await request("relay.status", [:])
                 guard self.generation == revision, self.enabled else { return }
                 let capability = Self.previewCapability(status)
-                guard Self.supports(status) || (self.previewEnabled && capability != nil) else {
-                    self.status = "This host does not support Relay push. Notifications remain best effort."
+                let genericVersion = Self.genericRegisterVersion(status, environment: environment)
+                guard genericVersion != 0 || (self.previewEnabled && capability != nil) else {
+                    self.status = environment == "production"
+                        ? "This Relay host must be upgraded for production push. Notifications remain best effort."
+                        : "This host does not support Relay push. Notifications remain best effort."
                     self.bindings.removeAll { $0.scope == scope }; self.persist(); return
                 }
                 var previewKeyID: String?
@@ -341,7 +366,7 @@ final class RelayPushCoordinator {
                     let now = Int64(Date().timeIntervalSince1970)
                     let existing = self.forcePreviewRotation ? nil : self.bindings.first { $0.scope == scope && $0.previewKeyID != nil }
                     let existingRecord = try existing.flatMap { binding in
-                        try self.previewKeys.load(environment: "sandbox", wake: binding.wake, keyID: binding.previewKeyID!, now: now)
+                        try self.previewKeys.load(environment: environment, wake: binding.wake, keyID: binding.previewKeyID!, now: now)
                     }
                     let key: Data
                     let keyID: String
@@ -351,10 +376,10 @@ final class RelayPushCoordinator {
                         guard let generatedKey = Self.random(32), let keyIDBytes = Self.random(16) else { throw URLError(.cannotCreateFile) }
                         key = generatedKey; keyID = PushPreviewEnvelope.encode(keyIDBytes); pendingPreviewKeyID = keyID
                         // A pending key is durable before provisioning; it is promoted to the authenticated wake scope only after exact response validation.
-                        try self.previewKeys.save(PreviewKeyRecord(key: key, keyID: keyID, wake: "pending", environment: "sandbox", createdAt: now))
+                        try self.previewKeys.save(PreviewKeyRecord(key: key, keyID: keyID, wake: "pending", environment: environment, createdAt: now))
                     }
                     result = try await request("relay.push.preview.register", [
-                        "device_token": token, "environment": "sandbox",
+                        "device_token": token, "environment": environment,
                         "preview": ["version": 1, "key_id": keyID, "key": PushPreviewEnvelope.encode(key),
                                     "completion": self.currentCompletion, "attention": self.currentAttention,
                                     "include_title": self.includeTitle, "include_response_excerpt": self.includeResponseExcerpt]
@@ -367,7 +392,13 @@ final class RelayPushCoordinator {
                         self.status = "This host does not support selective encrypted previews. Local delivery remains active."
                         self.bindings.removeAll { $0.scope == scope }; self.persist(); return
                     }
-                    result = try await request("relay.push.register", ["device_token": token, "environment": "sandbox"])
+                    guard genericVersion != 0 else {
+                        self.status = "This Relay host must be upgraded for production push. Notifications remain best effort."
+                        self.bindings.removeAll { $0.scope == scope }; self.persist(); return
+                    }
+                    var parameters: [String: Any] = ["device_token": token, "environment": environment]
+                    if genericVersion == 2 { parameters["version"] = 2 }
+                    result = try await request("relay.push.register", parameters)
                 }
                 guard self.generation == revision, self.enabled else { return }
                 guard let registered = result["registered"] as? NSNumber,
@@ -375,15 +406,15 @@ final class RelayPushCoordinator {
                       let wake = result["wake_handle"] as? String, Self.validWake(wake) else { throw URLError(.badServerResponse) }
                 let now = Int64(Date().timeIntervalSince1970)
                 if let keyID = previewKeyID, let key = previewKey {
-                    try self.previewKeys.save(PreviewKeyRecord(key: key, keyID: keyID, wake: wake, environment: "sandbox", createdAt: now))
-                    self.previewKeys.delete(environment: "sandbox", wake: "pending", keyID: keyID)
+                    try self.previewKeys.save(PreviewKeyRecord(key: key, keyID: keyID, wake: wake, environment: environment, createdAt: now))
+                    self.previewKeys.delete(environment: environment, wake: "pending", keyID: keyID)
                     for old in self.bindings where old.scope == scope && (old.previewKeyID != keyID || old.wake != wake) {
                         if let retiredID = old.retiredKeyID, let retiredWake = old.retiredWake,
                            retiredID != keyID || retiredWake != wake {
-                            self.previewKeys.delete(environment: "sandbox", wake: retiredWake, keyID: retiredID)
+                            self.previewKeys.delete(environment: environment, wake: retiredWake, keyID: retiredID)
                         }
-                        if let oldID = old.previewKeyID, let oldRecord = try? self.previewKeys.load(environment: "sandbox", wake: old.wake, keyID: oldID, now: now), let oldKey = oldRecord.keyData {
-                            try? self.previewKeys.save(PreviewKeyRecord(key: oldKey, keyID: oldID, wake: old.wake, environment: "sandbox", createdAt: oldRecord.createdAt ?? now, retireAt: now + 900))
+                        if let oldID = old.previewKeyID, let oldRecord = try? self.previewKeys.load(environment: environment, wake: old.wake, keyID: oldID, now: now), let oldKey = oldRecord.keyData {
+                            try? self.previewKeys.save(PreviewKeyRecord(key: oldKey, keyID: oldID, wake: old.wake, environment: environment, createdAt: oldRecord.createdAt ?? now, retireAt: now + 900))
                         }
                     }
                 }
@@ -398,7 +429,8 @@ final class RelayPushCoordinator {
                 self.bindings.removeAll { $0.scope == scope || $0.wake == wake }
                 self.bindings.append(Binding(scope: scope, wake: wake, previewKeyID: previewKeyID, completion: previewKeyID == nil ? nil : self.currentCompletion, attention: previewKeyID == nil ? nil : self.currentAttention, retiredKeyID: previewKeyID == nil ? nil : retainedID, retiredWake: previewKeyID == nil ? nil : retainedWake)); self.persist()
                 if previewKeyID != nil { self.forcePreviewRotation = false }
-                self.status = previewKeyID == nil ? "Relay push active (development). Alerts contain no session content." : "Encrypted previews active (development). Locked devices receive the generic alert."
+                let label = environment == "production" ? "production" : "development"
+                self.status = previewKeyID == nil ? "Relay push active (\(label)). Alerts contain no session content." : "Encrypted previews active (\(label)). Locked devices receive the generic alert."
             } catch {
                 guard self.generation == revision else { return }
                 if self.bindings.contains(where: { $0.scope == scope }) {
@@ -454,9 +486,10 @@ final class RelayPushCoordinator {
 
     func waitForWork() async { await work?.value }
     private func deletePreviewKeys(for selected: Scope? = nil) {
+        guard let environment else { return }
         for binding in bindings where selected == nil || binding.scope == selected {
-            if let keyID = binding.previewKeyID { previewKeys.delete(environment: "sandbox", wake: binding.wake, keyID: keyID) }
-            if let keyID = binding.retiredKeyID, let wake = binding.retiredWake { previewKeys.delete(environment: "sandbox", wake: wake, keyID: keyID) }
+            if let keyID = binding.previewKeyID { previewKeys.delete(environment: environment, wake: binding.wake, keyID: keyID) }
+            if let keyID = binding.retiredKeyID, let wake = binding.retiredWake { previewKeys.delete(environment: environment, wake: wake, keyID: keyID) }
         }
         // Key deletion is a privacy boundary, not proof of host unregister.
         // Keep delivery/category ownership and wake routing until replacement
@@ -522,7 +555,7 @@ final class RelayPushCoordinator {
     func writeDiagnostic(to directory: URL) {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // Explicit allowlist: never export operational token/handle bindings.
-        let state: [String: Any] = ["status": status, "environment": sandbox ? "sandbox" : "production",
+        let state: [String: Any] = ["status": status, "environment": environment ?? "invalid",
                                     "registered": !bindings.isEmpty, "enabled": enabled, "has_token": token != nil]
         let url = directory.appendingPathComponent("apns-diagnostics.json")
         // An older opt-in build may have left secrets here. Remove that artifact

@@ -1,5 +1,6 @@
 import UserNotifications
 import MercuryNotificationPreviewKit
+import MercuryCore
 
 final class NotificationService: UNNotificationServiceExtension {
     private let lock = NSLock()
@@ -14,9 +15,12 @@ final class NotificationService: UNNotificationServiceExtension {
         mutable.userInfo.removeValue(forKey: "mercury.preview.sid")
         mutable.userInfo.removeValue(forKey: "mercury.preview.profile")
         lock.lock(); handler = contentHandler; fallback = mutable; lock.unlock()
-        let environment = (Bundle.main.object(forInfoDictionaryKey: "MercuryAPNSEnvironment") as? String) ?? "sandbox"
+        guard let rawEnvironment = Bundle.main.object(forInfoDictionaryKey: "MercuryAPNSEnvironment") as? String,
+              let environment = PushEnvironmentPolicy.shared.canonicalValue(value: rawEnvironment) else {
+            finish(mutable); return
+        }
         let now = Int64(Date().timeIntervalSince1970)
-        guard let replay = PreviewReplayStore() else { finish(mutable); return }
+        guard let replay = PreviewReplayStore(environment: environment) else { finish(mutable); return }
         do {
             let preview = try PushPreviewProcessor.decrypt(userInfo: mutable.userInfo, environment: environment, now: now, keys: PreviewKeychainRepository(), replay: replay)
             if let title = preview.title { mutable.title = title }
@@ -24,7 +28,7 @@ final class NotificationService: UNNotificationServiceExtension {
             if let sid = preview.routeSessionID, let profile = preview.routeProfile,
                let event = mutable.userInfo["mercury_event"] as? String,
                let wake = mutable.userInfo["mercury_wake"] as? String {
-                PreviewRouteStore()?.record(.init(event: event, wake: wake, sessionID: sid, profile: profile, expiresAt: now + PreviewRouteStore.maxRetentionSeconds), now: now)
+                PreviewRouteStore(environment: environment)?.record(.init(event: event, wake: wake, sessionID: sid, profile: profile, expiresAt: now + PreviewRouteStore.maxRetentionSeconds), now: now)
             }
             finish(mutable)
         } catch { finish(mutable) }

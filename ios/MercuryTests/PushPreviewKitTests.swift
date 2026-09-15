@@ -51,7 +51,7 @@ final class PushPreviewKitTests: XCTestCase {
 
     // These negative cases use authenticated ciphertext too, exercising the exact
     // native opener rather than a standalone text validator or an emulated parser.
-    private func encryptedField(_ name: String, value: String) throws -> [AnyHashable: Any] {
+    private func encryptedField(_ name: String, value: String, environment: String = "sandbox") throws -> [AnyHashable: Any] {
         var plain: [String: Any] = [
             "v": 1, "kind": "completion", "iat": 2_000_000_000, "exp": 2_000_000_120,
             "title": "Synthetic preview", "body": "Alpha\nBeta",
@@ -69,7 +69,7 @@ final class PushPreviewKitTests: XCTestCase {
         let sealed = try ChaChaPoly.seal(
             JSONSerialization.data(withJSONObject: plain), using: key,
             nonce: ChaChaPoly.Nonce(data: XCTUnwrap(PushPreviewEnvelope.decode(nonce))),
-            authenticating: PushPreviewProcessor.aad(environment: "sandbox", envelope: envelope)
+            authenticating: PushPreviewProcessor.aad(environment: environment, envelope: envelope)
         )
         var result = info
         var metadata = result["mercury_preview"] as! [String: Any]
@@ -144,6 +144,31 @@ final class PushPreviewKitTests: XCTestCase {
         XCTAssertEqual(preview.title, fixture["expected_title"])
         XCTAssertEqual(preview.body, fixture["expected_body"])
     }
+    func testProductionPreviewUsesSameV1EnvelopeWithEnvironmentBoundAAD() throws {
+        let record = PreviewKeyRecord(key: Data(0..<32), keyID: kid, wake: wake, environment: "production", createdAt: 0)
+        let encrypted = try encryptedField("body", value: "Production fixture", environment: "production")
+        let preview = try PushPreviewProcessor.decrypt(userInfo: encrypted, environment: "production", now: 2_000_000_010, keys: Keys(record), replay: Replay())
+        XCTAssertEqual(preview.body, "Production fixture")
+        XCTAssertThrowsError(try PushPreviewProcessor.decrypt(userInfo: encrypted, environment: "sandbox", now: 2_000_000_010, keys: Keys(record), replay: Replay()))
+    }
+    func testEnvironmentCachesUseDistinctProductionNamespacesAndLegacyNamesStaySandboxOnly() {
+        XCTAssertEqual(PreviewReplayStore.storageFileName(environment: "sandbox"), "push-preview-replay-v1.json")
+        XCTAssertEqual(PreviewReplayStore.storageFileName(environment: "production"), "push-preview-replay-v1.production.json")
+        XCTAssertEqual(PreviewRouteStore.storageFileName(environment: "sandbox"), "push-preview-routes-v1.json")
+        XCTAssertEqual(PreviewRouteStore.storageFileName(environment: "production"), "push-preview-routes-v1.production.json")
+        for invalid in ["", "development", "Production"] {
+            XCTAssertNil(PreviewReplayStore.storageFileName(environment: invalid))
+            XCTAssertNil(PreviewRouteStore.storageFileName(environment: invalid))
+        }
+    }
+    func testInvalidEnvironmentFailsBeforeKeyLookupOrReplay() {
+        let keys = Keys(PreviewKeyRecord(key: Data(0..<32), keyID: kid, wake: wake, environment: "sandbox", createdAt: 0))
+        let replay = Replay()
+        XCTAssertThrowsError(try PushPreviewProcessor.decrypt(userInfo: info, environment: "development", now: 2_000_000_010, keys: keys, replay: replay)) {
+            XCTAssertEqual($0 as? PushPreviewFailure, .malformedEnvelope)
+        }
+        XCTAssertTrue(replay.seen.isEmpty)
+    }
     func testAuthenticationScopeTamperAndReplayFailClosed() throws {
         let record = PreviewKeyRecord(key: Data(0..<32), keyID: kid, wake: wake, environment: "sandbox", createdAt: 0), replay = Replay()
         XCTAssertThrowsError(try PushPreviewProcessor.decrypt(userInfo: info, environment: "sandbox", now: 2_000_000_010, keys: Keys(nil), replay: replay))
@@ -179,7 +204,10 @@ final class PushPreviewKitTests: XCTestCase {
         XCTAssertEqual(query[kSecAttrSynchronizable as String] as? Bool, false)
         let record = PreviewKeyRecord(key: Data(0..<32), keyID: kid, wake: wake, environment: "sandbox", createdAt: 1)
         let add = PreviewKeychainRepository.addQuery(record: record, data: Data())
-        XCTAssertEqual(add[kSecAttrAccessible as String] as? String, kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
+        // The extension must be able to decrypt while the device is locked so iOS
+        // Show Previews governs Lock Screen visibility; only pre-first-unlock stays generic.
+        XCTAssertEqual(add[kSecAttrAccessible as String] as? String, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
+        XCTAssertEqual(PreviewKeychainRepository.updateAttributes(data: Data())[kSecAttrAccessible as String] as? String, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
     }
     func testExtensionDeadlineCompletionGateCanWinExactlyOnce() {
         let gate = PushPreviewCompletionGate()

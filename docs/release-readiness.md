@@ -2,8 +2,8 @@
 
 Mercury releases the same version on Android and iOS. The current version is
 `0.2.5`: `versionName` in `app/build.gradle.kts` and `MARKETING_VERSION` in
-`ios/project.yml` must always agree. Nothing here changes the Hermes server;
-every step is client-side.
+`ios/project.yml` must always agree. Nothing here changes Hermes itself;
+optional Relay features may require coordinated Mercury host-plugin and router releases.
 
 ## Before cutting either platform
 
@@ -61,20 +61,37 @@ cd ios && xcodegen generate && xcodebuild -project Mercury.xcodeproj -scheme Mer
 
 Release build:
 
-- There is no App Store or TestFlight pipeline yet; iOS is built from source.
+- There is no automated App Store or TestFlight upload pipeline; iOS is archived from source.
   To produce a distributable build, regenerate the project with `xcodegen
   generate`, open `ios/Mercury.xcodeproj` in Xcode with your signing team, and
   archive the `Mercury` scheme (Product → Archive, or
   `xcodebuild -scheme Mercury -destination 'generic/platform=iOS' archive`).
-  The archive embeds the `MercuryShare` extension, which inherits the same
-  version from `settings.base`.
-- Static invariants that must hold in the archive (see `docs/testing.md`):
-  no `aps-environment` entitlement, no `remote-notification` background mode,
-  no `NSSupportsLiveActivities`, no push registration anywhere.
+  The archive embeds the `MercuryShare` and `MercuryNotificationService`
+  extensions, which inherit the same version from `settings.base`. Use App
+  Store Connect distribution provisioning for all three executable bundles;
+  development profiles used for direct device installs are not sufficient.
+- Static invariants that must hold in a TestFlight archive: the app's signed
+  `aps-environment` is `production`; the notification extension uses the same
+  production environment; App Group and separate preview Keychain access are
+  present on the correct bundles; version/build numbers match. Visible APNs
+  alerts do not require the `remote-notification` background mode.
+- Verify production generic and encrypted-preview capabilities on the paired
+  Mercury host/router before claiming TestFlight notifications work. Never
+  register a production token with sandbox APNs. Preserve direct-mode local
+  fallback and the user's notification/preview preferences.
+- Include reviewed required-reason privacy manifests for the executable
+  bundles that use covered APIs. Validate the archive's privacy report and
+  complete App Store Connect export-compliance answers from the actual crypto
+  inventory; do not infer exemption solely from the use of standard algorithms.
 - Device check before distributing: fresh install shows no notification prompt
   at launch; a long turn completed while backgrounded within the grace window
   posts one local notification; the share extension stages an image into the
   composer without sending.
+- Upload to App Store Connect and verify the processed build before assigning
+  internal TestFlight testers. Test the actual TestFlight-installed build,
+  including production push, notification taps, session reopen, pagination,
+  attachments, and Share extension behavior. External Beta App Review and App
+  Store review submissions require separate publisher approval.
 
 ## After the release
 

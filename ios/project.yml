@@ -16,7 +16,7 @@ settings:
     # number, which App Store validation requires. Bump MARKETING_VERSION with
     # each release alongside versionName.
     MARKETING_VERSION: "0.2.5"
-    CURRENT_PROJECT_VERSION: 3
+    CURRENT_PROJECT_VERSION: 6
 
 # One producer shared by app, PreviewKit and extension. Never depend on the
 # app's build phases: the app itself depends on both notification targets.
@@ -109,12 +109,23 @@ targets:
       configs:
         Debug:
           MERCURY_APNS_ENVIRONMENT: development
+          MERCURY_PUSH_ENVIRONMENT: sandbox
         Release:
           MERCURY_APNS_ENVIRONMENT: production
+          MERCURY_PUSH_ENVIRONMENT: production
     info:
       path: Mercury/Info.plist
       properties:
         UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         CFBundleDisplayName: Mercury
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
@@ -125,13 +136,14 @@ targets:
         MercuryAppGroupIdentifier: $(MERCURY_APP_GROUP_IDENTIFIER)
         MercuryPrivateKeychainAccessGroup: $(AppIdentifierPrefix)com.unsupportedpastels.mercury
         MercuryPreviewKeychainAccessGroup: $(AppIdentifierPrefix)com.unsupportedpastels.mercury.preview
+        MercuryAPNSEnvironment: $(MERCURY_PUSH_ENVIRONMENT)
         # Plain-HTTP is a supported configuration for LAN self-hosted servers
         # (the "Use HTTPS" checkbox off). Scoped ATS exception: local
         # networking only — cleartext to public hosts stays blocked.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-        # Best-effort background notifications (no APNs): iOS may opportunistically
-        # wake the app to reconcile session state and post local notifications.
+        # Local background reconciliation is independent of optional APNs:
+        # iOS may wake the app to reconcile state and post local notifications.
         UIBackgroundModes:
           - fetch
         BGTaskSchedulerPermittedIdentifiers:

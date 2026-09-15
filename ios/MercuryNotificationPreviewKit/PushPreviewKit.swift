@@ -126,21 +126,27 @@ public final class PreviewKeychainRepository: PreviewKeyReading {
         kSecAttrAccessGroup as String: PushPreviewConstants.accessGroup,
         kSecAttrSynchronizable as String: kCFBooleanFalse as Any
     ]}
+    /// Keychain accessibility for preview keys. AfterFirstUnlock lets the
+    /// notification service extension decrypt on a locked device, so the user's
+    /// iOS Show Previews setting governs Lock Screen visibility; only the window
+    /// between a restart and the first unlock stays generic. Relay/APNs never
+    /// see the key. Applied on both add and update so an existing item migrates
+    /// to this class on its next save.
+    public static let keyAccessibility: CFString = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    public static func updateAttributes(data: Data) -> [String: Any] {[
+        kSecValueData as String: data,
+        kSecAttrAccessible as String: keyAccessibility
+    ]}
     public static func addQuery(record: PreviewKeyRecord, data: Data) -> [String: Any] {
         var query = query(environment: record.environment, wake: record.wake, keyID: record.keyID)
-        query[kSecValueData as String] = data
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        updateAttributes(data: data).forEach { query[$0.key] = $0.value }
         return query
     }
     public func save(_ record: PreviewKeyRecord) throws {
         guard record.schema == 1, record.keyData?.count == 32 else { throw PushPreviewFailure.unavailableKey }
         let data = try JSONEncoder().encode(record)
         let q = Self.query(environment: record.environment, wake: record.wake, keyID: record.keyID)
-        let update: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-        ]
-        var status = SecItemUpdate(q as CFDictionary, update as CFDictionary)
+        var status = SecItemUpdate(q as CFDictionary, Self.updateAttributes(data: data) as CFDictionary)
         if status == errSecItemNotFound {
             status = SecItemAdd(Self.addQuery(record: record, data: data) as CFDictionary, nil)
         }
@@ -159,9 +165,14 @@ public final class PreviewKeychainRepository: PreviewKeyReading {
 public final class PreviewReplayStore: PreviewReplayChecking {
     private struct Entry: Codable { let event, keyID: String; let exp: Int64 }
     private let url, lockURL: URL; private let lock = NSLock()
-    public init?(appGroup: String = PushPreviewConstants.appGroup) {
+    public static func storageFileName(environment: String) -> String? {
+        guard let value = PushEnvironmentPolicy.shared.canonicalValue(value: environment) else { return nil }
+        return value == "sandbox" ? "push-preview-replay-v1.json" : "push-preview-replay-v1.production.json"
+    }
+    public init?(appGroup: String = PushPreviewConstants.appGroup, environment: String = "sandbox") {
+        guard let fileName = Self.storageFileName(environment: environment) else { return nil }
         guard let root = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) else { return nil }
-        url = root.appendingPathComponent("push-preview-replay-v1.json")
+        url = root.appendingPathComponent(fileName)
         lockURL = url.appendingPathExtension("lock")
     }
     public init(url: URL) { self.url = url; lockURL = url.appendingPathExtension("lock") }
@@ -199,9 +210,14 @@ public final class PreviewRouteStore: PreviewRouteConsuming, PreviewRouteReading
     public static let maxRetentionSeconds: Int64 = 7 * 24 * 60 * 60
     private let url, lockURL: URL
     private let lock = NSLock()
-    public init?(appGroup: String = PushPreviewConstants.appGroup) {
+    public static func storageFileName(environment: String) -> String? {
+        guard let value = PushEnvironmentPolicy.shared.canonicalValue(value: environment) else { return nil }
+        return value == "sandbox" ? "push-preview-routes-v1.json" : "push-preview-routes-v1.production.json"
+    }
+    public init?(appGroup: String = PushPreviewConstants.appGroup, environment: String = "sandbox") {
+        guard let fileName = Self.storageFileName(environment: environment) else { return nil }
         guard let root = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) else { return nil }
-        url = root.appendingPathComponent("push-preview-routes-v1.json")
+        url = root.appendingPathComponent(fileName)
         lockURL = url.appendingPathExtension("lock")
     }
     public init(url: URL) { self.url = url; lockURL = url.appendingPathExtension("lock") }
@@ -285,6 +301,7 @@ public final class PreviewRouteStore: PreviewRouteConsuming, PreviewRouteReading
 public enum PushPreviewProcessor {
     public static func aad(environment: String, envelope: PushPreviewEnvelope) -> Data { var data = Data(); for value in [PushPreviewConstants.domain, "1", PushPreviewConstants.algorithm, environment, envelope.wake, envelope.event, envelope.keyID] { let bytes = Data(value.utf8), count = UInt32(bytes.count); data.append(contentsOf: [UInt8(count >> 24), UInt8(count >> 16), UInt8(count >> 8), UInt8(count)]); data.append(bytes) }; return data }
     public static func decrypt(userInfo: [AnyHashable: Any], environment: String, now: Int64, keys: PreviewKeyReading, replay: PreviewReplayChecking) throws -> PushPreviewPlaintext {
+        guard PushEnvironmentPolicy.shared.canonicalValue(value: environment) != nil else { throw PushPreviewFailure.malformedEnvelope }
         let envelope = try PushPreviewEnvelope(userInfo: userInfo)
         guard let record = try keys.load(environment: environment, wake: envelope.wake, keyID: envelope.keyID, now: now), let key = record.keyData, let nonce = PushPreviewEnvelope.decode(envelope.nonce), let combined = PushPreviewEnvelope.decode(envelope.ciphertext) else { throw PushPreviewFailure.unavailableKey }
         let box = try ChaChaPoly.SealedBox(combined: nonce + combined)
