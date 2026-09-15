@@ -23,7 +23,8 @@ On iOS, content you send to Mercury from another app through the **Add to Mercur
 
 ## Voice
 
-- **Microphone audio.** When you start dictation or a voice conversation, Mercury records audio and sends it to your configured Hermes server for transcription (`/api/audio/transcribe`). That server may forward the audio to its configured speech-to-text provider. Recording happens only after you explicitly start it and stops on release, silence, the server-configured cap, or leaving the app.
+- **Device dictation.** Composer dictation uses Apple's Speech framework on iOS and the configured Android speech-recognition service on Android. Recognition is not guaranteed to stay on-device; audio may be processed by the platform speech provider under its policies. Mercury receives recognized text in the composer. Audio capture starts only after you choose dictation and grant the required permissions.
+- **Server-backed voice.** When you choose a server-backed voice feature, Mercury sends recorded audio to your configured Hermes server for transcription (`/api/audio/transcribe`). That server may forward the audio to its configured speech-to-text provider. Recording stops according to the selected feature's stop control, silence/server limits, and lifecycle policy.
 - **Spoken replies.** Text you ask Mercury to read aloud (or that auto-speak reads, when the server's `voice.auto_tts` is enabled) is sent to your configured Hermes server for synthesis (`/api/audio/speak` and `/api/audio/speak-stream`), which may forward it to its configured text-to-speech provider.
 - **No voice persistence.** Microphone recordings, transcripts in flight, and generated speech audio live in memory or short-lived app-cache temporary files that are deleted when playback or transcription finishes. They are never written to the offline transcript cache, saved state, logs, notifications, or any analytics (Mercury has none).
 - **Lifecycle default.** Voice capture and playback stop when you switch sessions or profiles, log out, lock the device, or leave the app.
@@ -32,11 +33,11 @@ On iOS, content you send to Mercury from another app through the **Add to Mercur
 
 ## Where data goes
 
-Mercury sends data only to the Hermes server origin you configure in the app or, when you explicitly enable Relay, through the end-to-end encrypted route described below. Mercury does **not** operate an application-data backend and does not include analytics, advertising, tracking, or telemetry SDKs.
+Mercury sends conversation data to the Hermes server origin you configure in the app or, when you explicitly enable Relay, through the end-to-end encrypted route described below. Optional Relay notifications additionally use Apple's Push Notification service (APNs) and Mercury's hosted notification router as described under iOS notifications. Mercury does not include analytics, advertising, tracking, or telemetry SDKs.
 
-If you explicitly pair the optional **Mercury Relay** mode on Android or iOS, traffic to your host additionally passes through a hosted relay router. That router sees only opaque routing metadata (a random installation route and connection role) plus end-to-end encrypted ciphertext; it cannot read prompts, transcripts, credentials, or session content, and it stores no session data. Relay mode is never required and its device-only encrypted pairings can be removed at any time.
+If you explicitly pair the optional **Mercury Relay** mode on Android or iOS, traffic to your host additionally passes through a hosted relay router. For session transport, that router sees opaque routing metadata (a random installation route and connection role) plus end-to-end encrypted ciphertext; it cannot read prompts, transcripts, credentials, or session content. Optional push notifications require additional delivery records described below, not stored conversation plaintext. Relay mode is never required and its device-only encrypted pairings can be removed at any time.
 
-When you explicitly choose **Voice input**, Mercury opens an installed Android speech-recognition activity. That service may capture and process audio under its own privacy policy; Mercury receives only the recognized text and does not store the recording.
+When you explicitly choose device dictation, the platform speech-recognition service may capture and process audio under its own privacy policy. Mercury does not persist the recording.
 
 Your chosen server’s operator and configuration determine how server-side data is processed, retained, logged, and secured. Review that server’s policies before connecting, especially if it is operated by someone else.
 
@@ -48,7 +49,7 @@ Your chosen server’s operator and configuration determine how server-side data
 - **Microphone (`RECORD_AUDIO`)** — voice dictation, voice conversations, and barge-in; requested only when you first start a voice feature, used only while one is active.
 - **Foreground service / microphone and wake lock** — only for the opt-in screen-off voice continuation described above.
 
-On Android, Mercury does not request location, contacts, camera, or storage-wide file permissions. Relay QR scanning delegates the camera surface to Google Play services' on-device code scanner; Mercury receives only the decoded QR text and never receives camera frames. Attachments use Android’s user-mediated document picker. Device Voice input uses an installed Android speech service, which may request microphone access in its own interface; server-backed dictation and voice conversation use Mercury’s explicitly requested `RECORD_AUDIO` permission described above.
+On Android, Mercury does not request location, contacts, camera, or storage-wide file permissions. Relay QR scanning delegates the camera surface to Google Play services' on-device code scanner; Mercury receives only the decoded QR text and never receives camera frames. Attachments use Android’s user-mediated document picker. Device dictation and server-backed voice use Mercury's explicitly requested `RECORD_AUDIO` permission; the configured Android speech-recognition service handles device dictation.
 
 ## iOS permissions
 
@@ -56,13 +57,16 @@ On Android, Mercury does not request location, contacts, camera, or storage-wide
 - **Microphone and speech recognition** — voice dictation into the composer, requested only when you first start dictating.
 - **Notifications** — optional; see below.
 - **Local network** — plain-HTTP connections are allowed only to local-network servers you enter explicitly; cleartext to public hosts stays blocked.
-- **Background app refresh** — best-effort session reconciliation so local notifications can be posted; no push service is involved.
+- **Background app refresh** — best-effort session reconciliation so local notifications can be posted. Optional Relay push delivery is a separate mechanism.
 
 ## iOS notifications
 
-- **Local and best-effort only.** iOS alerts are generated on your device from your own server's data, only while Mercury is running or during a short background-refresh window. Mercury uses **no push service** (no APNs, no third-party notification relay) and makes no server changes; once iOS suspends the app nothing is delivered until it next runs, when it reconciles honestly and never fabricates an outcome.
+- **Direct-mode local alerts.** Without optional Relay push, alerts are generated on your device from your selected server's data while Mercury is running or during a background-refresh window. Delivery after iOS suspends the app is best effort, not guaranteed.
+- **Optional Relay push.** When you enable Relay push notifications, Mercury obtains an APNs device token from Apple and registers it through your paired host with the hosted Mercury notification router. The router retains the token, APNs environment, opaque installation and wake identifiers, bounded delivery/deduplication state, and optional encrypted-preview metadata. Registration records have a 30-day expiry and may be renewed. They are used to deliver notifications, not advertising or tracking. The host does not persist the APNs device token in its registration state.
+- **Encrypted previews are separately optional.** Your host can encrypt a conversation title, response excerpt, and notification route for your device. The router and Apple receive the encrypted payload and a generic fallback alert, not the preview key or readable conversation content. The preview key is stored in a device-only Keychain group shared with Mercury's notification extension. It becomes accessible after the first unlock following a restart, so the extension can decrypt previews while the device is locked; whether that content appears on the Lock Screen follows your iOS Show Previews setting for Mercury (Always, When Unlocked, or Never). Until the first unlock after a restart, the notification remains generic. Disabling excerpts preserves your choice not to include response text.
+- **Removal and retention.** Disabling push or removing a pairing removes local delivery ownership and requests remote unregistration. Remote cleanup is best effort while the host/router is unavailable; pending cleanup is retained without preview keys, and router records still expire. Apple may retain or deliver already-queued notifications under its own service policies. Local preview replay records are bounded; authenticated tap-route records expire and are bounded separately.
 - **Permission is asked only when you choose.** Mercury never shows the notification permission prompt at launch; it appears only when you tap Enable in Settings → Notifications.
-- **Notification taps** carry a `mercury://session` link containing only those same opaque identifiers. Opening one never bypasses authentication — if the target server requires sign-in, you sign in first.
+- **Notification taps** use locally authenticated routes or resolve opaque wake identifiers through the paired host. Opening a notification never bypasses authentication — if the target server requires sign-in, you sign in first.
 
 ## Security
 

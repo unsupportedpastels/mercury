@@ -512,12 +512,101 @@ final class RelayPushTests: XCTestCase {
         XCTAssertTrue(c.status.contains("does not support"))
         XCTAssertFalse(c.ownsDelivery(for: t))
     }
+    func testProductionGenericUsesExactVersion2OnlyWithStructuredCapability() async {
+        let capability: [String: Any] = ["capabilities": [
+            "push_notifications_v1": true,
+            "push_environments": ["version": 1, "environments": ["sandbox", "production"], "generic_register_version": 2]
+        ]]
+        XCTAssertEqual(RelayPushCoordinator.genericRegisterVersion(capability, environment: "production"), 2)
+        let c = RelayPushCoordinator(defaults: UserDefaults(suiteName: "production-push-\(UUID())")!, environment: "production")
+        let t = target(), owner = NSObject()
+        var captured: [String: Any]?
+        c.select(t); c.setEnabled(true); c.receivedToken(Data([0xab]))
+        c.connected(target: t, identity: ObjectIdentifier(owner)) { method, params in
+            if method == "relay.status" { return capability }
+            XCTAssertEqual(method, "relay.push.register"); captured = params
+            return ["registered": true, "wake_handle": self.wake]
+        }
+        await c.waitForWork()
+        XCTAssertEqual(captured as NSDictionary?, ["version": 2, "device_token": "ab", "environment": "production"] as NSDictionary)
+        XCTAssertTrue(c.ownsDelivery(for: t))
+    }
+    func testProductionGenericMissingOrMalformedCapabilityNeverSubmitsToken() async {
+        let malformed: [[String: Any]] = [
+            ["capabilities": ["push_notifications_v1": true]],
+            ["capabilities": ["push_environments": ["version": "1", "environments": ["sandbox", "production"], "generic_register_version": 2]]],
+            ["capabilities": ["push_environments": ["version": 1, "environments": ["sandbox", "future"], "generic_register_version": 2]]]
+        ]
+        for status in malformed {
+            let c = RelayPushCoordinator(defaults: UserDefaults(suiteName: "production-unsupported-\(UUID())")!, environment: "production")
+            let t = target(), owner = NSObject(); var methods: [String] = []
+            c.select(t); c.setEnabled(true); c.receivedToken(Data([1]))
+            c.connected(target: t, identity: ObjectIdentifier(owner)) { method, _ in methods.append(method); return status }
+            await c.waitForWork()
+            XCTAssertEqual(methods, ["relay.status"])
+            XCTAssertTrue(c.status.contains("upgraded")); XCTAssertFalse(c.ownsDelivery(for: t))
+        }
+    }
+    func testProductionPreviewUsesExistingV1WithoutGenericEnvironmentCapability() async throws {
+        let c = RelayPushCoordinator(defaults: UserDefaults(suiteName: "production-preview-\(UUID())")!, environment: "production")
+        let t = target(), owner = NSObject(); var captured: [String: Any]?
+        c.setPreview(enabled: true, includeTitle: false, includeResponseExcerpt: true)
+        c.select(t); c.setEnabled(true); c.receivedToken(Data([2]))
+        c.connected(target: t, identity: ObjectIdentifier(owner)) { method, params in
+            if method == "relay.status" { return ["capabilities": ["push_previews": [
+                "version": 1, "register_method": "relay.push.preview.register", "unregister_method": "relay.push.unregister",
+                "aead": "CHACHA20-POLY1305", "max_plaintext_bytes": 1280, "max_title_utf8_bytes": 160, "max_body_utf8_bytes": 640
+            ]]] }
+            XCTAssertEqual(method, "relay.push.preview.register"); captured = params
+            let preview = try XCTUnwrap(params["preview"] as? [String: Any])
+            return ["registered": true, "wake_handle": self.wake, "preview": ["version": 1, "key_id": preview["key_id"]!]]
+        }
+        await c.waitForWork()
+        XCTAssertEqual(captured?["environment"] as? String, "production")
+        XCTAssertEqual(Set(captured?.keys.map { $0 } ?? []), ["device_token", "environment", "preview"])
+        XCTAssertTrue(c.ownsDelivery(for: t))
+        c.setPreview(enabled: false, includeTitle: false, includeResponseExcerpt: false)
+    }
+    func testInvalidOrMissingBuildEnvironmentFailsClosed() async {
+        for environment in [nil, "development", "Production"] as [String?] {
+            let c = RelayPushCoordinator(defaults: UserDefaults(suiteName: "invalid-environment-\(UUID())")!, environment: environment)
+            let t = target(), owner = NSObject(); var called = false
+            c.select(t); c.setEnabled(true); c.receivedToken(Data([1]))
+            c.connected(target: t, identity: ObjectIdentifier(owner)) { _, _ in called = true; return [:] }
+            await c.waitForWork()
+            XCTAssertFalse(called); XCTAssertFalse(c.ownsDelivery(for: t)); XCTAssertTrue(c.status.contains("environment"))
+        }
+    }
+    func testLegacyBindingsMigrateToSandboxOnlyAndEnvironmentStoresStayIsolated() throws {
+        let defaults = UserDefaults(suiteName: "push-environment-migration-\(UUID())")!
+        let t = target()
+        let legacy = RelayPushCoordinator.Binding(scope: .init(t), wake: wake)
+        defaults.set(try JSONEncoder().encode([legacy]), forKey: "mercury.apns.wake-bindings.v1")
+
+        let production = RelayPushCoordinator(defaults: defaults, environment: "production")
+        XCTAssertFalse(production.ownsDelivery(for: t))
+        XCTAssertNil(production.target(for: wake, targets: [t]))
+        XCTAssertNotNil(defaults.data(forKey: "mercury.apns.wake-bindings.v1"), "Production must not adopt or consume legacy sandbox state")
+
+        let sandbox = RelayPushCoordinator(defaults: defaults, environment: "sandbox")
+        XCTAssertTrue(sandbox.ownsDelivery(for: t))
+        XCTAssertEqual(sandbox.target(for: wake, targets: [t])?.id, t.id)
+        XCTAssertNil(defaults.data(forKey: "mercury.apns.wake-bindings.v1"))
+        XCTAssertNotNil(defaults.data(forKey: "mercury.apns.wake-bindings.v2.sandbox"))
+        XCTAssertFalse(RelayPushCoordinator(defaults: defaults, environment: "production").ownsDelivery(for: t))
+    }
     func testReleaseNeverSendsProductionTokenToSandbox() async {
         let c = coordinator(sandbox: false), t = target(), owner = NSObject()
+        var calls: [(String, [String: Any])] = []
         c.select(t); c.setEnabled(true); c.receivedToken(Data([1]))
-        c.connected(target: t, identity: ObjectIdentifier(owner)) { _, _ in XCTFail("production token must not be sent"); return [:] }
+        c.connected(target: t, identity: ObjectIdentifier(owner)) { method, params in
+            calls.append((method, params))
+            return ["capabilities": ["push_notifications_v1": true]]
+        }
         await c.waitForWork()
-        XCTAssertTrue(c.status.contains("Production tokens are not sent"))
+        XCTAssertEqual(calls.map(\.0), ["relay.status"])
+        XCTAssertFalse(calls.contains { $0.1["device_token"] != nil })
+        XCTAssertTrue(c.status.contains("upgraded"))
     }
     func testDisableUnregistersEmptyParamsAndClearsTap() async {
         let c = coordinator(), t = target(), owner = NSObject()
@@ -584,7 +673,7 @@ final class RelayPushTests: XCTestCase {
         XCTAssertEqual(identifiers.count, 2)
         XCTAssertEqual(identifiers.first, identifiers.last)
         let bindings = try JSONDecoder().decode([RelayPushCoordinator.Binding].self,
-            from: XCTUnwrap(defaults.data(forKey: "mercury.apns.wake-bindings.v1")))
+            from: XCTUnwrap(defaults.data(forKey: "mercury.apns.wake-bindings.v2.sandbox")))
         XCTAssertEqual(bindings.first?.retiredWake, firstWake)
         let id = try XCTUnwrap(identifiers.first)
         let now = Int64(Date().timeIntervalSince1970)

@@ -171,7 +171,7 @@ final class RetiredPreviewRouteTests: XCTestCase {
         await push.waitForWork()
         for _ in 0..<150 { push.rotatePreviewKey(); await push.waitForWork() }
         XCTAssertEqual(wakes.count, 151)
-        let data = try XCTUnwrap(defaults.data(forKey: "mercury.apns.retired-preview-scopes.v1"))
+        let data = try XCTUnwrap(defaults.data(forKey: "mercury.apns.retired-preview-scopes.v2.sandbox"))
         let history = try JSONDecoder().decode([RelayPushCoordinator.RetiredPreviewScope].self, from: data)
         XCTAssertLessThanOrEqual(history.count, 64)
         XCTAssertLessThanOrEqual(data.count, 32 * 1024)
@@ -189,7 +189,7 @@ final class RetiredPreviewRouteTests: XCTestCase {
         let defaults = RetiredCountingDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let target = makeTarget()
-        let key = "mercury.apns.retired-preview-scopes.v1"
+        let key = "mercury.apns.retired-preview-scopes.v2.sandbox"
         var clock: Int64 = 1_000_000
         let records = (0..<65).map { index in
             RelayPushCoordinator.RetiredPreviewScope(scope: .init(target),
@@ -233,7 +233,7 @@ final class RetiredPreviewRouteTests: XCTestCase {
         }
         defaults.set(try JSONEncoder().encode(bindings), forKey: "mercury.apns.wake-bindings.v1")
         let push = RelayPushCoordinator(defaults: defaults, now: { 1_000_000 })
-        XCTAssertLessThanOrEqual(try XCTUnwrap(defaults.data(forKey: "mercury.apns.retired-preview-scopes.v1")).count, 32 * 1024)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(defaults.data(forKey: "mercury.apns.retired-preview-scopes.v2.sandbox")).count, 32 * 1024)
         XCTAssertTrue(push.ownsDelivery(for: target), "History eviction is not active ownership revocation")
     }
 

@@ -43,7 +43,9 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     var routeSleep: @MainActor () async throws -> Void = { try await Task.sleep(nanoseconds: 15_000_000_000) }
 
     override init() {
-        previewRoutes = PreviewRouteStore()
+        let raw = Bundle.main.object(forInfoDictionaryKey: "MercuryAPNSEnvironment") as? String
+        previewRoutes = raw.flatMap { RelayPushCoordinator.environmentValue($0) }
+            .flatMap { PreviewRouteStore(environment: $0) }
         super.init()
     }
 
