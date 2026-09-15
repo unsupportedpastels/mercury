@@ -66,6 +66,18 @@ class RelayLeaseRecoveryTest {
         assertFalse(snapshot.hasLiveBinding("old", "default"))
     }
 
+    @Test fun automaticResumeAcceptsOwnHistoricalBindingAndRefusesForeign() {
+        val historical = RelayLeaseSnapshot("lease", 1, false, true, listOf(
+            RelayLeaseBinding("historical", "session", "default", false),
+        ), emptyList(), false)
+        assertTrue(historical.allowsAutomaticResume("session", "default"))
+        assertFalse(historical.hasLiveBinding("session", "default"))
+        assertFalse(historical.allowsAutomaticResume("session", "foreign"))
+        assertFalse(historical.allowsAutomaticResume("other", "default"))
+        val empty = RelayLeaseSnapshot("lease", 0, false, true, emptyList(), emptyList(), false)
+        assertFalse(empty.allowsAutomaticResume("session", "default"))
+    }
+
     @Test fun acknowledgementFencesUnappliedChildrenAndReplayedReplies() {
         val engine = RelayLeaseRecoveryEngine("default")
         engine.initialize(attached())

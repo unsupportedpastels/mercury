@@ -405,7 +405,7 @@ actor RelayChatSocket: ChatSocketing {
     func canAutomaticallyResume(durable: String, profile: String?) -> Bool {
         guard let recoveryProfile, profile == nil || profile == recoveryProfile,
               let snapshot = recovery?.snapshot else { return false }
-        return snapshot.hasLiveBinding(durableId: durable, profile: recoveryProfile)
+        return snapshot.allowsAutomaticResume(durableId: durable, profile: recoveryProfile)
     }
 
     func bindTaskRuntime(runtime: String, durable: String, profile: String?) {

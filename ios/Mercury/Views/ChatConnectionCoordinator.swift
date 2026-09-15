@@ -104,7 +104,7 @@ extension ChatView {
             }
             if intent == .automatic, attempt > 0, let relay = candidate.relaySocket,
                let snapshot = await relay.recoverySnapshot(),
-               !snapshot.hasLiveBinding(durableId: state.durableID ?? sessionID, profile: requestedProfile) {
+               !snapshot.allowsAutomaticResume(durableId: state.durableID ?? sessionID, profile: requestedProfile) {
                 var tasks = await relay.retainedTasks(durable: state.durableID ?? sessionID, runtime: nil) ?? backgroundTasks
                 guard !Task.isCancelled, !state.closedByUs, backgroundTaskScope == requestedScope else {
                     throw CancellationError()
