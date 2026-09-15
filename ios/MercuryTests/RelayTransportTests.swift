@@ -502,7 +502,7 @@ final class RelayTransportTests: XCTestCase {
         await hostSocket.close()
     }
 
-    func testAutomaticRecoveryAfterResetResumesOwnHistoricalBinding() async throws {
+    func testAutomaticRecoveryAfterResetDoesNotResumeUntilExplicitRetry() async throws {
         let (device, hostSocket) = InMemoryRelayTransport.pair()
         let pool = RelayConnectionPool(socketFactory: FakeRelaySocketFactory(sockets: [device]))
         let host = Task {
@@ -517,7 +517,7 @@ final class RelayTransportTests: XCTestCase {
                                  "params": ["lease_id": "reset", "last_seq": 0]],
                                 socket: hostSocket, channel: admitted.channel)
             var methods: [String] = []
-            for _ in 0..<2 {
+            for _ in 0..<3 {
                 let request = try await readFrame(socket: hostSocket, channel: admitted.channel,
                                                   reassembler: admitted.reassembler)
                 let method = try XCTUnwrap(request["method"] as? String)
@@ -530,41 +530,24 @@ final class RelayTransportTests: XCTestCase {
             return methods
         }
         let connection = try await pool.acquire(target: makeTarget(), profile: "default")
-        let resumed = try await connection.resume(durableSessionID: "durable", profile: "default", automaticRecovery: true)
+        do {
+            _ = try await connection.resume(durableSessionID: "durable", profile: "default", automaticRecovery: true)
+            XCTFail("Foreground recovery must not resume a historical binding")
+            await connection.close()
+            await hostSocket.close()
+            host.cancel()
+            return
+        } catch { }
+        _ = try await connection.relayRequest("relay.sessions.list", params: [:])
+        let resumed = try await connection.resume(durableSessionID: "durable", profile: "default")
         XCTAssertEqual(resumed.runtimeSessionID, "new")
+        // Correlated explicit resume installed the binding before any subsequent frames.
         _ = try await connection.relayRequest("relay.sessions.list", params: [:])
         let methods = try await host.value
-        XCTAssertEqual(methods, ["session.resume", "relay.sessions.list"])
+        XCTAssertEqual(methods, ["relay.sessions.list", "session.resume", "relay.sessions.list"])
         let relay = try XCTUnwrap(connection.relaySocket)
         let retained = await relay.retainedTasks(durable: "durable", runtime: "new")
         XCTAssertNotNil(retained)
-        await connection.close()
-        await hostSocket.close()
-    }
-
-    func testAutomaticRecoveryWithoutOwnBindingDoesNotResume() async throws {
-        let (device, hostSocket) = InMemoryRelayTransport.pair()
-        let pool = RelayConnectionPool(socketFactory: FakeRelaySocketFactory(sockets: [device]))
-        let host = Task {
-            let admitted = try await admit(socket: hostSocket)
-            try await sendFrame(["jsonrpc": "2.0", "method": "relay.lease.attached", "params": [
-                "recovery_version": 1, "lease_id": "reset", "last_seq": 0,
-                "resume_cursor": 0, "replay_gap": false, "recovery_reset": true,
-                "bindings": [] as [Any], "task_snapshot": [] as [Any]
-            ]], socket: hostSocket, channel: admitted.channel)
-            try await sendFrame(["jsonrpc": "2.0", "method": "relay.lease.replay_complete",
-                                 "params": ["lease_id": "reset", "last_seq": 0]],
-                                socket: hostSocket, channel: admitted.channel)
-            return admitted
-        }
-        let connection = try await pool.acquire(target: makeTarget(), profile: "default")
-        do {
-            _ = try await connection.resume(durableSessionID: "durable", profile: "default", automaticRecovery: true)
-            XCTFail("Foreground recovery must not resume a session this lease never bound")
-        } catch let error as ChatError {
-            XCTAssertEqual(error, .transport("Retained session unavailable"))
-        }
-        _ = try await host.value
         await connection.close()
         await hostSocket.close()
     }

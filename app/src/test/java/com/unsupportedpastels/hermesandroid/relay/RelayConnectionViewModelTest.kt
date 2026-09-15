@@ -108,7 +108,7 @@ class RelayConnectionViewModelTest {
     }
 
     @Test
-    fun ownHistoricalBindingAutomaticallyResumesAfterLeaseReset() = runTest(dispatcher) {
+    fun lostLeaseUsesRecordedTerminalWithoutImplicitRuntimeTakeover() = runTest(dispatcher) {
         val sessions = mutableListOf<FakeRelaySession>()
         val viewModel = relayViewModel {
             FakeRelaySession().also {
@@ -122,32 +122,10 @@ class RelayConnectionViewModelTest {
         sessions.last().channel.close()
         advanceUntilIdle()
         assertEquals(4, sessions.size)
-        assertEquals(1, sessions.last().resumeCalls)
-        assertEquals(0, sessions.last().submitCalls)
-        assertEquals(false, viewModel.snapshots.value.chatSessions.getValue(id).isSending)
-    }
-
-    @Test
-    fun emptyBindingsDoNotAutomaticallyResumeForeignSession() = runTest(dispatcher) {
-        val sessions = mutableListOf<FakeRelaySession>()
-        val viewModel = relayViewModel {
-            FakeRelaySession().also {
-                if (sessions.size >= 3) {
-                    it.recoverySnapshot = RelayLeaseSnapshot(
-                        "lost", 0, false, true, emptyList(), emptyList(), false,
-                    )
-                }
-                sessions += it
-            }
-        }
-        advanceUntilIdle(); viewModel.connectRelay(target()).join()
-        val id = DurableSessionId("relay-session-1")
-        viewModel.openSession(id).join(); viewModel.sendMessage(id, "accepted").join()
-        sessions.last().channel.close()
-        advanceUntilIdle()
-        assertEquals(4, sessions.size)
         assertEquals(0, sessions.last().resumeCalls)
         assertEquals(0, sessions.last().submitCalls)
+        assertEquals(com.unsupportedpastels.hermesandroid.gateway.BackgroundTaskStatus.Finished,
+            viewModel.snapshots.value.chatSessions.getValue(id).backgroundTasks.rows.single().status)
         assertEquals(false, viewModel.snapshots.value.chatSessions.getValue(id).isSending)
     }
 

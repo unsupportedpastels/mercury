@@ -5784,13 +5784,11 @@ class HermesConnectionViewModel(
                 // An open socket is not proof that resume will ever answer. Keep
                 // each reconciliation attempt bounded; never replay prompt.submit.
                 val recoverySnapshot = candidate.relayLeaseSnapshot
-                if (recoverySnapshot != null && !recoverySnapshot.allowsAutomaticResume(
+                if (recoverySnapshot != null && !recoverySnapshot.hasLiveBinding(
                         serverDurableId(durableSessionId).value, profile)) {
-                    // No binding on this device's lease is not permission to take
-                    // over another runtime. A historical own binding is enough to
-                    // resume after outer transport loss. Otherwise reconcile
-                    // durable evidence; only a later explicit Send or Open may
-                    // resume/create control.
+                    // Missing retained ownership is not permission to take over another
+                    // runtime. Reconcile durable evidence; only a later explicit Send
+                    // or Open may resume/create control after lease/process loss.
                     val recoveryProgressVersion = mutableSnapshots.value.chatSessions[durableSessionId]?.progress?.observationVersion ?: 0
                     val transcript = withTimeoutOrNull(30_000L) {
                         candidate.relayRequest(

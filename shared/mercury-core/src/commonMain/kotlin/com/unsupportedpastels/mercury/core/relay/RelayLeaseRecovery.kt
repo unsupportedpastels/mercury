@@ -22,19 +22,6 @@ data class RelayLeaseSnapshot(
     /** Recorded bindings are evidence, not permission to take over another runtime. */
     fun hasLiveBinding(durableId: String, profile: String): Boolean =
         bindings.any { it.live && it.durableId == durableId && it.profile == profile }
-
-    /** This device previously bound the durable session on this lease. */
-    fun hasOwnBinding(durableId: String, profile: String): Boolean =
-        bindings.any { it.durableId == durableId && it.profile == profile }
-
-    /**
-     * Foreground reconnect of a chat this phone already opened. A historical
-     * own binding is enough after outer transport loss or lease reset; live
-     * is required only for taking control of another runtime's children.
-     * No binding means this lease never owned the session — require Retry.
-     */
-    fun allowsAutomaticResume(durableId: String, profile: String): Boolean =
-        hasOwnBinding(durableId, profile)
 }
 
 /** Immutable memory-only cursor decisions; native owner supplies serialization. */

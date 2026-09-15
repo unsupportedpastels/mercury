@@ -22,9 +22,6 @@ data class RelayLeaseSnapshot(
     val routingToken: String? = null,
 ) {
     fun hasLiveBinding(durableId: String, profile: String): Boolean = shared().hasLiveBinding(durableId, profile)
-    fun hasOwnBinding(durableId: String, profile: String): Boolean = shared().hasOwnBinding(durableId, profile)
-    fun allowsAutomaticResume(durableId: String, profile: String): Boolean =
-        shared().allowsAutomaticResume(durableId, profile)
     internal fun shared() = com.unsupportedpastels.mercury.core.relay.RelayLeaseSnapshot(
         leaseId, lastSeq, gap, reset, bindings, tasks.map { it.toString() }, truncated, routingToken)
 }
