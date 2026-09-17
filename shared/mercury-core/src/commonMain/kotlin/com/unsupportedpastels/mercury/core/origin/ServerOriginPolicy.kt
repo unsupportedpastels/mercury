@@ -225,13 +225,19 @@ object ServerOriginPolicy {
             return true
         }
 
-        // IPv4 dotted-quad checks: 127/8, 10/8, 172.16/12, 192.168/16.
+        // IPv4 dotted-quad checks: 127/8, 10/8, 172.16/12, 192.168/16, plus RFC 6598
+        // shared address space (100.64.0.0/10). A tailnet node — Tailscale and
+        // compatible control planes — is handed an address from that /10, and a
+        // self-hosted `hermes serve` reachable only over the tailnet has no other
+        // address, so classifying it as public makes the form refuse a plain-HTTP
+        // origin for a server that is in fact private.
         val parts = host.split('.')
         if (parts.size != 4) return false
         val octets = parts.map { it.toIntOrNull() ?: return false }
         if (octets.any { it !in 0..255 }) return false
         return when (octets[0]) {
             127, 10 -> true
+            100 -> octets[1] in 64..127
             172 -> octets[1] in 16..31
             192 -> octets[1] == 168
             else -> false
