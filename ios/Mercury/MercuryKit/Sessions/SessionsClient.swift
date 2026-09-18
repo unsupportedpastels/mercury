@@ -76,6 +76,12 @@ struct TranscriptMessage: Equatable, Decodable {
 /// line with the rest of MercuryKit.
 struct SessionsClient {
 
+    /// Session metadata can legitimately exceed the generic 64 KiB transport
+    /// cap. Keep this endpoint-specific bound aligned through MercuryCore.
+    private static let maxSessionListResponseBytes = Int(
+        MercuryCore.SessionResponseLimits.shared.SESSION_LIST_MAX_BYTES
+    )
+
     /// Transcript rows can carry tool/reasoning metadata and legitimately
     /// exceed the generic transport cap. Match the mature Android client:
     /// allow a bounded 1 MiB transcript response and reduce the latest-page
@@ -109,7 +115,11 @@ struct SessionsClient {
             URLQueryItem(name: "archived", value: "exclude"),
             URLQueryItem(name: "offset", value: String(offset)),
         ]
-        let (data, response) = try await client.get(path: "/api/profiles/sessions", queryItems: query)
+        let (data, response) = try await client.get(
+            path: "/api/profiles/sessions",
+            queryItems: query,
+            maximumResponseBytes: Self.maxSessionListResponseBytes
+        )
         if let authError = HermesAuthError.classify(response.statusCode) {
             throw authError
         }
