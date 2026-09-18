@@ -35,6 +35,7 @@ import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
 import com.unsupportedpastels.hermesandroid.gateway.ModelProviderOption
 import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
 import com.unsupportedpastels.hermesandroid.gateway.CronJobScope
+import com.unsupportedpastels.mercury.core.sessions.SessionResponseLimits
 
 class HermesConnectionClientTest {
     @Test
@@ -1057,7 +1058,7 @@ class HermesConnectionClientTest {
 
     @Test
     fun authenticatedConnectionReadsMultiChunkSessionResponseWithinLimit() = runTest {
-        val largeTitle = "t".repeat(40_000)
+        val largeTitle = "t".repeat(128 * 1024)
         val engine = MockEngine { request ->
             when (request.url.encodedPath) {
                 "/api/auth/me" -> respond(
@@ -1079,6 +1080,98 @@ class HermesConnectionClientTest {
         )
 
         assertEquals(largeTitle, authenticated.sessions.single().title)
+    }
+
+    @Test
+    fun authenticatedConnectionAcceptsSessionListingAtFiveMiBBoundary() = runTest {
+        val body = sessionListBodyWithExactBytes(SessionResponseLimits.SESSION_LIST_MAX_BYTES)
+        val engine = MockEngine { request ->
+            when (request.url.encodedPath) {
+                "/api/auth/me" -> respond(
+                    content = """{"user_id":"user"}""",
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                "/api/profiles/sessions" -> respond(
+                    content = body,
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                else -> error("Unexpected request: ${request.url}")
+            }
+        }
+
+        val authenticated = HttpHermesConnectionClient(HttpClient(engine)).authenticate(
+            ServerOrigin.parse("https://hermes.example"),
+            accessToken = "opaque-access",
+        )
+
+        assertEquals(1, authenticated.sessions.size)
+        assertEquals(SessionResponseLimits.SESSION_LIST_MAX_BYTES, body.encodeToByteArray().size)
+    }
+
+    @Test
+    fun authenticatedConnectionRejectsSessionListingAboveFiveMiBBoundary() = runTest {
+        val body = sessionListBodyWithExactBytes(SessionResponseLimits.SESSION_LIST_MAX_BYTES + 1)
+        val engine = MockEngine { request ->
+            when (request.url.encodedPath) {
+                "/api/auth/me" -> respond(
+                    content = """{"user_id":"user"}""",
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                "/api/profiles/sessions" -> respond(
+                    content = body,
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                else -> error("Unexpected request: ${request.url}")
+            }
+        }
+
+        val failure = runCatching {
+            HttpHermesConnectionClient(HttpClient(engine)).authenticate(
+                ServerOrigin.parse("https://hermes.example"),
+                accessToken = "opaque-access",
+            )
+        }.exceptionOrNull()
+
+        assertEquals("Hermes response body was too large", failure?.message)
+    }
+
+    @Test
+    fun authenticatedConnectionKeepsIdentityResponseAtGenericSixtyFourKiBLimit() = runTest {
+        val prefix = "{\"user_id\":\""
+        val suffix = "\"}"
+        val oversizedIdentity = prefix +
+            "u".repeat(64 * 1024 + 1 - prefix.length - suffix.length) +
+            suffix
+        val engine = MockEngine { request ->
+            when (request.url.encodedPath) {
+                "/api/auth/me" -> respond(
+                    content = oversizedIdentity,
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                "/api/profiles/sessions" -> respond(
+                    content = """{"sessions":[]}""",
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                else -> error("Unexpected request: ${request.url}")
+            }
+        }
+
+        val failure = runCatching {
+            HttpHermesConnectionClient(HttpClient(engine)).authenticate(
+                ServerOrigin.parse("https://hermes.example"),
+                accessToken = "opaque-access",
+            )
+        }.exceptionOrNull()
+
+        assertEquals(64 * 1024 + 1, oversizedIdentity.encodeToByteArray().size)
+        assertEquals("Hermes response body was too large", failure?.message)
+    }
+
+    private fun sessionListBodyWithExactBytes(byteCount: Int): String {
+        val prefix = "{\"sessions\":[{\"session_key\":\"stored-1\",\"title\":\""
+        val suffix = "\"}]}"
+        require(byteCount >= prefix.length + suffix.length)
+        return prefix + "t".repeat(byteCount - prefix.length - suffix.length) + suffix
     }
 
     @Test

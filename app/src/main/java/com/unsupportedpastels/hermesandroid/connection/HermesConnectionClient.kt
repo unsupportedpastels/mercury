@@ -2,6 +2,7 @@ package com.unsupportedpastels.hermesandroid.connection
 
 import com.unsupportedpastels.mercury.core.artifacts.ManagedVideoPolicy
 import com.unsupportedpastels.mercury.core.profiles.ProfileCatalogPolicy
+import com.unsupportedpastels.mercury.core.sessions.SessionResponseLimits
 
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
@@ -2030,7 +2031,7 @@ class HttpHermesConnectionClient(
             parameter("profile", boundedProfile)
         }
         if (!sessionsResponse.status.isSuccess()) {
-            sessionsResponse.readBodyTextBounded()
+            sessionsResponse.readBodyTextBounded(SessionResponseLimits.SESSION_LIST_MAX_BYTES)
             val message = "Hermes session listing returned HTTP ${sessionsResponse.status.value}"
             if (
                 accessToken != null &&
@@ -2050,7 +2051,7 @@ class HttpHermesConnectionClient(
             throw HermesConnectionException(message)
         }
         val decoded = json.decodeFromString<HermesSessionsResponse>(
-            sessionsResponse.readBodyTextBounded(),
+            sessionsResponse.readBodyTextBounded(SessionResponseLimits.SESSION_LIST_MAX_BYTES),
         )
         val sessions = decoded.sessions.mapNotNull { row ->
             val id = row.id?.takeIf(String::isNotBlank)

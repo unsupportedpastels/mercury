@@ -133,6 +133,17 @@ final class SessionsTests: XCTestCase {
         return (response, Data(body.utf8))
     }
 
+    private func sessionListBody(exactByteCount: Int) -> Data {
+        let prefix = #"{"sessions":[{"id":"large-session","title":""#
+        let suffix = #""}]}"#
+        precondition(exactByteCount >= prefix.utf8.count + suffix.utf8.count)
+        let padding = String(
+            repeating: "t",
+            count: exactByteCount - prefix.utf8.count - suffix.utf8.count
+        )
+        return Data((prefix + padding + suffix).utf8)
+    }
+
     // MARK: - Request contract
 
     func testSessionsFirstPageBuildsExactOfficialQuery() async throws {
@@ -148,6 +159,40 @@ final class SessionsTests: XCTestCase {
             captured,
             "profile=default&limit=20&order=recent&archived=exclude&offset=0"
         )
+    }
+
+    func testSessionsAcceptsResponseAtSharedFiveMiBBoundary() async throws {
+        let body = sessionListBody(exactByteCount: 5 * 1024 * 1024)
+        SessionsMockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, body)
+        }
+
+        let page = try await SessionsClient(client: makeClient()).sessions()
+
+        XCTAssertEqual(page.rows.map(\.id), ["large-session"])
+        XCTAssertEqual(body.count, 5 * 1024 * 1024)
+    }
+
+    func testSessionsRejectsResponseAboveSharedFiveMiBBoundary() async throws {
+        let body = sessionListBody(exactByteCount: 5 * 1024 * 1024 + 1)
+        SessionsMockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, body)
+        }
+
+        do {
+            _ = try await SessionsClient(client: makeClient()).sessions()
+            XCTFail("Expected ResponseTooLargeError")
+        } catch is ResponseTooLargeError {
+            // Expected.
+        }
     }
 
     func testSearchBuildsOfficialQueryBoundsFieldsAndDeduplicatesIDs() async throws {
