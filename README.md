@@ -1,6 +1,5 @@
 # Mercury — a Hermes companion
 
-![Introducing Mercury — a Hermes companion]
 
 **Mercury** is an independent, open-source, 100% free companion app for [Hermes Agent](https://github.com/NousResearch/hermes-agent) — **Hermes Cloud** or your own **self-hosted** server. Live streaming, hands-free voice, artifacts, approvals, and full session control from anywhere.
 
