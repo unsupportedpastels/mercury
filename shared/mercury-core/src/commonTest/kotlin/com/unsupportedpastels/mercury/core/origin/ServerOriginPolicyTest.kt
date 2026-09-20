@@ -133,6 +133,33 @@ class ServerOriginPolicyTest {
     }
 
     @Test
+    fun sharedAddressSpaceIsPrivateForCleartext() {
+        // RFC 6598 shared address space (100.64.0.0/10) is what Tailscale hands a
+        // node, so a self-hosted `hermes serve` reachable only over a tailnet lives
+        // there. Treating it as public made the form refuse to save a plain-HTTP
+        // origin for a server that is in fact private.
+        for (origin in listOf(
+            "http://100.64.0.1", "http://100.64.0.1:9119", "http://100.64.0.0",
+            "http://100.100.0.1", "http://100.127.255.255",
+        )) {
+            assertTrue(ServerOriginPolicy.isLoopbackOrPrivate(origin), origin)
+        }
+        // Just outside the /10 stays public: 100.63/16 and 100.128/16.
+        for (origin in listOf("http://100.63.255.255", "http://100.128.0.0", "http://100.0.0.1")) {
+            assertFalse(ServerOriginPolicy.isLoopbackOrPrivate(origin), origin)
+        }
+    }
+
+    @Test
+    fun tailnetCleartextOriginCanBeSaved() {
+        assertEquals("http://100.64.0.1:9119", valid("http://100.64.0.1:9119"))
+        assertEquals("http://100.64.0.1:9119", valid("100.64.0.1:9119", useTls = false))
+        assertEquals("http://100.64.0.1", valid("100.64.0.1:80", useTls = false))
+        assertTrue(ServerOriginPolicy.allowsCleartextHttp("http://100.64.0.1:9119"))
+        assertEquals("ws://100.64.0.1:9119", ServerOriginPolicy.webSocketValue("http://100.64.0.1:9119"))
+    }
+
+    @Test
     fun cleartextAllowedOnlyForPrivateHttp() {
         assertTrue(ServerOriginPolicy.allowsCleartextHttp("http://192.168.1.5:8080"))
         assertEquals("http://localhost.", valid("http://localhost."))
