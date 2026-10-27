@@ -1,0 +1,73 @@
+#!/bin/sh
+# Fake `hermes` CLI for lifecycle tests: emulates the parts of `hermes serve
+# --isolated` the SSH lifecycle depends on (flag parsing, token handling, the
+# HERMES_DASHBOARD_READY line, and a dashboard index that injects the session
+# token). It never touches a real Hermes install.
+#
+# Test hooks:
+#   <token-file>.served   when present, the server serves THIS token instead of
+#                         the spawn token (emulates dashboard token regeneration)
+HERMES_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROFILE="default"
+
+case "$1" in
+  --version) echo "hermes 0.22.5 (fake-hermes fixture)"; exit 0 ;;
+  update) echo "no updates (fixture)"; exit 0 ;;
+  profiles)
+    if [ "${2:-}" = "list" ]; then printf 'default\nwork\n'; exit 0; fi
+    ;;
+esac
+
+if [ "${1:-}" = "--profile" ]; then PROFILE="$2"; shift 2; fi
+
+if [ "${1:-}" != "serve" ]; then
+  echo "fake-hermes: unsupported invocation: $*" >&2
+  exit 2
+fi
+shift
+
+case " $* " in
+  *" --help "*)
+    cat <<'EOF'
+usage: hermes serve [--host HOST] [--port PORT] [--isolated]
+                    [--ssh-session-token-file PATH] [--ssh-owner-nonce NONCE]
+                    [--profile NAME]
+EOF
+    exit 0
+    ;;
+esac
+
+ISOLATED=0; HOST=127.0.0.1; PORT=0; TOKEN_FILE=""; NONCE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --isolated) ISOLATED=1 ;;
+    --host) HOST="$2"; shift ;;
+    --port) PORT="$2"; shift ;;
+    --ssh-session-token-file) TOKEN_FILE="$2"; shift ;;
+    --ssh-owner-nonce) NONCE="$2"; shift ;;
+    *) ;;
+  esac
+  shift
+done
+
+[ -n "$TOKEN_FILE" ] || { echo "fake-hermes: missing --ssh-session-token-file" >&2; exit 2; }
+[ -f "$TOKEN_FILE" ] || { echo "fake-hermes: Missing session token file: $TOKEN_FILE" >&2; exit 2; }
+case "$NONCE" in
+  [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+  *) echo "fake-hermes: invalid --ssh-owner-nonce" >&2; exit 2 ;;
+esac
+
+TOKEN="$(cat "$TOKEN_FILE")"
+SERVED="$TOKEN"
+[ -f "$TOKEN_FILE.served" ] && SERVED="$(cat "$TOKEN_FILE.served")"
+
+if [ "$PORT" = "0" ]; then
+  PORT="$(python3 -c 'import socket
+s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')" || exit 3
+fi
+
+# The readiness line the client scrapes. Printed before the server binds, like
+# the real dashboard announces its port.
+echo "HERMES_DASHBOARD_READY port=$PORT"
+
+exec python3 "$HERMES_DIR/fake_hermes_server.py" "$HOST" "$PORT" "$SERVED" "$PROFILE"

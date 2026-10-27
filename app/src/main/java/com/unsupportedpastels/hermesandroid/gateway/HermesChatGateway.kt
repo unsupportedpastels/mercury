@@ -1,29 +1,35 @@
 package com.unsupportedpastels.hermesandroid.gateway
 
-import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.DelegatedSubagent
 import com.unsupportedpastels.hermesandroid.app.DelegationStatus
+import com.unsupportedpastels.hermesandroid.app.DurableSessionId
+import com.unsupportedpastels.hermesandroid.app.MAX_PROCESS_ROWS
+import com.unsupportedpastels.hermesandroid.app.ProcessRow
 import com.unsupportedpastels.hermesandroid.app.ProjectId
 import com.unsupportedpastels.hermesandroid.app.ProjectSessionsResult
 import com.unsupportedpastels.hermesandroid.app.ProjectSummary
 import com.unsupportedpastels.hermesandroid.app.ProjectTreeResult
-import com.unsupportedpastels.hermesandroid.app.ProcessRow
-import com.unsupportedpastels.hermesandroid.app.MAX_PROCESS_ROWS
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
 import com.unsupportedpastels.mercury.core.files.RelayFoldersContract
 import com.unsupportedpastels.mercury.core.profiles.ProfileCatalogPolicy
-import com.unsupportedpastels.mercury.core.sessions.SessionPresencePolicy
 import com.unsupportedpastels.mercury.core.rpc.RpcResultDecoder
+import com.unsupportedpastels.mercury.core.sessions.SessionPresencePolicy
 import com.unsupportedpastels.mercury.core.transcript.ChatEventDecoder
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import java.util.ArrayDeque
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.isActive
@@ -37,12 +43,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
-import java.util.ArrayDeque
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 
 // Latest unchanged Hermes Serve raises uvicorn's attachment WebSocket ceiling to
 // 384 MiB (desktop backend contract v5). Android remains deliberately far lower:
@@ -82,8 +82,25 @@ class HermesChatGateway(
     }
 
     suspend fun connect(): HermesChatConnection {
-        val ticket = ticketClient.mintTicket(origin, accessToken)
-        val socketUrl = websocketUrl(origin, ticket.ticket)
+        val socketUrl = try {
+            val ticket = ticketClient.mintTicket(origin, accessToken)
+            websocketUrl(origin, ticket.ticket)
+        } catch (unauthorized: HermesChatUnauthorizedException) {
+            // A dashboard with no auth provider (loopback bind → auth_required=false)
+            // has no ticket to give: /api/auth/ws-ticket answers 401 even when the
+            // request carries the session token, because the dashboard's own client
+            // never calls it in that mode — it builds the socket URL with
+            // `authParam = ["token", window.__HERMES_SESSION_TOKEN__]`, and the
+            // upgrade gate reads that as `ws.query_params.get("token")`.
+            //
+            // Scoped to loopback origins on purpose: that is where an ungated
+            // dashboard lives. A gated (non-loopback) dashboard keeps the existing
+            // semantics — an unauthorized ticket means the bearer token is stale and
+            // sign-in must heal it, not a silent retry against a URL the gate will
+            // refuse.
+            if (accessToken.isBlank() || !isLoopback(origin)) throw unauthorized
+            sessionTokenUrl(origin, accessToken)
+        }
         val socket = try {
             socketFactory.connect(socketUrl)
         } catch (cancelled: CancellationException) {
@@ -104,6 +121,17 @@ class HermesChatGateway(
         val encodedTicket = URLEncoder.encode(ticket, StandardCharsets.UTF_8.name())
         return "${origin.webSocketValue}/api/ws?ticket=$encodedTicket"
     }
+
+    /** The ungated-dashboard form: the session token itself, as the gate's `token` param. */
+    private fun sessionTokenUrl(origin: ServerOrigin, token: String): String {
+        val encodedToken = URLEncoder.encode(token, StandardCharsets.UTF_8.name())
+        return "${origin.webSocketValue}/api/ws?token=$encodedToken"
+    }
+
+    private fun isLoopback(origin: ServerOrigin): Boolean = runCatching {
+        val host = java.net.URI(origin.value).host?.lowercase() ?: return@runCatching false
+        host == "localhost" || host == "::1" || host == "[::1]" || host.startsWith("127.")
+    }.getOrDefault(false)
 }
 
 private data class PendingApproval(
@@ -823,15 +851,32 @@ class HermesChatConnection internal constructor(
                 deferred.completeExceptionally(HermesChatMethodNotFoundException(method))
                 return
             }
+            if (code == 4001L) {
+                // The stored session still exists; only its runtime is gone. Callers that hold the
+                // durable id recover by resuming it — see HermesChatSessionNotFoundException.
+                deferred.completeExceptionally(HermesChatSessionNotFoundException(code))
+                return
+            }
             if (method == RelayFoldersContract.listMethod || method == RelayFoldersContract.createMethod) {
                 val safeMessage = RelayFoldersContract.safeErrorMessage(error.stringValue("message"))
                     ?: "The Relay folder request failed."
                 deferred.completeExceptionally(HermesChatProtocolException(safeMessage))
                 return
             }
+            // Keep the server's own wording. Dropping it is why a refusal as informative as
+            // "The gateway is running a turn in this chat and nothing was sent" reached the user as
+            // nothing but a code, with no way to tell a busy owner from an unowned session.
             val suffix = code?.let { " ($it)" }.orEmpty()
+            val detail = error.stringValue("message")?.trim()?.takeIf { it.isNotEmpty() }
+            val reason = (error["data"] as? JsonObject)?.stringValue("reason")?.trim()?.takeIf { it.isNotEmpty() }
             deferred.completeExceptionally(
-                HermesChatProtocolException("Hermes RPC request failed$suffix"),
+                HermesChatProtocolException(
+                    buildString {
+                        append("Hermes RPC request failed").append(suffix)
+                        detail?.let { append(": ").append(it) }
+                        reason?.let { append(" [").append(it).append(']') }
+                    },
+                ),
             )
             return
         }

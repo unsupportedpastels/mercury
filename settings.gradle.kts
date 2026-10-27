@@ -32,3 +32,4 @@ plugins {
 rootProject.name = "mercury"
 include(":app")
 include(":shared:mercury-core")
+include(":shared:ssh-lifecycle")

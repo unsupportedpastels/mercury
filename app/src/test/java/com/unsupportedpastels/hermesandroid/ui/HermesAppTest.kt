@@ -4,18 +4,20 @@ import android.graphics.Bitmap
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextEquals
-import androidx.compose.ui.test.assertCountEquals
-import androidx.compose.ui.test.assert
-import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
-import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
@@ -31,18 +33,16 @@ import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeRight
-import androidx.compose.ui.semantics.SemanticsActions
-import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.unsupportedpastels.hermesandroid.app.ComposerAttachment
-import com.unsupportedpastels.hermesandroid.app.DurableSessionId
-import com.unsupportedpastels.hermesandroid.app.DelegatedSubagent
-import com.unsupportedpastels.hermesandroid.app.DelegationStatus
-import com.unsupportedpastels.hermesandroid.app.ProjectId
-import com.unsupportedpastels.hermesandroid.app.ProjectLoadState
 import com.unsupportedpastels.hermesandroid.app.ApprovalInteraction
 import com.unsupportedpastels.hermesandroid.app.ClarificationInteraction
+import com.unsupportedpastels.hermesandroid.app.ComposerAttachment
+import com.unsupportedpastels.hermesandroid.app.DelegatedSubagent
+import com.unsupportedpastels.hermesandroid.app.DelegationStatus
+import com.unsupportedpastels.hermesandroid.app.DurableSessionId
+import com.unsupportedpastels.hermesandroid.app.ProjectId
+import com.unsupportedpastels.hermesandroid.app.ProjectLoadState
 import com.unsupportedpastels.hermesandroid.app.ProjectSessionLoadState
 import com.unsupportedpastels.hermesandroid.app.ProjectSummary
 import com.unsupportedpastels.hermesandroid.app.RunEventState
@@ -56,43 +56,43 @@ import com.unsupportedpastels.hermesandroid.connection.HermesAuthProvider
 import com.unsupportedpastels.hermesandroid.connection.ModelPickerState
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
 import com.unsupportedpastels.hermesandroid.connection.ServerSettingsState
+import com.unsupportedpastels.hermesandroid.files.HostFileEntry
+import com.unsupportedpastels.hermesandroid.files.HostFileListing
+import com.unsupportedpastels.hermesandroid.gateway.ActiveRuntimeSession
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
+import com.unsupportedpastels.hermesandroid.gateway.ChatBillingNotice
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessageRole
-import com.unsupportedpastels.hermesandroid.voice.MessageReadAloud
-import com.unsupportedpastels.hermesandroid.voice.SpeechAudio
-import com.unsupportedpastels.hermesandroid.gateway.ChatBillingNotice
 import com.unsupportedpastels.hermesandroid.gateway.ChatSessionSnapshot
 import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
+import com.unsupportedpastels.hermesandroid.gateway.CurrentModelInfo
 import com.unsupportedpastels.hermesandroid.gateway.HermesGatewaySnapshot
 import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryEntry
 import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryListing
-import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
 import com.unsupportedpastels.hermesandroid.gateway.ModelCapabilities
-import com.unsupportedpastels.hermesandroid.gateway.CurrentModelInfo
+import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
 import com.unsupportedpastels.hermesandroid.gateway.ModelProviderOption
 import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
 import com.unsupportedpastels.hermesandroid.gateway.ModelSwitchResult
 import com.unsupportedpastels.hermesandroid.gateway.RecentSessionsState
-import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
 import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
-import com.unsupportedpastels.hermesandroid.gateway.ActiveRuntimeSession
+import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
 import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
-import com.unsupportedpastels.hermesandroid.files.HostFileEntry
-import com.unsupportedpastels.hermesandroid.files.HostFileListing
-import com.unsupportedpastels.hermesandroid.relay.RelayFoldersUnsupportedException
-import com.unsupportedpastels.hermesandroid.theme.HermesAndroidTheme
 import com.unsupportedpastels.hermesandroid.navigation.ProjectRoute
 import com.unsupportedpastels.hermesandroid.navigation.SessionDetailRoute
+import com.unsupportedpastels.hermesandroid.relay.RelayFoldersUnsupportedException
 import com.unsupportedpastels.hermesandroid.share.SharePayload
-import org.junit.Rule
+import com.unsupportedpastels.hermesandroid.theme.HermesAndroidTheme
+import com.unsupportedpastels.hermesandroid.voice.MessageReadAloud
+import com.unsupportedpastels.hermesandroid.voice.SpeechAudio
+import java.io.ByteArrayOutputStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
-import java.io.ByteArrayOutputStream
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -288,6 +288,99 @@ class HermesAppTest {
     }
 
     @Test
+    fun theViewAllSessionsScreenHidesScheduledRunsToo() {
+        val snapshot = connectedSnapshot.copy(
+            recentSessions = RecentSessionsState(
+                sessions = listOf(
+                    SessionSummary(DurableSessionId("stored-chat"), "A conversation", source = "weixin"),
+                    SessionSummary(DurableSessionId("stored-cron"), "Hourly digest", source = "cron"),
+                    SessionSummary(DurableSessionId("stored-child"), "Sub-agent", isInternal = true),
+                ),
+                total = 3,
+                hasMore = false,
+            ),
+        )
+
+        composeRule.setContent {
+            HermesAndroidTheme {
+                RecentSessionsScreen(
+                    snapshot = snapshot,
+                    projects = emptyList(),
+                    showBack = false,
+                    onBack = {},
+                    onLoad = {},
+                    onLoadMore = {},
+                    onSessionSelected = {},
+                )
+            }
+        }
+
+        // This screen pages straight from the backend, so it applies the rule independently of Home —
+        // and a sub-agent's child session is not a conversation either.
+        composeRule.onNodeWithText("A conversation").assertIsDisplayed()
+        composeRule.onNodeWithText("Hourly digest").assertDoesNotExist()
+        composeRule.onNodeWithText("Sub-agent").assertDoesNotExist()
+    }
+
+    @Test
+    fun sessionsCarryAChannelBadgeAndScheduledRunsStayHidden() {
+        val snapshot = connectedSnapshot.copy(
+            durableSessions = listOf(
+                SessionSummary(DurableSessionId("stored-wechat"), "From WeChat", source = "weixin"),
+                SessionSummary(DurableSessionId("stored-desktop"), "From desktop", source = "desktop"),
+                SessionSummary(DurableSessionId("stored-cron"), "Hourly digest", source = "cron"),
+            ),
+        )
+
+        composeRule.setContent {
+            HermesAndroidTheme { HermesApp(snapshot = snapshot) }
+        }
+
+        // A list that mixes channels is readable only if each row says which one it came from.
+        composeRule.onNodeWithText("WeChat").assertIsDisplayed()
+        composeRule.onNodeWithText("Desktop").assertIsDisplayed()
+        // A scheduled run is not a conversation anyone started: it stays hidden, and nothing in the
+        // list offers to bring it back.
+        composeRule.onNodeWithText("Hourly digest").assertDoesNotExist()
+        composeRule.onNodeWithTag("Home filter:Scheduled").assertDoesNotExist()
+        composeRule.onAllNodesWithText("Scheduled").assertCountEquals(0)
+    }
+
+    @Test
+    fun deliveredFilesAppearInTheTranscriptAndTheSheetIsOneTapAway() {
+        val session = sessions.first()
+        val snapshot = connectedSnapshot.copy(
+            authenticationState = AuthenticationState.Authenticated,
+            chatSessions = mapOf(
+                session.id to ChatSessionSnapshot(
+                    messages = listOf(
+                        ChatMessage(
+                            ChatMessageRole.Assistant,
+                            "Built it\nMEDIA: /tmp/hermes-app.apk",
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        composeRule.setContent {
+            HermesAndroidTheme {
+                HermesApp(
+                    snapshot = snapshot,
+                    initialRoute = SessionDetailRoute(session.id),
+                    onLoadManagedImage = { Result.success(ByteArray(0)) },
+                )
+            }
+        }
+
+        // A delivered file is visible where it was sent, not only inside the artifact browser.
+        composeRule.onNodeWithTag("File artifact card: hermes-app.apk").assertIsDisplayed()
+        // And the browser is reachable from the conversation itself, without going through insights.
+        composeRule.onNodeWithTag("Open artifacts").performClick()
+        composeRule.onNodeWithTag("Artifact search").assertIsDisplayed()
+    }
+
+    @Test
     @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
     fun sessionDetailsSummarizeArtifactsAndOpenArtifactBrowser() {
         val session = sessions.first()
@@ -323,16 +416,19 @@ class HermesAppTest {
         composeRule.onNodeWithContentDescription("Open session details").performClick()
         composeRule.onAllNodesWithText("Artifacts").assertCountEquals(1)
         composeRule.onAllNodesWithText("3 artifacts").assertCountEquals(1)
-        composeRule.onAllNodesWithText("report.pdf").assertCountEquals(1)
+        // Delivered non-media files now also render in the transcript itself, so a message that
+        // names them shows the name twice: once under the message, once in the artifact list.
+        composeRule.onAllNodesWithText("report.pdf").assertCountEquals(2)
+        // An image stays out of that path — it renders as an image, not as a file card.
         composeRule.onAllNodesWithText("preview.png").assertCountEquals(1)
-        composeRule.onAllNodesWithText("voice.mp3").assertCountEquals(1)
+        composeRule.onAllNodesWithText("voice.mp3").assertCountEquals(2)
         composeRule.onNodeWithText("View all artifacts").performScrollTo().performClick()
         composeRule.onNodeWithTag("Artifact search").assertIsDisplayed()
-        composeRule.onNodeWithText("report.pdf").assertIsDisplayed()
+        composeRule.onAllNodesWithText("report.pdf").assertCountEquals(2)
         composeRule.onAllNodesWithText("Share")[0].performScrollTo().assertIsDisplayed()
         composeRule.onAllNodesWithText("Save")[0].performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Filter artifacts: Audio").performClick()
-        composeRule.onNodeWithText("voice.mp3").assertIsDisplayed()
+        composeRule.onAllNodesWithText("voice.mp3").assertCountEquals(2)
         composeRule.onNodeWithText("Play").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Filter artifacts: Image").performClick()
         // IO-thread decoding is not covered by Compose idleness. Wait until the
@@ -1164,6 +1260,9 @@ class HermesAppTest {
                 )
             }
         }
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
 
         composeRule.onNodeWithContentDescription("Search projects and sessions").performClick()
         composeRule.onNode(hasSetTextAction()).performTextInput("Docs")
@@ -1224,6 +1323,9 @@ class HermesAppTest {
         composeRule.setContent {
             HermesAndroidTheme { HermesApp(snapshot = snapshot) }
         }
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
 
         composeRule.onNodeWithTag("Project home row:Project Alpha").performClick()
         composeRule.onNodeWithContentDescription("Sessions inbox, 2 sessions").assertIsDisplayed()
@@ -1270,6 +1372,9 @@ class HermesAppTest {
         composeRule.setContent {
             HermesAndroidTheme { HermesApp(snapshot = snapshot) }
         }
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
 
         composeRule.onNodeWithTag("Project home row:Hermes Agent").performClick()
         composeRule.onNodeWithText("hermes-agent").assertIsDisplayed()
@@ -1305,6 +1410,9 @@ class HermesAppTest {
         composeRule.setContent {
             HermesAndroidTheme { HermesApp(snapshot = snapshot) }
         }
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
 
         composeRule.onNodeWithTag("Project home row:Status project").performClick()
         composeRule.onNodeWithContentDescription("Status session is running").assertIsDisplayed()
@@ -1346,6 +1454,9 @@ class HermesAppTest {
         composeRule.setContent {
             HermesAndroidTheme { HermesApp(snapshot = snapshot) }
         }
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
 
         composeRule.onNodeWithTag("Project home row:Pulse project").performClick()
         composeRule.onNodeWithContentDescription("Pulse session is running").assertIsDisplayed()
@@ -1481,6 +1592,9 @@ class HermesAppTest {
         composeRule.setContent {
             HermesAndroidTheme { HermesApp(snapshot = snapshot) }
         }
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
 
         assertFalse(
             composeRule.onNodeWithText("Idle project")
@@ -1521,6 +1635,9 @@ class HermesAppTest {
             HermesAndroidTheme { HermesApp(snapshot = snapshot) }
         }
 
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
         composeRule.onNodeWithContentDescription(
             "Project Hermes Android, 3 sessions, latest OAuth callback repair",
         ).assertIsDisplayed()
@@ -3092,7 +3209,7 @@ class HermesAppTest {
     }
 
     @Test
-    fun projectHomeSeparatesProjectsFromUnscopedRecentSessions() {
+    fun projectHomeShowsTheProjectListInProjectsMode() {
         val projectId = ProjectId("project-1")
         val scopedSession = sessions.first().copy(projectId = projectId)
         val unscopedSession = SessionSummary(DurableSessionId("recent-1"), "Unscoped recent")
@@ -3113,11 +3230,48 @@ class HermesAppTest {
             HermesAndroidTheme { HermesApp(snapshot = snapshot) }
         }
 
-        composeRule.onNodeWithText("Projects").assertIsDisplayed()
+        // The project list now lives behind the view switch: sessions own the default view, and
+        // choosing Projects replaces the recent-session list rather than sitting above it.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
+        composeRule.onNodeWithTag("Projects section heading").assertIsDisplayed()
         composeRule.onNodeWithTag("Project home row:Project Alpha").assertIsDisplayed()
-        composeRule.onNodeWithText("Recent Sessions").assertIsDisplayed()
+        composeRule.onNodeWithTag("Recent sessions section heading").assertDoesNotExist()
+    }
+
+    @Test
+    fun projectHomeShowsSessionsFirstAndSwitchesToProjects() {
+        val projectId = ProjectId("project-1")
+        val scopedSession = sessions.first().copy(projectId = projectId)
+        val unscopedSession = SessionSummary(DurableSessionId("recent-1"), "Unscoped recent")
+        val project = ProjectSummary(projectId, "Project Alpha", "/workspace/alpha", 1, emptyList())
+        val snapshot = connectedSnapshot.copy(
+            durableSessions = listOf(scopedSession, unscopedSession),
+            projects = listOf(project),
+            projectState = ProjectLoadState.Loaded(
+                projects = listOf(project),
+                activeProjectId = projectId,
+                scopedSessionIds = setOf(scopedSession.id),
+            ),
+            activeProjectId = projectId,
+            scopedSessionIds = setOf(scopedSession.id),
+        )
+
+        composeRule.setContent {
+            HermesAndroidTheme { HermesApp(snapshot = snapshot) }
+        }
+
+        // Sessions are the default view and the project block is not composed at all, so a long
+        // project list can no longer push the recent sessions off the screen.
+        composeRule.onNodeWithTag("Projects section heading").assertDoesNotExist()
+        composeRule.onNodeWithTag("Recent sessions section heading").assertIsDisplayed()
         composeRule.onNodeWithText("Unscoped recent").assertIsDisplayed()
         composeRule.onNodeWithText(scopedSession.title).assertIsDisplayed()
+
+        // The switch replaces the session list with the project list; tags keep this unambiguous
+        // ("Projects" also labels a share destination that stays composed off-screen).
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
+        composeRule.onNodeWithTag("Projects section heading").assertIsDisplayed()
+        composeRule.onNodeWithTag("Recent sessions section heading").assertDoesNotExist()
     }
 
     @Test
@@ -3144,7 +3298,9 @@ class HermesAppTest {
             HermesAndroidTheme { HermesApp(snapshot = snapshot) }
         }
 
-        composeRule.onAllNodesWithText("Project Alpha").assertCountEquals(2)
+        // The session row carries the project's authoritative label. One node now that the project
+        // list is not rendered in the default (sessions) view — the second used to come from there.
+        composeRule.onAllNodesWithText("Project Alpha").assertCountEquals(1)
         composeRule.onAllNodesWithText("Durable session").assertCountEquals(0)
     }
 
@@ -3335,6 +3491,9 @@ class HermesAppTest {
                 )
             }
         }
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
 
         composeRule.onNodeWithTag("Project home row:Project Alpha").performClick()
         composeRule.onNodeWithText("Valid task").performClick()
@@ -3370,6 +3529,9 @@ class HermesAppTest {
         composeRule.setContent {
             HermesAndroidTheme { HermesApp(snapshot = snapshot) }
         }
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
 
         composeRule.onNodeWithTag("Project home row:Project Alpha").performClick()
         composeRule.onNodeWithText("Needs workspace").performClick()
@@ -3410,6 +3572,9 @@ class HermesAppTest {
                 )
             }
         }
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
 
         composeRule.onNodeWithTag("Project home row:Project Alpha").performClick()
         composeRule.onNodeWithText("New task").performClick()
@@ -3440,6 +3605,9 @@ class HermesAppTest {
             }
         }
 
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
         composeRule.onNodeWithTag("Project home row:Project Alpha").performClick()
         composeRule.onNodeWithText("Loading project sessions").assertIsDisplayed()
         assertEquals(projectId, openedProject)
@@ -3466,6 +3634,9 @@ class HermesAppTest {
             }
         }
 
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
         composeRule.onNodeWithTag("Project home row:Project Alpha").performClick()
         composeRule.onNodeWithText("temporary metadata outage").assertIsDisplayed()
         composeRule.runOnIdle { drillState = ProjectSessionLoadState.Unsupported }
@@ -3497,6 +3668,9 @@ class HermesAppTest {
                 HermesApp(snapshot = snapshot, onOpenSession = { openedSession = it })
             }
         }
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
 
         composeRule.onNodeWithTag("Project home row:Project Alpha").performClick()
         composeRule.onNodeWithText("Project session").performClick()
@@ -3522,13 +3696,19 @@ class HermesAppTest {
         composeRule.setContent {
             HermesAndroidTheme { HermesApp(snapshot = snapshot) }
         }
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
 
         composeRule.onNodeWithTag("Project home row:Project Alpha").performClick()
         composeRule.onNodeWithText("Project session").performClick()
         composeRule.onNodeWithContentDescription("Back").performClick()
         composeRule.onAllNodesWithText("Project Alpha").assertCountEquals(2)
         composeRule.onNodeWithText("Back").performClick()
-        composeRule.onNodeWithText("Recent Sessions").assertIsDisplayed()
+        // Home again, still in the mode it was left in (Projects): the short back run ends where it
+        // started, and the session list is intentionally not what this mode shows.
+        composeRule.onNodeWithTag("Home view mode:Projects").assertIsDisplayed()
+        composeRule.onNodeWithTag("Projects section heading").assertIsDisplayed()
     }
 
     @Test
@@ -3892,6 +4072,9 @@ class HermesAppTest {
         composeRule.setContent {
             HermesAndroidTheme { HermesApp(snapshot = snapshot) }
         }
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
 
         composeRule.onNodeWithContentDescription("Project dock, expanded").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Home navigation").assertDoesNotExist()
@@ -3919,6 +4102,9 @@ class HermesAppTest {
                 HermesApp(snapshot = snapshot, onOpenProject = { openedProject = it })
             }
         }
+        // Sessions is the default view (the project list is not rendered by default);
+        // this case is about projects, so it switches to the Projects mode first.
+        composeRule.onNodeWithTag("Home view mode:Projects").performClick()
 
         composeRule.onAllNodesWithText("Duplicate project").assertCountEquals(2)[1].performClick()
 

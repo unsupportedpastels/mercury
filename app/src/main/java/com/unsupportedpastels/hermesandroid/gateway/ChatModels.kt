@@ -1,9 +1,9 @@
 package com.unsupportedpastels.hermesandroid.gateway
 
-import com.unsupportedpastels.mercury.core.transcript.ClarifyQuestion
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.RunTodoItem
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.mercury.core.transcript.ClarifyQuestion
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -54,6 +54,19 @@ open class HermesChatProtocolException(
 class HermesChatMethodNotFoundException(
     val method: String,
 ) : HermesChatProtocolException("Hermes method is not supported: $method")
+
+/**
+ * The gateway no longer holds the runtime for the session id we sent — it answers JSON-RPC
+ * `4001 "session not found"` after the backend detached that session and orphan-reaped it (20 s
+ * grace), evicted it, or lost it with the process. Recoverable: resume the *stored* session.
+ *
+ * Typed on purpose: the message alone ("Hermes RPC request failed (4001)") does not say whether
+ * retrying is safe. It is here — a rejected request was never executed.
+ */
+class HermesChatSessionNotFoundException(
+    val rpcCode: Long?,
+    message: String = "Hermes session runtime is gone",
+) : HermesChatProtocolException(message)
 
 class HermesChatTransportException(
     message: String,

@@ -5,8 +5,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
-import com.unsupportedpastels.hermesandroid.app.ProjectSummary
 import com.unsupportedpastels.hermesandroid.app.ProjectId
+import com.unsupportedpastels.hermesandroid.app.ProjectSummary
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
@@ -32,6 +32,9 @@ private fun mergeSessionCollections(
             existing.copy(
                 projectId = existing.projectId ?: projectSession.projectId,
                 workspacePath = existing.workspacePath ?: projectSession.workspacePath,
+                // Carried through the merge: a project's row may be the first thing that mentions a
+                // session, and losing the channel here would drop its badge and its scheduled status.
+                source = existing.source ?: projectSession.source,
             )
         }
     }

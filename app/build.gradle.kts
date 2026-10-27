@@ -97,6 +97,7 @@ kotlin {
 dependencies {
   // Shared KMP contract core (see AGENTS.md, cross-platform rule)
   implementation(project(":shared:mercury-core"))
+  implementation(project(":shared:ssh-lifecycle"))
 
   val composeBom = platform(libs.androidx.compose.bom)
   implementation(composeBom)

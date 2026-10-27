@@ -1,61 +1,62 @@
 package com.unsupportedpastels.hermesandroid.connection
 
-import com.unsupportedpastels.mercury.core.artifacts.ManagedVideoPolicy
-import com.unsupportedpastels.mercury.core.profiles.ProfileCatalogPolicy
-import com.unsupportedpastels.mercury.core.sessions.SessionResponseLimits
-
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.app.validHostFolderName
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
+import com.unsupportedpastels.hermesandroid.files.HOST_FILE_STREAM_CHUNK_BYTES
+import com.unsupportedpastels.hermesandroid.files.HostFileContent
+import com.unsupportedpastels.hermesandroid.files.HostFileEntry
+import com.unsupportedpastels.hermesandroid.files.HostFileListing
+import com.unsupportedpastels.hermesandroid.files.MAX_HOST_FILE_BYTES
+import com.unsupportedpastels.hermesandroid.files.MAX_HOST_FILE_ENTRIES
+import com.unsupportedpastels.hermesandroid.files.MAX_HOST_FILE_STREAM_BYTES
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
+import com.unsupportedpastels.hermesandroid.files.validCanonicalHostFilePath
+import com.unsupportedpastels.hermesandroid.files.validHostFileMimeType
+import com.unsupportedpastels.hermesandroid.files.validHostFileName
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessageRole
 import com.unsupportedpastels.hermesandroid.gateway.CronJob
 import com.unsupportedpastels.hermesandroid.gateway.CronJobRun
 import com.unsupportedpastels.hermesandroid.gateway.CronJobScope
-import com.unsupportedpastels.hermesandroid.gateway.parseCronJob
-import com.unsupportedpastels.hermesandroid.gateway.parseCronJobRuns
+import com.unsupportedpastels.hermesandroid.gateway.CurrentModelInfo
 import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryEntry
 import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryListing
+import com.unsupportedpastels.hermesandroid.gateway.ModelCapabilities
 import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
 import com.unsupportedpastels.hermesandroid.gateway.ModelProviderOption
 import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
 import com.unsupportedpastels.hermesandroid.gateway.ModelSwitchResult
-import com.unsupportedpastels.hermesandroid.gateway.CurrentModelInfo
-import com.unsupportedpastels.hermesandroid.gateway.ModelCapabilities
+import com.unsupportedpastels.hermesandroid.gateway.OperationalStatus
+import com.unsupportedpastels.hermesandroid.gateway.parseCronJob
+import com.unsupportedpastels.hermesandroid.gateway.parseCronJobRuns
 import com.unsupportedpastels.hermesandroid.gateway.parseExplicitModelCapabilities
 import com.unsupportedpastels.hermesandroid.gateway.parseModelCapabilities
-import com.unsupportedpastels.hermesandroid.gateway.OperationalStatus
 import com.unsupportedpastels.hermesandroid.gateway.parseOperationalStatus
-import com.unsupportedpastels.hermesandroid.files.HostFileContent
-import com.unsupportedpastels.hermesandroid.files.HostFileEntry
-import com.unsupportedpastels.hermesandroid.files.HostFileListing
-import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
-import com.unsupportedpastels.hermesandroid.files.MAX_HOST_FILE_BYTES
-import com.unsupportedpastels.hermesandroid.files.MAX_HOST_FILE_ENTRIES
-import com.unsupportedpastels.hermesandroid.files.validCanonicalHostFilePath
-import com.unsupportedpastels.hermesandroid.files.validHostFileMimeType
-import com.unsupportedpastels.hermesandroid.files.validHostFileName
 import com.unsupportedpastels.hermesandroid.voice.ElevenLabsVoice
 import com.unsupportedpastels.hermesandroid.voice.SpeechAudio
-import com.unsupportedpastels.hermesandroid.voice.decodeAudioDataUrl
 import com.unsupportedpastels.hermesandroid.voice.TranscriptionResult
 import com.unsupportedpastels.hermesandroid.voice.VoiceAudioTimeouts
 import com.unsupportedpastels.hermesandroid.voice.VoiceCapabilities
 import com.unsupportedpastels.hermesandroid.voice.VoiceCapabilityPolicy
 import com.unsupportedpastels.hermesandroid.voice.VoiceServerConfig
 import com.unsupportedpastels.hermesandroid.voice.audioRequestTimeout
+import com.unsupportedpastels.hermesandroid.voice.decodeAudioDataUrl
+import com.unsupportedpastels.mercury.core.artifacts.ManagedVideoPolicy
+import com.unsupportedpastels.mercury.core.profiles.ProfileCatalogPolicy
+import com.unsupportedpastels.mercury.core.sessions.SessionResponseLimits
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.plugins.HttpTimeout
-import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.HttpRequestBuilder
+import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
-import io.ktor.client.request.prepareGet
 import io.ktor.client.request.parameter
 import io.ktor.client.request.patch
 import io.ktor.client.request.post
+import io.ktor.client.request.prepareGet
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
@@ -64,8 +65,11 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.http.encodeURLPathPart
 import io.ktor.http.isSuccess
-import io.ktor.utils.io.readRemaining
 import io.ktor.utils.io.readAvailable
+import io.ktor.utils.io.readRemaining
+import java.io.File
+import java.io.FileOutputStream
+import java.util.Base64
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -82,15 +86,12 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
-import java.io.File
-import java.io.FileOutputStream
-import java.util.Base64
 
 @Serializable
 private data class HermesStatusResponse(
@@ -131,7 +132,37 @@ private data class HermesSessionRow(
     val cwd: String? = null,
     val pinned: Boolean = false,
     val archived: Boolean = false,
-)
+    /**
+     * Which channel the session came in on (`cron`, `weixin`, `desktop`, `cli`, `local`…). Declared
+     * explicitly because kotlinx.serialization drops what the DTO does not name — an unlisted field
+     * here is invisible to every caller downstream, however carefully they read the JSON.
+     */
+    @SerialName("source") private val sourceRaw: JsonElement? = null,
+    @SerialName("hidden") private val hiddenRaw: JsonElement? = null,
+    @SerialName("is_internal_child") private val internalChildRaw: JsonElement? = null,
+) {
+    /**
+     * Loose on purpose. Current backends send real booleans, older ones send strings ("0"/"1") — and
+     * a typed DTO does not degrade, it *fails the whole response*, which is how one mismatched flag
+     * took the entire session list down with "Expected valid boolean literal prefix".
+     */
+    // Getters without backing fields: a body `val` with a field would itself be serialized and
+    // collide with the raw property's serial name.
+    val isHidden: Boolean get() = hiddenRaw.flagOf()
+
+    val isInternalChild: Boolean get() = internalChildRaw.flagOf()
+
+    val source: String? get() = (sourceRaw as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
+}
+
+/** Boolean-ish JSON as a flag: real booleans, "0"/"1" strings and numbers all normalise. */
+private fun JsonElement?.flagOf(): Boolean {
+    val primitive = this as? JsonPrimitive ?: return false
+    primitive.booleanOrNull?.let { return it }
+    return primitive.content.trim().lowercase() in TRUE_ISH_FLAGS
+}
+
+private val TRUE_ISH_FLAGS = setOf("1", "true", "yes", "y", "on")
 
 @Serializable
 private data class HermesSessionsResponse(
@@ -553,6 +584,22 @@ interface HermesConnectionClient {
         accessToken: String?,
         path: String,
     ): HostFileContent = throw UnsupportedOperationException()
+
+    /**
+     * Streams a managed host file straight into [sink] in bounded chunks, reporting progress as the
+     * bytes land.
+     *
+     * Nothing is held whole in memory, so an attachment larger than the in-memory readers accept
+     * still saves, and the caller can show real progress rather than a spinner that means nothing.
+     * Returns the number of bytes written.
+     */
+    suspend fun streamManagedFileInto(
+        serverOrigin: ServerOrigin,
+        accessToken: String?,
+        path: String,
+        sink: java.io.OutputStream,
+        onProgress: (written: Long, total: Long?) -> Unit = { _, _ -> },
+    ): Long = throw UnsupportedOperationException()
 
     suspend fun createHostDirectory(
         serverOrigin: ServerOrigin,
@@ -1439,10 +1486,20 @@ class HttpHermesConnectionClient(
         } else {
             emptyList()
         }
+        // A backend spawned over an SSH tunnel reports auth_required = false (it has no
+        // interactive sign-in flow) and still rejects unauthenticated /api/* with 401 — its
+        // tunnel session token is the only credential it accepts. Listing sessions here, with
+        // no token at all, turned discovery into a fatal 401 for every SSH-tunnel origin
+        // ("Hermes session listing returned HTTP 401" surfacing as the connect error, with
+        // authentication state stuck at Unknown), when the caller's authenticated path is
+        // where such an origin actually gets its sessions. Treat this unauthenticated listing
+        // as optional metadata: a real reachability problem still surfaces on the requests the
+        // caller makes next, with a truthful error.
         val sessions = if (status.authRequired) {
             emptyList()
         } else {
-            loadSessionsPage(serverOrigin, accessToken = null).sessions
+            runCatching { loadSessionsPage(serverOrigin, accessToken = null).sessions }
+                .getOrDefault(emptyList())
         }
         HermesConnectionInfo(
             version = status.version,
@@ -1764,6 +1821,57 @@ class HttpHermesConnectionClient(
         throw HermesConnectionException("Could not download host file", error)
     }
 
+    override suspend fun streamManagedFileInto(
+        serverOrigin: ServerOrigin,
+        accessToken: String?,
+        path: String,
+        sink: java.io.OutputStream,
+        onProgress: (written: Long, total: Long?) -> Unit,
+    ): Long = try {
+        val canonicalPath = validCanonicalHostFilePath(path)
+            ?: throw HermesConnectionException("Host file path is invalid")
+        val response = client.get("${serverOrigin.value}/api/files/download") {
+            hermesAuth(accessToken)
+            parameter("path", canonicalPath)
+        }
+        if (!response.status.isSuccess()) {
+            response.bodyAsChannel().cancel(null)
+            throw HermesConnectionException(
+                "Hermes host file download returned HTTP ${response.status.value}",
+            )
+        }
+        val declaredLength = response.headers[io.ktor.http.HttpHeaders.ContentLength]?.toLongOrNull()
+        if (declaredLength != null && declaredLength !in 0..MAX_HOST_FILE_STREAM_BYTES.toLong()) {
+            response.bodyAsChannel().cancel(null)
+            throw HermesConnectionException("Hermes host file was too large")
+        }
+        val channel = response.bodyAsChannel()
+        var written = 0L
+        try {
+            val buffer = ByteArray(HOST_FILE_STREAM_CHUNK_BYTES)
+            while (true) {
+                val read = channel.readAvailable(buffer, 0, buffer.size)
+                if (read <= 0) break
+                sink.write(buffer, 0, read)
+                written += read
+                if (written > MAX_HOST_FILE_STREAM_BYTES.toLong()) {
+                    throw HermesConnectionException("Hermes host file was too large")
+                }
+                onProgress(written, declaredLength)
+            }
+            sink.flush()
+        } finally {
+            channel.cancel(null)
+        }
+        written
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: HermesConnectionException) {
+        throw error
+    } catch (error: Exception) {
+        throw HermesConnectionException("Could not download host file", error)
+    }
+
     override suspend fun loadHostDirectories(
         serverOrigin: ServerOrigin,
         accessToken: String?,
@@ -2069,6 +2177,8 @@ class HttpHermesConnectionClient(
                 profile = row.profile?.takeIf(String::isNotBlank),
                 pinned = row.pinned,
                 archived = row.archived,
+                source = row.source?.takeIf(String::isNotBlank)?.take(32),
+                isInternal = row.isHidden || row.isInternalChild,
             )
         }.distinctBy { it.id }
             .take(boundedLimit)

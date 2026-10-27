@@ -7,26 +7,21 @@ import androidx.lifecycle.viewModelScope
 import com.unsupportedpastels.hermesandroid.app.ComposerAttachment
 import com.unsupportedpastels.hermesandroid.app.DurableProgress
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
+import com.unsupportedpastels.hermesandroid.app.ProcessListIdentity
+import com.unsupportedpastels.hermesandroid.app.ProcessRowsState
 import com.unsupportedpastels.hermesandroid.app.ProjectId
 import com.unsupportedpastels.hermesandroid.app.ProjectLoadState
 import com.unsupportedpastels.hermesandroid.app.ProjectSessionLoadState
 import com.unsupportedpastels.hermesandroid.app.ProjectSessionsResult
 import com.unsupportedpastels.hermesandroid.app.ProjectSummary
 import com.unsupportedpastels.hermesandroid.app.ProjectTreeResult
-import com.unsupportedpastels.hermesandroid.app.ProcessListIdentity
-import com.unsupportedpastels.hermesandroid.app.ProcessRowsState
 import com.unsupportedpastels.hermesandroid.app.RunEventState
 import com.unsupportedpastels.hermesandroid.app.RunInteractionLifecycle
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
+import com.unsupportedpastels.hermesandroid.app.isNoProjectBucket
 import com.unsupportedpastels.hermesandroid.app.observe
 import com.unsupportedpastels.hermesandroid.app.reconcileProjectSession
-import com.unsupportedpastels.hermesandroid.app.isNoProjectBucket
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
-import com.unsupportedpastels.mercury.core.attachment.AttachmentAddResult
-import com.unsupportedpastels.mercury.core.notifications.NotificationTextPolicy
-import com.unsupportedpastels.mercury.core.relay.RelayAdmissionEnvelope
-import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
-import com.unsupportedpastels.mercury.core.relay.RelayTargetStatus
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentByteReader
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentPolicy
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentReadException
@@ -37,46 +32,78 @@ import com.unsupportedpastels.hermesandroid.cache.CacheScope
 import com.unsupportedpastels.hermesandroid.cache.CachedSession
 import com.unsupportedpastels.hermesandroid.cache.EncryptedOfflineCacheRepository
 import com.unsupportedpastels.hermesandroid.cache.OfflineCacheRepository
-import com.unsupportedpastels.hermesandroid.files.ManagedVideoCache
-import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
-import java.io.File
-import java.util.concurrent.ConcurrentHashMap
+import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
 import com.unsupportedpastels.hermesandroid.files.HostFileContent
 import com.unsupportedpastels.hermesandroid.files.HostFileListing
-import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
-import com.unsupportedpastels.hermesandroid.gateway.ChatConnectionPhase
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoCache
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
 import com.unsupportedpastels.hermesandroid.gateway.ActiveRuntimeSession
+import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
+import com.unsupportedpastels.hermesandroid.gateway.CacheSource
+import com.unsupportedpastels.hermesandroid.gateway.ChatBillingNotice
+import com.unsupportedpastels.hermesandroid.gateway.ChatConnectionPhase
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessageRole
-import com.unsupportedpastels.hermesandroid.gateway.ChatBillingNotice
 import com.unsupportedpastels.hermesandroid.gateway.ChatSessionSnapshot
-import com.unsupportedpastels.hermesandroid.gateway.CacheSource
 import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
-import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnector
+import com.unsupportedpastels.hermesandroid.gateway.CronJobAction
+import com.unsupportedpastels.hermesandroid.gateway.CronJobRunsState
+import com.unsupportedpastels.hermesandroid.gateway.CronJobScope
+import com.unsupportedpastels.hermesandroid.gateway.CronJobsState
+import com.unsupportedpastels.hermesandroid.gateway.CronRestCapability
+import com.unsupportedpastels.hermesandroid.gateway.HERMES_CHAT_MAX_FRAME_BYTES
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnection
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnector
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatEvent
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatException
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatGateway
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatMethodNotFoundException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatProtocolException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatResponseStatus
-import com.unsupportedpastels.hermesandroid.gateway.HermesChatGateway
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatSession
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatSessionNotFoundException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatTransportException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatUnauthorizedException
 import com.unsupportedpastels.hermesandroid.gateway.HermesGatewaySnapshot
 import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryListing
-import com.unsupportedpastels.hermesandroid.gateway.RecentSessionsState
-import com.unsupportedpastels.hermesandroid.gateway.HERMES_CHAT_MAX_FRAME_BYTES
 import com.unsupportedpastels.hermesandroid.gateway.KtorChatWebSocketFactory
-import com.unsupportedpastels.hermesandroid.notifications.AndroidTurnNotificationController
-import com.unsupportedpastels.hermesandroid.notifications.NoOpTurnNotificationController
-import com.unsupportedpastels.hermesandroid.notifications.TurnNotificationController
 import com.unsupportedpastels.hermesandroid.gateway.KtorWsTicketClient
 import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
 import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
 import com.unsupportedpastels.hermesandroid.gateway.ModelSwitchResult
 import com.unsupportedpastels.hermesandroid.gateway.OperationalSnapshot
 import com.unsupportedpastels.hermesandroid.gateway.OperationalStatusState
+import com.unsupportedpastels.hermesandroid.gateway.PromptSubmission
+import com.unsupportedpastels.hermesandroid.gateway.RecentSessionsState
+import com.unsupportedpastels.hermesandroid.gateway.ResumedChatSession
+import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
+import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
+import com.unsupportedpastels.hermesandroid.gateway.SessionBranchResult
+import com.unsupportedpastels.hermesandroid.gateway.SessionContextBreakdown
+import com.unsupportedpastels.hermesandroid.gateway.SessionUsage
+import com.unsupportedpastels.hermesandroid.gateway.SlashCompletionResult
+import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
+import com.unsupportedpastels.hermesandroid.gateway.canonicalReasoningEffort
+import com.unsupportedpastels.hermesandroid.gateway.lastGoodOrNull
+import com.unsupportedpastels.hermesandroid.notifications.AndroidTurnNotificationController
+import com.unsupportedpastels.hermesandroid.notifications.NoOpTurnNotificationController
+import com.unsupportedpastels.hermesandroid.notifications.TurnNotificationController
+import com.unsupportedpastels.hermesandroid.relay.RelayConnector
+import com.unsupportedpastels.hermesandroid.relay.RelayFoldersClient
+import com.unsupportedpastels.hermesandroid.relay.RelayHermesChatSocket
+import com.unsupportedpastels.hermesandroid.relay.RelayLeaseCheckpoint
+import com.unsupportedpastels.hermesandroid.relay.RelayLeaseRecoverySocket
+import com.unsupportedpastels.hermesandroid.relay.TlsRelayBinarySocketFactory
+import com.unsupportedpastels.hermesandroid.relay.recoverRelayTasks
+import com.unsupportedpastels.hermesandroid.session.DataStoreSessionFilterRepository
+import com.unsupportedpastels.hermesandroid.session.MAX_BULK_SELECTION
+import com.unsupportedpastels.hermesandroid.session.SavedSessionFilter
+import com.unsupportedpastels.hermesandroid.session.SessionFilterRepository
+import com.unsupportedpastels.hermesandroid.session.SessionFilterScope
+import com.unsupportedpastels.hermesandroid.session.SessionListFilter
+import com.unsupportedpastels.hermesandroid.session.evaluateBulkDeleteSelection
+import com.unsupportedpastels.hermesandroid.session.toggleBulkSelection
+import com.unsupportedpastels.hermesandroid.ui.isSlashCommandContext
 import com.unsupportedpastels.hermesandroid.voice.ElevenLabsVoice
 import com.unsupportedpastels.hermesandroid.voice.KtorSpeechWebSocketFactory
 import com.unsupportedpastels.hermesandroid.voice.SpeechAudio
@@ -86,48 +113,25 @@ import com.unsupportedpastels.hermesandroid.voice.StreamingSpeechTransport
 import com.unsupportedpastels.hermesandroid.voice.TranscriptionResult
 import com.unsupportedpastels.hermesandroid.voice.VoiceCapabilities
 import com.unsupportedpastels.hermesandroid.voice.VoiceServerConfig
-import com.unsupportedpastels.hermesandroid.gateway.lastGoodOrNull
-import com.unsupportedpastels.hermesandroid.gateway.ResumedChatSession
-import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
-import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
-import com.unsupportedpastels.hermesandroid.gateway.CronJobAction
-import com.unsupportedpastels.hermesandroid.gateway.CronJobRunsState
-import com.unsupportedpastels.hermesandroid.gateway.CronJobScope
-import com.unsupportedpastels.hermesandroid.gateway.CronJobsState
-import com.unsupportedpastels.hermesandroid.gateway.CronRestCapability
-import com.unsupportedpastels.hermesandroid.gateway.SessionBranchResult
-import com.unsupportedpastels.hermesandroid.gateway.SessionContextBreakdown
-import com.unsupportedpastels.hermesandroid.gateway.SessionUsage
-import com.unsupportedpastels.hermesandroid.gateway.SlashCompletionResult
-import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
-import com.unsupportedpastels.hermesandroid.gateway.canonicalReasoningEffort
-import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
-import com.unsupportedpastels.hermesandroid.session.DataStoreSessionFilterRepository
-import com.unsupportedpastels.hermesandroid.session.MAX_BULK_SELECTION
-import com.unsupportedpastels.hermesandroid.session.SavedSessionFilter
-import com.unsupportedpastels.hermesandroid.session.SessionFilterRepository
-import com.unsupportedpastels.hermesandroid.session.SessionFilterScope
-import com.unsupportedpastels.hermesandroid.session.evaluateBulkDeleteSelection
-import com.unsupportedpastels.hermesandroid.session.SessionListFilter
-import com.unsupportedpastels.hermesandroid.session.toggleBulkSelection
-import com.unsupportedpastels.hermesandroid.relay.RelayFoldersClient
-import com.unsupportedpastels.hermesandroid.relay.TlsRelayBinarySocketFactory
-import com.unsupportedpastels.hermesandroid.relay.RelayConnector
-import com.unsupportedpastels.hermesandroid.relay.RelayHermesChatSocket
-import com.unsupportedpastels.hermesandroid.relay.RelayLeaseCheckpoint
-import com.unsupportedpastels.hermesandroid.relay.RelayLeaseRecoverySocket
-import com.unsupportedpastels.hermesandroid.relay.recoverRelayTasks
-import com.unsupportedpastels.hermesandroid.ui.isSlashCommandContext
+import com.unsupportedpastels.mercury.core.attachment.AttachmentAddResult
+import com.unsupportedpastels.mercury.core.notifications.NotificationTextPolicy
+import com.unsupportedpastels.mercury.core.relay.RelayAdmissionEnvelope
+import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
+import com.unsupportedpastels.mercury.core.relay.RelayTargetStatus
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.plugins.websocket.WebSockets
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -135,21 +139,19 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
-import kotlinx.coroutines.cancel
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 
 /** How often a chat re-asks the gateway registry about unresolved delegated children. */
@@ -894,7 +896,15 @@ class HermesConnectionViewModel(
                 probeAndLoadSavedTokenConcurrently(
                     probe = { client.probe(serverOrigin) },
                     loadSavedToken = { store.load(serverOrigin) },
-                    needsSavedToken = { it.authRequired },
+                    // A backend spawned over an SSH tunnel reports auth_required = false
+                    // (it has no interactive sign-in flow) while still rejecting
+                    // unauthenticated /api/* with 401 — its tunnel session token is the
+                    // only credential it accepts. Presenting the stored token for such an
+                    // origin is what keeps connect() from declaring "authentication not
+                    // required" and then eating a 401 from /api/auth/me.
+                    needsSavedToken = { probe ->
+                        probe.authRequired || store.hasSshSessionToken(serverOrigin)
+                    },
                 )
             } else {
                 client.probe(serverOrigin) to null
@@ -904,7 +914,7 @@ class HermesConnectionViewModel(
             currentCoroutineContext().ensureActive()
             if (generation != currentGeneration || activeOrigin != serverOrigin) return
 
-            if (!info.authRequired) {
+            if (!info.authRequired && stored == null) {
                 mutableSnapshots.value = HermesGatewaySnapshot(
                     connectionState = ConnectionState.Connected,
                     authenticationState = AuthenticationState.NotRequired,
@@ -1069,10 +1079,33 @@ class HermesConnectionViewModel(
             } else {
                 mutableSnapshots.value = mutableSnapshots.value.copy(
                     connectionState = ConnectionState.Disconnected,
-                    connectionError = "Could not reach Hermes Serve",
+                    connectionError = unreachableMessage(error),
                 )
             }
         }
+    }
+
+    /**
+     * "Could not reach Hermes Serve" plus the *transport* cause.
+     *
+     * The distinction matters and is not guessable from a generic message:
+     * `Connection refused` means nothing is listening at that address (for an SSH
+     * tunnel: the forwarded local port), `Connect timed out` means the address is
+     * unreachable (tunnel up but the far side is not answering), and an HTTP status
+     * means the server answered and rejected the request. Walk to the deepest cause
+     * because the outer layers only restate "could not connect".
+     */
+    private fun unreachableMessage(error: Exception): String {
+        val message = generateSequence<Throwable>(error) { it.cause }
+            .toList()
+            .lastOrNull { !it.message.isNullOrBlank() }
+            ?.message
+            ?.lineSequence()
+            ?.first()
+            ?.trim()
+            ?.take(160) // Keep the banner one line; the cause prefix is what matters.
+            ?: error.javaClass.simpleName
+        return "Could not reach Hermes Serve — $message"
     }
 
     private fun startProjectTreeLoad(
@@ -1926,6 +1959,29 @@ class HermesConnectionViewModel(
                 }
             }
         }
+    }
+
+    /**
+     * Switch the profile the app is scoped to, and make it visible immediately.
+     *
+     * Deliberately separate from [loadManagementSettings], which also pulls the profile's
+     * management data and then re-derives the selection from the server's list — a list that does
+     * not contain the tapped name silently snaps the selection back, which reads as "the tap did
+     * nothing". Here the choice stands, and the session list refetches for it.
+     */
+    fun selectProfile(profile: String): Job {
+        val bounded = profile.trim().take(64).ifEmpty { "default" }
+        val origin = activeOrigin ?: return viewModelScope.launch { }
+        if (mutableSnapshots.value.selectedProfile == bounded) {
+            return refreshDurableSessions(archivedOnly = false)
+        }
+        setSessionFilterScope(origin, bounded)
+        // A scope change must start from the unfiltered list, exactly as in loadManagementSettings.
+        activeSessionArchivedFilter = false
+        lastDurableSessionsFetchKey = null
+        connectionCoordinator.advanceProfileGeneration()
+        mutableSnapshots.value = mutableSnapshots.value.copy(selectedProfile = bounded)
+        return refreshDurableSessions(archivedOnly = false)
     }
 
     fun loadManagementSettings(
@@ -2819,6 +2875,18 @@ class HermesConnectionViewModel(
             client.downloadManagedFile(serverOrigin, accessToken, path)
         }
 
+    /**
+     * Saves a managed host file by streaming it into [sink], so an attachment the in-memory readers
+     * refuse for size still lands and the caller can report real progress.
+     */
+    suspend fun streamManagedFileInto(
+        path: String,
+        sink: java.io.OutputStream,
+        onProgress: (written: Long, total: Long?) -> Unit,
+    ): Long = withHermesRestOperation { serverOrigin, accessToken ->
+        client.streamManagedFileInto(serverOrigin, accessToken, path, sink, onProgress)
+    }
+
     suspend fun createHostDirectory(
         parentPath: String,
         name: String,
@@ -3707,9 +3775,20 @@ class HermesConnectionViewModel(
                 if (activeRelayTarget != null) {
                     // Host SessionLease accepts params.submission_id (1..128 chars).
                     // IDs are lease-local; never retry an ambiguously accepted prompt.
+                    //
+                    // The runtime-recovery helper is deliberately NOT used here: a Relay lease is a
+                    // different contract (its own close codes, no gateway session registry), so a
+                    // 4001 from that path would not mean what the helper assumes.
                     session.submitPrompt(runtimeId, submittedText, interrupted, java.util.UUID.randomUUID().toString())
                 } else {
-                    session.submitPrompt(runtimeId, submittedText, interrupted)
+                    submitPromptWithRuntimeRecovery(
+                        session = session,
+                        durableSessionId = durableSessionId,
+                        runtimeSessionId = runtimeId,
+                        text = submittedText,
+                        interrupted = interrupted,
+                        submissionId = null,
+                    )
                 }
                 val resolution = sessionControllerRegistry.resolvePromptSubmission(
                     durableSessionId = durableSessionId,
@@ -5075,6 +5154,42 @@ class HermesConnectionViewModel(
         )
         updateChat(durableSessionId) { chat ->
             if (chat.processRows == next.rows) chat else chat.copy(processRows = next.rows)
+        }
+    }
+
+    /**
+     * Submit a prompt, recovering once from a reaped session runtime.
+     *
+     * The gateway answers JSON-RPC 4001 when the runtime id it was handed is no longer in memory:
+     * the backend detached that session and orphan-reaped it (20 s grace), evicted it under the
+     * session cap, or lost it with the process — all of which happen to a phone that reconnects, sits
+     * backgrounded, or has its tunnel rebuilt by the SSH restore. The server's own prescription, in
+     * the same log line, is to resume the STORED session, which mints a fresh runtime. A rejected
+     * request was never executed, so one retry cannot double-submit.
+     */
+    private suspend fun submitPromptWithRuntimeRecovery(
+        session: HermesChatSession,
+        durableSessionId: DurableSessionId,
+        runtimeSessionId: RuntimeSessionId,
+        text: String,
+        interrupted: Boolean,
+        submissionId: String?,
+    ): PromptSubmission = try {
+        session.submitPrompt(runtimeSessionId, text, interrupted, submissionId)
+    } catch (reaped: HermesChatSessionNotFoundException) {
+        val resumed = runCatching {
+            session.resume(
+                serverDurableId(durableSessionId),
+                profile = owningProfile(durableSessionId),
+            )
+        }.getOrElse { throw reaped }
+        applyResume(durableSessionId, resumed)
+        try {
+            session.submitPrompt(resumed.runtimeSessionId, text, interrupted, submissionId)
+        } catch (again: HermesChatSessionNotFoundException) {
+            // A runtime that vanished again right after being resumed is the same condition; do not
+            // loop on it.
+            throw reaped
         }
     }
 

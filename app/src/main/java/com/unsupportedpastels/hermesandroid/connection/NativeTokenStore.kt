@@ -14,12 +14,31 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
+/**
+ * Provider value marking a bearer token minted by the SSH tunnel lifecycle.
+ *
+ * A backend spawned over an SSH tunnel answers `auth_required = false` — it has no
+ * interactive sign-in flow — and yet rejects unauthenticated API requests with 401: its
+ * session token is the only credential it accepts. Callers therefore have to present
+ * the stored token even when the probe says authentication is not required, and this
+ * marker is how they recognise such an origin.
+ */
+const val SSH_SESSION_TOKEN_PROVIDER = "ssh"
+
 interface NativeTokenStore {
     suspend fun load(serverOrigin: ServerOrigin): NativeTokenSet?
 
     suspend fun save(serverOrigin: ServerOrigin, tokens: NativeTokenSet)
 
     suspend fun clear(serverOrigin: ServerOrigin)
+
+    /**
+     * Whether this origin carries a token minted by the SSH tunnel lifecycle.
+     *
+     * Defaults to false so stores that have no notion of a tunnel (and every test
+     * double) keep their existing behaviour.
+     */
+    suspend fun hasSshSessionToken(serverOrigin: ServerOrigin): Boolean = false
 }
 
 class EncryptedNativeTokenStore(
@@ -36,14 +55,32 @@ class EncryptedNativeTokenStore(
     private val aead by lazy(LazyThreadSafetyMode.SYNCHRONIZED, aeadFactory)
 
     override suspend fun load(serverOrigin: ServerOrigin): NativeTokenSet? = withContext(ioDispatcher) {
-        val encoded = preferences.getString(preferenceKey(serverOrigin), null)
-            ?: return@withContext null
-        val ciphertext = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull()
-            ?: return@withContext null
-        if (ciphertext.size > MAX_CIPHERTEXT_BYTES) return@withContext null
+        loadRecord(preferences.getString(preferenceKey(serverOrigin), null), associatedData(serverOrigin))?.let { return@withContext it }
+        // The SSH lifecycle saves its token in its own slot: the lifecycle and the server
+        // catalog can disagree on an origin's canonical form (scheme, port rendering,
+        // trailing slash), and a missed lookup does not fail loudly — it publishes
+        // "authentication not required", drops the credential and turns every API call
+        // into a 401.
+        loadRecord(
+            preferences.getString(SSH_SESSION_TOKEN_KEY, null),
+            SSH_SESSION_TOKEN_ASSOCIATED_DATA.toByteArray(),
+        )?.takeIf { it.provider == SSH_SESSION_TOKEN_PROVIDER }
+    }
 
-        runCatching {
-            val plaintext = aead.decrypt(ciphertext, associatedData(serverOrigin))
+    /** Saves the SSH tunnel's session token where any origin form can find it. */
+    suspend fun saveSshSessionToken(tokens: NativeTokenSet) = withContext(ioDispatcher) {
+        validate(tokens)
+        writeRecord(SSH_SESSION_TOKEN_KEY, SSH_SESSION_TOKEN_ASSOCIATED_DATA.toByteArray(), tokens)
+    }
+
+    private fun loadRecord(encoded: String?, associatedData: ByteArray? = null): NativeTokenSet? {
+        if (encoded == null) return null
+        val ciphertext = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull()
+            ?: return null
+        if (ciphertext.size > MAX_CIPHERTEXT_BYTES) return null
+        val aad = associatedData ?: return null
+        return runCatching {
+            val plaintext = aead.decrypt(ciphertext, aad)
             if (plaintext.size > MAX_SERIALIZED_TOKEN_BYTES) return@runCatching null
             val tokens = json.decodeFromString<NativeTokenSet>(
                 plaintext.toString(StandardCharsets.UTF_8),
@@ -51,6 +88,22 @@ class EncryptedNativeTokenStore(
             validate(tokens)
             tokens
         }.getOrNull()
+    }
+
+    private fun writeRecord(key: String, associatedData: ByteArray, tokens: NativeTokenSet) {
+        val plaintext = json.encodeToString(tokens).toByteArray(StandardCharsets.UTF_8)
+        require(plaintext.size <= MAX_SERIALIZED_TOKEN_BYTES) {
+            "Native token record is too large"
+        }
+        val ciphertext = aead.encrypt(plaintext, associatedData)
+        require(ciphertext.size <= MAX_CIPHERTEXT_BYTES) {
+            "Native token record is too large"
+        }
+        check(
+            preferences.edit()
+                .putString(key, Base64.encodeToString(ciphertext, Base64.NO_WRAP))
+                .commit(),
+        ) { "Could not persist native tokens" }
     }
 
     @Suppress("UseKtx") // Preserve commit() result so credential persistence fails closed.
@@ -86,6 +139,9 @@ class EncryptedNativeTokenStore(
     private fun associatedData(serverOrigin: ServerOrigin): ByteArray =
         serverOrigin.value.toByteArray(StandardCharsets.UTF_8)
 
+    override suspend fun hasSshSessionToken(serverOrigin: ServerOrigin): Boolean =
+        load(serverOrigin)?.provider == SSH_SESSION_TOKEN_PROVIDER
+
     private fun preferenceKey(serverOrigin: ServerOrigin): String =
         "token_" + sha256(serverOrigin.value).toHex()
 
@@ -113,6 +169,8 @@ class EncryptedNativeTokenStore(
         const val KEYSET_PREFERENCES_SUFFIX = ".keyset"
         const val KEYSET_NAME = "native_token_store_keyset"
         const val MASTER_KEY_URI = "android-keystore://native_token_store_master"
+        const val SSH_SESSION_TOKEN_KEY = "token_ssh_tunnel"
+        const val SSH_SESSION_TOKEN_ASSOCIATED_DATA = "hermes-ssh-tunnel-session"
         const val MAX_TOKEN_FIELD_BYTES = 16 * 1024
         const val MAX_SERIALIZED_TOKEN_BYTES = 64 * 1024
         const val MAX_CIPHERTEXT_BYTES = MAX_SERIALIZED_TOKEN_BYTES + 1024

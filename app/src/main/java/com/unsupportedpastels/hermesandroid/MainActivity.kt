@@ -1,16 +1,15 @@
 package com.unsupportedpastels.hermesandroid
 
-import android.os.Bundle
-import android.content.Intent
 import android.Manifest
+import android.content.Intent
 import android.os.Build
+import android.os.Bundle
 import android.view.WindowManager
-
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.viewModels
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -18,28 +17,22 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.net.toUri
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.unsupportedpastels.hermesandroid.app.ComposerAttachment
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.ProjectId
-import com.unsupportedpastels.hermesandroid.connection.HermesConnectionViewModel
 import com.unsupportedpastels.hermesandroid.connection.HermesAppForeground
+import com.unsupportedpastels.hermesandroid.connection.HermesConnectionViewModel
 import com.unsupportedpastels.hermesandroid.connection.HermesWindowFocus
-import com.unsupportedpastels.hermesandroid.voice.ComposerVoiceConversation
-import com.unsupportedpastels.hermesandroid.voice.MessageReadAloud
-import com.unsupportedpastels.hermesandroid.voice.VoiceCapabilities
-import com.unsupportedpastels.hermesandroid.voice.VoiceInputPolicy
-import com.unsupportedpastels.hermesandroid.voice.VoiceServerConfig
-import com.unsupportedpastels.hermesandroid.voice.VoiceSettings
 import com.unsupportedpastels.hermesandroid.connection.ModelPickerState
-import com.unsupportedpastels.hermesandroid.gateway.ModelSwitchResult
+import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
 import com.unsupportedpastels.hermesandroid.connection.ServerSettingsState
 import com.unsupportedpastels.hermesandroid.connection.ServerSettingsViewModel
-import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
-import com.unsupportedpastels.hermesandroid.connection.launchBrowserAndAwaitReturn
 import com.unsupportedpastels.hermesandroid.connection.SlashCompletionState
+import com.unsupportedpastels.hermesandroid.connection.launchBrowserAndAwaitReturn
 import com.unsupportedpastels.hermesandroid.gateway.HermesGatewaySnapshot
+import com.unsupportedpastels.hermesandroid.gateway.ModelSwitchResult
 import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
 import com.unsupportedpastels.hermesandroid.notifications.NotificationNavigationInbox
 import com.unsupportedpastels.hermesandroid.notifications.SessionNotificationVisibilityRegistry
@@ -47,17 +40,26 @@ import com.unsupportedpastels.hermesandroid.notifications.synchronizeVisibleSess
 import com.unsupportedpastels.hermesandroid.relay.RelayCodeScanner
 import com.unsupportedpastels.hermesandroid.relay.RelayUiState
 import com.unsupportedpastels.hermesandroid.relay.RelayViewModel
-import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
 import com.unsupportedpastels.hermesandroid.session.SavedSessionFilter
 import com.unsupportedpastels.hermesandroid.share.SharePayload
 import com.unsupportedpastels.hermesandroid.share.nextShareRequestId
 import com.unsupportedpastels.hermesandroid.share.parseIncomingShare
+import com.unsupportedpastels.hermesandroid.ssh.SshConnectPhase
+import com.unsupportedpastels.hermesandroid.ssh.SshConnectViewModel
 import com.unsupportedpastels.hermesandroid.theme.HermesAndroidTheme
 import com.unsupportedpastels.hermesandroid.ui.HermesApp
 import com.unsupportedpastels.hermesandroid.ui.PaneLayoutPreferencesViewModel
 import com.unsupportedpastels.hermesandroid.ui.ProjectDockState
 import com.unsupportedpastels.hermesandroid.ui.ProjectIconAssignmentsState
 import com.unsupportedpastels.hermesandroid.ui.ProjectIconViewModel
+import com.unsupportedpastels.hermesandroid.ui.SshConnectPanel
+import com.unsupportedpastels.hermesandroid.voice.ComposerVoiceConversation
+import com.unsupportedpastels.hermesandroid.voice.MessageReadAloud
+import com.unsupportedpastels.hermesandroid.voice.VoiceCapabilities
+import com.unsupportedpastels.hermesandroid.voice.VoiceInputPolicy
+import com.unsupportedpastels.hermesandroid.voice.VoiceServerConfig
+import com.unsupportedpastels.hermesandroid.voice.VoiceSettings
+import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -74,6 +76,18 @@ class MainActivity : ComponentActivity() {
             context = applicationContext,
             settingsStates = serverSettingsViewModel.states,
         )
+    }
+    private val sshConnectViewModel by viewModels<SshConnectViewModel> {
+        SshConnectViewModel.Factory(applicationContext) { entry ->
+            connectionViewModel?.leaveRelayMode()
+            // Save first, then drop this host's previous rows. The prune keeps the entry whose
+            // origin matches, so running it *before* the save deleted the only live row — and the
+            // empty catalog that followed made the shell read the app as never configured, bouncing
+            // the user into the setup screen after every launch restore. With a reused port there is
+            // usually nothing stale to drop, which is the intent.
+            serverSettingsViewModel.save(entry).await()
+            serverSettingsViewModel.removeStaleSshEntries(entry.label, entry.origin).await()
+        }
     }
     private val projectIconViewModel by viewModels<ProjectIconViewModel> {
         ProjectIconViewModel.Factory(this)
@@ -98,6 +112,23 @@ class MainActivity : ComponentActivity() {
         setContent {
             HermesAndroidTheme {
                 val snapshot by connectionViewModel.snapshots.collectAsStateWithLifecycle()
+                // Once the tunnel is back (manually or by the launch restore), ask the connection
+                // layer to try again: the shell must not stay "offline" until the user walks into
+                // the settings screen.
+                val sshState by sshConnectViewModel.state.collectAsStateWithLifecycle()
+                LaunchedEffect(sshState.phase) {
+                    if (sshState.phase == SshConnectPhase.Ready) {
+                        connectionViewModel.retryConnection()
+                    }
+                }
+                // The connection layer's own error text is the one thing only the phone can see;
+                // append it to the host-side report so a 401 can be attributed without a screenshot.
+                LaunchedEffect(snapshot.connectionState, snapshot.authenticationState, snapshot.connectionError) {
+                    sshConnectViewModel.reportConnectionState(
+                        "connection=${snapshot.connectionState} auth=${snapshot.authenticationState} " +
+                            "error=${snapshot.connectionError ?: "none"}",
+                    )
+                }
                 NotificationPermissionEffect(snapshot) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         val preferences = getSharedPreferences("notification_permission", MODE_PRIVATE)
@@ -166,6 +197,15 @@ class MainActivity : ComponentActivity() {
                     onSharePayloadConsumed = { incomingShare.value = null },
                     requestedSessionId = notificationRequest?.sessionId,
                     requestedSessionRequestId = notificationRequest?.requestId,
+                    sshPanel = {
+                        val sshConnectState by sshConnectViewModel.state.collectAsStateWithLifecycle()
+                        SshConnectPanel(
+                            state = sshConnectState,
+                            onConnect = sshConnectViewModel::connect,
+                            onReconnect = sshConnectViewModel::reconnect,
+                            onDisconnect = sshConnectViewModel::disconnect,
+                        )
+                    },
                     onVisibleSessionChanged = { sessionId ->
                         SessionNotificationVisibilityRegistry.publishVisibleSession(sessionId)
                         synchronizeVisibleSessionNotifications(this)
@@ -291,6 +331,7 @@ internal fun HermesAppHost(
     transcriptCachingEnabled: Boolean = false,
     onTranscriptCachingChanged: (Boolean) -> Unit = {},
     onClearOfflineCache: () -> Unit = {},
+    sshPanel: (@Composable () -> Unit)? = null,
     sharePayload: SharePayload? = null,
     onSharePayloadConsumed: () -> Unit = {},
     requestedSessionId: DurableSessionId? = null,
@@ -332,6 +373,27 @@ internal fun HermesAppHost(
             MutableStateFlow<ProjectIconAssignmentsState>(ProjectIconAssignmentsState.Loading)
         }
     val projectIconAssignments by projectIconAssignmentsFlow.collectAsStateWithLifecycle()
+    // First-run onboarding is remembered per install. Once this device has held a server entry, a
+    // transiently empty catalog — the tunnel still coming up, e.g. right after the phone wakes from
+    // charging — must never look like a fresh install and yank the user into the setup screen.
+    val onboardingContext = LocalContext.current.applicationContext
+    val onboardingPreferences = remember(onboardingContext) {
+        onboardingContext.getSharedPreferences("onboarding", android.content.Context.MODE_PRIVATE)
+    }
+    var onboardingCompleted by remember {
+        mutableStateOf(onboardingPreferences.getBoolean("completed", false))
+    }
+    LaunchedEffect(serverSettingsState, snapshot.connectionState, snapshot.authenticationState) {
+        if (onboardingCompleted) return@LaunchedEffect
+        // Either signal is enough: a catalog with an entry, or a connection that actually worked.
+        // Requiring both signals to be absent is what makes "first run" true only for a real one.
+        val ready = serverSettingsState as? ServerSettingsState.Ready
+        val configured = ready?.catalog?.entries?.isNotEmpty() == true ||
+            snapshot.connectionState == com.unsupportedpastels.hermesandroid.gateway.ConnectionState.Connected
+        if (!configured) return@LaunchedEffect
+        onboardingPreferences.edit().putBoolean("completed", true).apply()
+        onboardingCompleted = true
+    }
     val currentServerOrigin = (serverSettingsState as? ServerSettingsState.Ready)?.activeOrigin
     val currentServerCatalog = (serverSettingsState as? ServerSettingsState.Ready)?.catalog
         ?: com.unsupportedpastels.hermesandroid.connection.ServerCatalog.empty()
@@ -499,6 +561,10 @@ internal fun HermesAppHost(
             viewModel.save(origin).await()
         },
         onLoadManagementSettings = { profile -> connectionViewModel?.loadManagementSettings(profile) },
+        // The profile chips on the session list: switch visibly and immediately, without pulling
+        // the management endpoints (which can re-derive the selection and snap it back).
+        onSelectProfile = { profile -> connectionViewModel?.selectProfile(profile) },
+        onboardingCompleted = onboardingCompleted,
         onRefreshDurableSessions = { archivedOnly ->
             connectionViewModel?.refreshDurableSessions(archivedOnly)
         },
@@ -515,6 +581,7 @@ internal fun HermesAppHost(
                 ?: Result.failure(IllegalStateException("Profile settings unavailable"))
         },
         onLogout = { connectionViewModel?.logout() },
+        sshPanel = sshPanel,
         onSignIn = onSignIn,
         onPasswordSignIn = onPasswordSignIn,
         onRetryConnection = { connectionViewModel?.retryConnection() },
@@ -631,6 +698,11 @@ internal fun HermesAppHost(
             connectionViewModel?.let { connection ->
                 resultPreservingCancellation { connection.loadManagedFile(path) }
             } ?: Result.failure(IllegalStateException("Managed files unavailable"))
+        },
+        onStreamManagedFile = { path, sink, onProgress ->
+            connectionViewModel?.let { connection ->
+                connection.streamManagedFileInto(path, sink, onProgress)
+            } ?: error("Managed files unavailable")
         },
         onCreateHostDirectory = { parentPath, name ->
             connectionViewModel?.let { viewModel ->

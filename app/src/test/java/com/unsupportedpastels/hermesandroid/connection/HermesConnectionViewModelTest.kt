@@ -1,64 +1,65 @@
 package com.unsupportedpastels.hermesandroid.connection
 
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
+import com.unsupportedpastels.hermesandroid.app.DelegatedSubagent
+import com.unsupportedpastels.hermesandroid.app.DelegationStatus
+import com.unsupportedpastels.hermesandroid.app.DurableSessionId
+import com.unsupportedpastels.hermesandroid.app.NO_PROJECT_BUCKET_ID
+import com.unsupportedpastels.hermesandroid.app.ProcessRow
+import com.unsupportedpastels.hermesandroid.app.ProjectId
+import com.unsupportedpastels.hermesandroid.app.ProjectLoadState
+import com.unsupportedpastels.hermesandroid.app.ProjectSessionLoadState
+import com.unsupportedpastels.hermesandroid.app.ProjectSessionsResult
+import com.unsupportedpastels.hermesandroid.app.ProjectSummary
+import com.unsupportedpastels.hermesandroid.app.ProjectTreeResult
+import com.unsupportedpastels.hermesandroid.app.RunToolState
+import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.cache.CacheScope
 import com.unsupportedpastels.hermesandroid.cache.CachedSession
 import com.unsupportedpastels.hermesandroid.cache.OfflineCacheRepository
 import com.unsupportedpastels.hermesandroid.cache.OfflineCacheSnapshot
 import com.unsupportedpastels.hermesandroid.files.ManagedVideoCache
 import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
-import com.unsupportedpastels.hermesandroid.gateway.CacheSource
-import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
-import com.unsupportedpastels.hermesandroid.gateway.ChatConnectionPhase
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
+import com.unsupportedpastels.hermesandroid.gateway.CacheSource
+import com.unsupportedpastels.hermesandroid.gateway.ChatConnectionPhase
+import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
 import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
-import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnector
-import com.unsupportedpastels.hermesandroid.gateway.HermesChatEvent
-import com.unsupportedpastels.hermesandroid.gateway.HermesChatMethodNotFoundException
-import com.unsupportedpastels.hermesandroid.gateway.HermesChatSession
-import com.unsupportedpastels.hermesandroid.gateway.HermesChatTransportException
-import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryEntry
-import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryListing
-import com.unsupportedpastels.hermesandroid.gateway.OperationalStatus
-import com.unsupportedpastels.hermesandroid.gateway.OperationalStatusState
-import com.unsupportedpastels.hermesandroid.gateway.OperationalHealth
-import com.unsupportedpastels.hermesandroid.gateway.OperationalPressure
-import com.unsupportedpastels.hermesandroid.gateway.lastGoodOrNull
-import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
-import com.unsupportedpastels.hermesandroid.gateway.CurrentModelInfo
-import com.unsupportedpastels.hermesandroid.gateway.ModelCapabilities
-import com.unsupportedpastels.hermesandroid.gateway.ModelProviderOption
-import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
-import com.unsupportedpastels.hermesandroid.gateway.ModelSwitchResult
-import com.unsupportedpastels.hermesandroid.gateway.PromptSubmission
-import com.unsupportedpastels.hermesandroid.app.ProjectSessionsResult
-import com.unsupportedpastels.hermesandroid.app.ProjectTreeResult
-import com.unsupportedpastels.hermesandroid.gateway.ResumedChatSession
-import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
-import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
 import com.unsupportedpastels.hermesandroid.gateway.CronJob
 import com.unsupportedpastels.hermesandroid.gateway.CronJobAction
 import com.unsupportedpastels.hermesandroid.gateway.CronJobRun
 import com.unsupportedpastels.hermesandroid.gateway.CronJobRunsState
 import com.unsupportedpastels.hermesandroid.gateway.CronJobScope
-import com.unsupportedpastels.hermesandroid.gateway.CronRestCapability
 import com.unsupportedpastels.hermesandroid.gateway.CronJobsState
+import com.unsupportedpastels.hermesandroid.gateway.CronRestCapability
+import com.unsupportedpastels.hermesandroid.gateway.CurrentModelInfo
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnector
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatEvent
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatMethodNotFoundException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatProtocolException
-import com.unsupportedpastels.hermesandroid.app.DurableSessionId
-import com.unsupportedpastels.hermesandroid.app.DelegatedSubagent
-import com.unsupportedpastels.hermesandroid.app.DelegationStatus
-import com.unsupportedpastels.hermesandroid.app.NO_PROJECT_BUCKET_ID
-import com.unsupportedpastels.hermesandroid.app.ProjectId
-import com.unsupportedpastels.hermesandroid.app.ProjectLoadState
-import com.unsupportedpastels.hermesandroid.app.ProjectSessionLoadState
-import com.unsupportedpastels.hermesandroid.app.ProjectSummary
-import com.unsupportedpastels.hermesandroid.app.ProcessRow
-import com.unsupportedpastels.hermesandroid.app.RunToolState
-import com.unsupportedpastels.hermesandroid.app.SessionSummary
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.ViewModelStore
-import androidx.lifecycle.ViewModelStoreOwner
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatSession
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatTransportException
+import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryEntry
+import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryListing
+import com.unsupportedpastels.hermesandroid.gateway.ModelCapabilities
+import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
+import com.unsupportedpastels.hermesandroid.gateway.ModelProviderOption
+import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
+import com.unsupportedpastels.hermesandroid.gateway.ModelSwitchResult
+import com.unsupportedpastels.hermesandroid.gateway.OperationalHealth
+import com.unsupportedpastels.hermesandroid.gateway.OperationalPressure
+import com.unsupportedpastels.hermesandroid.gateway.OperationalStatus
+import com.unsupportedpastels.hermesandroid.gateway.OperationalStatusState
+import com.unsupportedpastels.hermesandroid.gateway.PromptSubmission
+import com.unsupportedpastels.hermesandroid.gateway.ResumedChatSession
+import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
+import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
+import com.unsupportedpastels.hermesandroid.gateway.lastGoodOrNull
+import java.io.File
+import java.nio.file.Files
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -66,17 +67,13 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.withContext
-import java.io.File
-import java.nio.file.Files
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.receiveAsFlow
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -84,6 +81,9 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -103,6 +103,89 @@ class HermesConnectionViewModelTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun anSshTunnelTokenIsPresentedEvenWhenTheProbeReportsAuthNotRequired() = runTest(dispatcher) {
+        // Verified against a real backend: `hermes serve --isolated` spawned over SSH
+        // answers auth_required = false, yet /api/auth/me and /api/sessions both answer
+        // 401 without the tunnel token and 200 with it. Declaring "authentication not
+        // required" here is exactly what made the Android client eat that 401.
+        val origin = ServerOrigin.parse("http://127.0.0.1:37835")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val sshTokens = NativeTokenSet(
+            accessToken = "ssh-session-token",
+            refreshToken = "",
+            expiresAt = 2_000_000_000L,
+            provider = SSH_SESSION_TOKEN_PROVIDER,
+            userId = "user@203.0.113.10",
+        )
+        val tokenStore = object : NativeTokenStore {
+            override suspend fun load(serverOrigin: ServerOrigin) = sshTokens
+
+            override suspend fun save(serverOrigin: ServerOrigin, tokens: NativeTokenSet) = Unit
+
+            override suspend fun clear(serverOrigin: ServerOrigin) = Unit
+
+            override suspend fun hasSshSessionToken(serverOrigin: ServerOrigin) =
+                load(serverOrigin)?.provider == SSH_SESSION_TOKEN_PROVIDER
+        }
+        val client = AuthenticatingHermesConnectionClient()
+        val viewModel = HermesConnectionViewModel(settings, client, tokenStore = tokenStore)
+
+        runCurrent()
+        client.probeResponse.complete(
+            HermesConnectionInfo(
+                version = "0.22.5",
+                authRequired = false, // no interactive sign-in flow — but still 401s bare
+                nativeOAuthSupported = false,
+                providers = emptyList(),
+            ),
+        )
+        runCurrent()
+        client.authenticationResponse.complete(AuthenticatedHermesConnection("user", emptyList()))
+        advanceUntilIdle()
+
+        assertEquals(AuthenticationState.Authenticated, viewModel.snapshots.value.authenticationState)
+        assertEquals(1, client.authenticateCalls)
+        assertEquals("ssh-session-token", client.authenticatedWith)
+    }
+
+    @Test
+    fun aServerWithoutATokenStillConnectsWithoutAuthentication() = runTest(dispatcher) {
+        // The counterpart, so the fix cannot silently turn every local server into an
+        // authenticated one: no stored token + authRequired = false stays as before.
+        val origin = ServerOrigin.parse("http://127.0.0.1:37835")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val client = AuthenticatingHermesConnectionClient()
+        val viewModel = HermesConnectionViewModel(
+            settings,
+            client,
+            tokenStore = object : NativeTokenStore {
+                override suspend fun load(serverOrigin: ServerOrigin) = null
+
+                override suspend fun save(serverOrigin: ServerOrigin, tokens: NativeTokenSet) = Unit
+
+                override suspend fun clear(serverOrigin: ServerOrigin) = Unit
+            },
+        )
+
+        runCurrent()
+        client.probeResponse.complete(
+            HermesConnectionInfo(
+                version = "0.22.5",
+                authRequired = false,
+                nativeOAuthSupported = false,
+                providers = emptyList(),
+            ),
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            AuthenticationState.NotRequired,
+            viewModel.snapshots.value.authenticationState,
+        )
+        assertEquals(0, client.authenticateCalls)
     }
 
     @Test

@@ -1,5 +1,13 @@
 package com.unsupportedpastels.hermesandroid.connection
 
+import com.unsupportedpastels.hermesandroid.app.DurableSessionId
+import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
+import com.unsupportedpastels.hermesandroid.gateway.ChatMessageRole
+import com.unsupportedpastels.hermesandroid.gateway.CronJobScope
+import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
+import com.unsupportedpastels.hermesandroid.gateway.ModelProviderOption
+import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
+import com.unsupportedpastels.mercury.core.sessions.SessionResponseLimits
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -10,11 +18,13 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
+import java.io.File
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -26,16 +36,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import java.io.File
-import java.util.concurrent.ConcurrentLinkedQueue
-import com.unsupportedpastels.hermesandroid.app.DurableSessionId
-import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
-import com.unsupportedpastels.hermesandroid.gateway.ChatMessageRole
-import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
-import com.unsupportedpastels.hermesandroid.gateway.ModelProviderOption
-import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
-import com.unsupportedpastels.hermesandroid.gateway.CronJobScope
-import com.unsupportedpastels.mercury.core.sessions.SessionResponseLimits
 
 class HermesConnectionClientTest {
     @Test
@@ -759,6 +759,110 @@ class HermesConnectionClientTest {
         assertEquals(listOf("/api/status", "/api/profiles/sessions"), requestedPaths)
         assertFalse(result.authRequired)
         assertEquals(listOf("First session"), result.sessions.map { it.title })
+    }
+
+    @Test
+    fun sessionListingToleratesFlagsSentAsStringsOrNumbers() = runTest {
+        // The shape that took the list down: an older backend sends "0" where a current one sends
+        // false, and a typed DTO fails the whole response on that.
+        val engine = MockEngine { request ->
+            when (request.url.encodedPath) {
+                "/api/status" -> respond(
+                    content = """{"version":"0.19.0","auth_required":false}""",
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                "/api/profiles/sessions" -> respond(
+                    content = """{"sessions":[
+                        {"id":"stored-old","title":"Older","hidden":"0","is_internal_child":"0","source":"cron"},
+                        {"id":"stored-hide","title":"Hidden","hidden":"1"},
+                        {"id":"stored-num","title":"Numeric","hidden":0,"is_internal_child":1},
+                        {"id":"stored-bool","title":"Current","hidden":true,"source":"weixin"}
+                    ]}""",
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                else -> error("Unexpected request: ${request.url}")
+            }
+        }
+        val client = HttpHermesConnectionClient(HttpClient(engine))
+
+        val sessions = client.probe(ServerOrigin.parse("https://hermes.example")).sessions
+        val byId = sessions.associateBy { it.id.value }
+
+        assertEquals(4, sessions.size)
+        assertFalse(byId.getValue("stored-old").isInternal)
+        assertTrue(byId.getValue("stored-old").isScheduled)
+        assertTrue(byId.getValue("stored-hide").isInternal)
+        assertTrue(byId.getValue("stored-num").isInternal)
+        assertTrue(byId.getValue("stored-bool").isInternal)
+        assertEquals("weixin", byId.getValue("stored-bool").source)
+    }
+
+    @Test
+    fun managedFileStreamingWritesEveryByteAndReportsProgress() = runTest {
+        val payload = ByteArray(200_000) { (it % 251).toByte() }
+        val engine = MockEngine { request ->
+            when (request.url.encodedPath) {
+                "/api/files/download" -> respond(
+                    content = payload,
+                    headers = headersOf(
+                        HttpHeaders.ContentType to listOf("application/octet-stream"),
+                        HttpHeaders.ContentLength to listOf(payload.size.toString()),
+                    ),
+                )
+                else -> error("Unexpected request: ${request.url}")
+            }
+        }
+        val client = HttpHermesConnectionClient(HttpClient(engine))
+        val sink = java.io.ByteArrayOutputStream()
+        val reported = mutableListOf<Long>()
+
+        val written = client.streamManagedFileInto(
+            ServerOrigin.parse("https://hermes.example"),
+            null,
+            "/tmp/big.apk",
+            sink,
+        ) { bytes, _ -> reported += bytes }
+
+        assertEquals(payload.size.toLong(), written)
+        assertEquals(payload.size, sink.size())
+        assertTrue(reported.isNotEmpty())
+        assertEquals(payload.size.toLong(), reported.last())
+        assertTrue(sink.toByteArray().contentEquals(payload))
+    }
+
+    @Test
+    fun sessionListingKeepsTheChannelAndTheInternalFlags() = runTest {
+        val engine = MockEngine { request ->
+            when (request.url.encodedPath) {
+                "/api/status" -> respond(
+                    content = """{"version":"0.20.0","auth_required":false}""",
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                "/api/profiles/sessions" -> respond(
+                    content = """{"sessions":[
+                        {"id":"stored-cron","title":"Hourly digest","source":"cron"},
+                        {"id":"stored-wechat","title":"From WeChat","source":"weixin"},
+                        {"id":"stored-child","title":"Sub-agent","hidden":true},
+                        {"id":"stored-plain","title":"No channel"}
+                    ]}""",
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                else -> error("Unexpected request: ${request.url}")
+            }
+        }
+        val client = HttpHermesConnectionClient(HttpClient(engine))
+
+        val result = client.probe(ServerOrigin.parse("https://hermes.example"))
+
+        // The channel must survive the serializable DTO: kotlinx.serialization silently drops any
+        // field the DTO does not declare, which is exactly how the filter went missing.
+        val byId = result.sessions.associateBy { it.id.value }
+        assertEquals("cron", byId.getValue("stored-cron").source)
+        assertTrue(byId.getValue("stored-cron").isScheduled)
+        assertEquals("weixin", byId.getValue("stored-wechat").source)
+        assertFalse(byId.getValue("stored-wechat").isScheduled)
+        assertTrue(byId.getValue("stored-child").isInternal)
+        assertEquals(null, byId.getValue("stored-plain").source)
     }
 
     @Test

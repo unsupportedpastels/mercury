@@ -44,21 +44,21 @@ import androidx.navigation3.ui.NavDisplay
 import androidx.window.core.layout.WindowSizeClass.Companion.WIDTH_DP_MEDIUM_LOWER_BOUND
 import com.unsupportedpastels.hermesandroid.app.ComposerAttachment
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
+import com.unsupportedpastels.hermesandroid.app.ProjectId
 import com.unsupportedpastels.hermesandroid.app.ProjectLoadState
 import com.unsupportedpastels.hermesandroid.app.ProjectSummary
-import com.unsupportedpastels.hermesandroid.app.ProjectId
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.app.isNoProjectBucket
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
-import com.unsupportedpastels.hermesandroid.voice.ComposerVoiceConversation
-import com.unsupportedpastels.hermesandroid.voice.VoiceSettings
-import com.unsupportedpastels.hermesandroid.voice.MessageReadAloud
-import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.hermesandroid.connection.ModelPickerState
 import com.unsupportedpastels.hermesandroid.connection.ServerCatalog
 import com.unsupportedpastels.hermesandroid.connection.ServerCatalogEntry
-import com.unsupportedpastels.hermesandroid.connection.ModelPickerState
+import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
 import com.unsupportedpastels.hermesandroid.connection.ServerSettingsState
 import com.unsupportedpastels.hermesandroid.connection.SlashCompletionState
+import com.unsupportedpastels.hermesandroid.files.HostFileContent
+import com.unsupportedpastels.hermesandroid.files.HostFileListing
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
 import com.unsupportedpastels.hermesandroid.gateway.ChatSessionSnapshot
 import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
@@ -69,30 +69,30 @@ import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
 import com.unsupportedpastels.hermesandroid.gateway.ModelSwitchResult
 import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
 import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
-import com.unsupportedpastels.hermesandroid.relay.RelayUiState
-import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
-import com.unsupportedpastels.mercury.core.relay.RelayTargetStatus
-import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
-import com.unsupportedpastels.hermesandroid.files.HostFileContent
-import com.unsupportedpastels.hermesandroid.files.HostFileListing
 import com.unsupportedpastels.hermesandroid.navigation.HomeRoute
 import com.unsupportedpastels.hermesandroid.navigation.ProjectRoute
 import com.unsupportedpastels.hermesandroid.navigation.RecentSessionsRoute
-import com.unsupportedpastels.hermesandroid.navigation.SessionDetailRoute
 import com.unsupportedpastels.hermesandroid.navigation.ServerSettingsRoute
-import com.unsupportedpastels.hermesandroid.navigation.SettingsServersRoute
-import com.unsupportedpastels.hermesandroid.navigation.SettingsConnectionRoute
-import com.unsupportedpastels.hermesandroid.navigation.SettingsModelRoute
-import com.unsupportedpastels.hermesandroid.navigation.SettingsVoiceRoute
-import com.unsupportedpastels.hermesandroid.navigation.SettingsOfflineRoute
-import com.unsupportedpastels.hermesandroid.navigation.SettingsJobsRoute
+import com.unsupportedpastels.hermesandroid.navigation.SessionDetailRoute
 import com.unsupportedpastels.hermesandroid.navigation.SettingsAccountRoute
+import com.unsupportedpastels.hermesandroid.navigation.SettingsConnectionRoute
+import com.unsupportedpastels.hermesandroid.navigation.SettingsJobsRoute
+import com.unsupportedpastels.hermesandroid.navigation.SettingsModelRoute
+import com.unsupportedpastels.hermesandroid.navigation.SettingsOfflineRoute
+import com.unsupportedpastels.hermesandroid.navigation.SettingsServersRoute
+import com.unsupportedpastels.hermesandroid.navigation.SettingsVoiceRoute
+import com.unsupportedpastels.hermesandroid.relay.RelayUiState
 import com.unsupportedpastels.hermesandroid.session.SavedSessionFilter
 import com.unsupportedpastels.hermesandroid.share.SharePayload
 import com.unsupportedpastels.hermesandroid.theme.HermesAndroidTheme
+import com.unsupportedpastels.hermesandroid.voice.ComposerVoiceConversation
+import com.unsupportedpastels.hermesandroid.voice.MessageReadAloud
 import com.unsupportedpastels.hermesandroid.voice.VoiceInputPolicy
-import kotlinx.coroutines.delay
+import com.unsupportedpastels.hermesandroid.voice.VoiceSettings
+import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
+import com.unsupportedpastels.mercury.core.relay.RelayTargetStatus
 import java.net.URI
+import kotlinx.coroutines.delay
 
 private const val PROJECT_DOCK_MIN_WIDTH_DP = 800
 
@@ -120,6 +120,8 @@ fun HermesApp(
     onTranscriptCachingChanged: (Boolean) -> Unit = {},
     onClearOfflineCache: () -> Unit = {},
     onSaveServerOrigin: suspend (ServerOrigin) -> Result<Unit> = { Result.success(Unit) },
+    /** Optional "Connect over SSH" card rendered in the server settings screen. */
+    sshPanel: (@Composable () -> Unit)? = null,
     serverCatalog: ServerCatalog = ServerCatalog.empty(),
     onSaveServerEntry: (suspend (ServerCatalogEntry) -> Result<Unit>)? = null,
     onUpdateServerLabel: (suspend (ServerCatalogEntry) -> Result<Unit>)? = null,
@@ -145,6 +147,17 @@ fun HermesApp(
         Result.success(Unit)
     },
     onLoadManagementSettings: (String) -> Unit = {},
+    /** Switches the profile the session list is scoped to (see SshConnect… in the VM). */
+    onSelectProfile: (String) -> Unit = {},
+    /**
+     * True once this install has ever held a server entry. First-run onboarding must not repeat for
+     * an install that is merely between connections — a transiently empty catalog (the tunnel is
+     * still coming up, e.g. right after the phone wakes from charging) must never look like a new
+     * install and yank the user into the setup screen.
+     */
+    onboardingCompleted: Boolean = false,
+    /** Called when the first-run setup redirect actually fires, so it leaves a host-side trace. */
+    onOnboardingRedirect: () -> Unit = {},
     onRefreshDurableSessions: (Boolean) -> Unit = {},
     onSetProfileDefaultModel: suspend (ModelSelection, Boolean) -> ModelSwitchResult = { _, _ ->
         ModelSwitchResult(accepted = false)
@@ -206,6 +219,9 @@ fun HermesApp(
     onLoadManagedFile: suspend (String) -> Result<HostFileContent> = {
         Result.failure(UnsupportedOperationException("Managed files are unavailable"))
     },
+    onStreamManagedFile: (
+        suspend (String, java.io.OutputStream, (Long, Long?) -> Unit) -> Long
+    )? = null,
     onCreateHostDirectory: suspend (String, String) -> Result<HostDirectoryListing> = { _, _ ->
         Result.failure(UnsupportedOperationException("Host folder creation is unavailable"))
     },
@@ -456,7 +472,8 @@ fun HermesApp(
         }
     }
     val isUnconfigured =
-        serverSettingsState is ServerSettingsState.Ready &&
+        !onboardingCompleted &&
+            serverSettingsState is ServerSettingsState.Ready &&
             effectiveServerCatalog.entries.isEmpty() &&
             snapshot.relayTargetId == null &&
             snapshot.connectionState != ConnectionState.Connected
@@ -478,6 +495,7 @@ fun HermesApp(
         if (
             needsInitialOnboarding && backStack.size == 1 && backStack.lastOrNull() == HomeRoute
         ) {
+            onOnboardingRedirect()
             openServerSettings()
         }
     }
@@ -626,6 +644,7 @@ fun HermesApp(
                     onToggleCronJobRuns = onToggleCronJobRuns,
                     onLogout = onLogout,
                     visibleSections = setOf(section),
+                    sshPanel = sshPanel,
                     isInitialOnboarding = section == SettingsSection.Servers && isUnconfigured,
                     title = if (section == SettingsSection.Servers && isUnconfigured) {
                         "Connect to Hermes"
@@ -680,7 +699,8 @@ fun HermesApp(
                     onRefresh = onRefreshHome,
                     onRefreshWorkingPresence = onRefreshWorkingPresence,
                     onLoadManagementSettings = onLoadManagementSettings,
-                    onRefreshDurableSessions = onRefreshDurableSessions,
+                                          onSelectProfile = onSelectProfile,
+                                          onRefreshDurableSessions = onRefreshDurableSessions,
                     onConfigureServer = openServerSettings,
                     onRetryConnection = onRetryConnection,
                     onSignIn = onSignIn,
@@ -729,7 +749,8 @@ fun HermesApp(
                     ProjectDetailScreen(
                         project = project,
                         state = snapshot.projectSessionStates[route.projectId],
-                        sessions = snapshot.projectSessions[route.projectId].orEmpty(),
+                        sessions = snapshot.projectSessions[route.projectId].orEmpty()
+                            .filter { it.isConversation },
                         workingSessionIds = workingSessionIds,
                         unreadCompletedSessionIds = unreadCompletedSessions
                             .filterValues { it }
@@ -897,6 +918,7 @@ fun HermesApp(
                         onPeekManagedVideo = onPeekManagedVideo.takeIf { snapshot.relayTargetId == null },
                         onLoadHostFiles = onLoadHostFiles,
                         onLoadManagedFile = onLoadManagedFile,
+                        onStreamManagedFile = onStreamManagedFile,
                         onAttachHostReference = { reference ->
                             hostReferences[referenceKey] = (stagedHostReferences + reference)
                                 .distinct()

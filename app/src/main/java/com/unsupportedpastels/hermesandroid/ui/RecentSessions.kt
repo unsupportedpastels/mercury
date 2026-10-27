@@ -12,8 +12,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -64,7 +64,9 @@ internal fun RecentSessionsScreen(
         }
     }
     val projectById = projects.associateBy(ProjectSummary::id)
-    val sessions = state.sessions.map { session ->
+    // This screen pages straight from the backend, so it needs the conversation rule itself:
+    // Home's filter never reaches here, which is exactly how scheduled runs kept showing up.
+    val sessions = state.sessions.filter { it.isConversation }.map { session ->
         val projectId = session.projectId
             ?: projectBySessionId[session.id]
             ?: projectForSessionWorkspace(session, projects)?.id

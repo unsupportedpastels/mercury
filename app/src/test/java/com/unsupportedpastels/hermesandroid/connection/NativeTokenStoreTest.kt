@@ -151,6 +151,76 @@ class NativeTokenStoreTest {
         assertNull(store.load(origin))
     }
 
+    
+
+    @Test
+    fun anSshTunnelTokenIsRecognisedSoItIsPresentedWithoutAnAuthChallenge() = runTest {
+        val store = EncryptedNativeTokenStore(context, preferencesName)
+        val tunnelTokens = tokenSet("access-token", "refresh-token")
+            .copy(provider = SSH_SESSION_TOKEN_PROVIDER)
+
+        store.save(origin, tunnelTokens)
+
+        assertTrue(store.hasSshSessionToken(origin))
+    }
+
+    @Test
+    fun otherProviderTokensAreNotMistakenForTunnelTokens() = runTest {
+        val store = EncryptedNativeTokenStore(context, preferencesName)
+
+        store.save(origin, tokenSet("access-token", "refresh-token"))
+
+        assertFalse(store.hasSshSessionToken(origin))
+        assertFalse(store.hasSshSessionToken(otherOrigin))
+    }
+
+    @Test
+    fun aTunnelTokenSurvivesReParsingItsOwnOriginValue() = runTest {
+        // The SSH lifecycle saves the token under the origin it computed
+        // (`127.0.0.1:<port>`, useTls = false), while the connection layer later looks it
+        // up from the stored server entry, which re-parses the origin's canonical
+        // `value`. If those two ever disagree the token is invisible — the client then
+        // authenticates with nothing and every API call answers 401.
+        val store = EncryptedNativeTokenStore(context, preferencesName)
+        val saved = ServerOrigin.parse("127.0.0.1:37835", useTls = false)
+        val lookedUpFromCatalog = ServerOrigin.parse(saved.value)
+
+        store.save(saved, tokenSet("access-token", "refresh-token").copy(provider = SSH_SESSION_TOKEN_PROVIDER))
+
+        assertTrue(store.hasSshSessionToken(lookedUpFromCatalog))
+        assertEquals("access-token", store.load(lookedUpFromCatalog)?.accessToken)
+    }
+
+    @Test
+    fun aTunnelTokenSavedInItsOwnSlotIsFoundFromAnyOriginForm() = runTest {
+        // The bug this closes: the lifecycle saved the token under the origin it computed,
+        // the connection layer looked it up under the origin the catalog handed back, the
+        // lookup missed, and the client declared "authentication not required" — sending no
+        // credential at all and turning every API call into a 401.
+        val store = EncryptedNativeTokenStore(context, preferencesName)
+        val originTheLifecycleComputed = ServerOrigin.parse("127.0.0.1:37835", useTls = false)
+        val originTheCatalogHandedBack = ServerOrigin.parse("https://127.0.0.1:37835")
+
+        store.saveSshSessionToken(
+            tokenSet("tunnel-token", "").copy(provider = SSH_SESSION_TOKEN_PROVIDER),
+        )
+
+        assertEquals("tunnel-token", store.load(originTheCatalogHandedBack)?.accessToken)
+        assertTrue(store.hasSshSessionToken(originTheCatalogHandedBack))
+        assertTrue(originTheLifecycleComputed.value != originTheCatalogHandedBack.value)
+    }
+
+    @Test
+    fun theTunnelSlotIsIgnoredWhenItDoesNotHoldATunnelToken() = runTest {
+        val store = EncryptedNativeTokenStore(context, preferencesName)
+
+        // Same slot, ordinary OAuth provider: it must not be served as a tunnel token.
+        store.saveSshSessionToken(tokenSet("access-token", "refresh-token"))
+
+        assertNull(store.load(origin))
+        assertFalse(store.hasSshSessionToken(origin))
+    }
+
     private fun tokenSet(accessToken: String, refreshToken: String) = NativeTokenSet(
         accessToken = accessToken,
         refreshToken = refreshToken,
