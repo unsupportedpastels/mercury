@@ -1,6 +1,7 @@
 package com.unsupportedpastels.hermesandroid.ui
 
 import android.graphics.BitmapFactory
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -27,23 +29,27 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.unsupportedpastels.hermesandroid.attachment.MediaExport
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.engine.cio.CIO
@@ -59,8 +65,9 @@ import java.net.URI
 import java.util.LinkedHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val MAX_REMOTE_IMAGE_BYTES = 10 * 1024 * 1024
 private const val MAX_REMOTE_IMAGE_SOURCE_DIMENSION = 16_384
@@ -289,6 +296,28 @@ internal fun RemoteMediaImage(
         }
     }
 
+    val downloadContext = LocalContext.current
+    val downloadScope = rememberCoroutineScope()
+    // Saving lives here rather than in the enlarged view so the same action serves both: the bytes
+    // are re-read through the loader that produced the bitmap (device-side cache first).
+    val downloadAction: (() -> Unit)? = loadManagedImage?.let { read -> {
+        downloadScope.launch {
+            val bytes = runCatching { read(source) }.getOrNull()
+            val name = MediaExport.fileNameFor(source, "png")
+            val saved = bytes != null &&
+                MediaExport.saveBytes(
+                    context = downloadContext,
+                    displayName = name,
+                    mimeType = MediaExport.mimeTypeFor(name, "image/png"),
+                    bytes = bytes,
+                ) != null
+            Toast.makeText(
+                downloadContext,
+                if (saved) "Saved to Downloads" else "Could not save image",
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+    } }
     val fallbackModifier = if (onImageClick == null) {
         modifier
     } else {
@@ -316,8 +345,13 @@ internal fun RemoteMediaImage(
             }
         }
         is RemoteImageUiState.Loaded -> {
-            LoadedRemoteMediaImage(current.bitmap, modifier, onClick = onImageClick)
-        }
+                LoadedRemoteMediaImage(
+                    bitmap = current.bitmap,
+                    modifier = modifier,
+                    onClick = onImageClick,
+                    onDownload = downloadAction,
+                )
+            }
         RemoteImageUiState.Failed, RemoteImageUiState.Unsupported -> {
             Text(
                 text = if (current == RemoteImageUiState.Unsupported) "This Relay host does not support image reads" else "Image unavailable",
@@ -342,6 +376,7 @@ internal fun LoadedRemoteMediaImage(
     bitmap: ImageBitmap,
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
+    onDownload: (() -> Unit)? = null,
 ) {
     var enlarged by remember { mutableStateOf(false) }
     var zoom by remember { mutableStateOf(1f) }
@@ -411,8 +446,25 @@ internal fun LoadedRemoteMediaImage(
                         contentScale = ContentScale.Fit,
                     )
                 }
-                IconButton(
-                    onClick = { enlarged = false },
+                if (onDownload != null) {
+                                            IconButton(
+                                                onClick = {
+                                                    onDownload()
+                                                    enlarged = false
+                                                },
+                                                modifier = Modifier
+                                                    .align(Alignment.TopStart)
+                                                    .size(48.dp)
+                                                    .semantics { contentDescription = "Download image" },
+                                            ) {
+                                                Icon(
+                                                    Icons.Rounded.Download,
+                                                    contentDescription = null,
+                                                )
+                                            }
+                                        }
+                                        IconButton(
+                                            onClick = { enlarged = false },
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .size(48.dp),

@@ -16,7 +16,11 @@ android {
         // duplicates). Release CI passes VERSION_CODE=${{ github.run_number }};
         // local builds fall back to 1.
         versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
-        versionName = "0.2.6"
+        // A local build can tag itself: VERSION_SUFFIX=ssh38+1a2b3c4 makes both the Android app
+        // info and the one-line `client-report.txt` this app writes on the host say exactly which
+        // build is installed. Without it every sideloaded APK reported "0.2.6" and "which build am
+        // I running" could only be answered by guesswork.
+        versionName = "0.2.6" + (System.getenv("VERSION_SUFFIX")?.let { "-$it" } ?: "")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -97,6 +101,7 @@ kotlin {
 dependencies {
   // Shared KMP contract core (see AGENTS.md, cross-platform rule)
   implementation(project(":shared:mercury-core"))
+  implementation(project(":shared:ssh-lifecycle"))
 
   val composeBom = platform(libs.androidx.compose.bom)
   implementation(composeBom)

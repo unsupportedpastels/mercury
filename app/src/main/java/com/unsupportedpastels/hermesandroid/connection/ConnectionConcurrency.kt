@@ -9,7 +9,7 @@ import kotlinx.coroutines.withContext
 internal suspend fun <Probe, SavedToken : Any> probeAndLoadSavedTokenConcurrently(
     probe: suspend () -> Probe,
     loadSavedToken: suspend () -> SavedToken?,
-    needsSavedToken: (Probe) -> Boolean,
+    needsSavedToken: suspend (Probe) -> Boolean,
 ): Pair<Probe, SavedToken?> = supervisorScope {
     val savedToken = async { loadSavedToken() }
     try {

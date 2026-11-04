@@ -2,7 +2,7 @@ package com.unsupportedpastels.hermesandroid.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,20 +14,25 @@ import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -43,9 +48,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.CreateNewFolder
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -67,15 +70,15 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.dropUnlessResumed
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
+import com.unsupportedpastels.hermesandroid.app.ProjectId
 import com.unsupportedpastels.hermesandroid.app.ProjectLoadState
 import com.unsupportedpastels.hermesandroid.app.ProjectSummary
-import com.unsupportedpastels.hermesandroid.app.ProjectId
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.connection.ServerSettingsState
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
@@ -109,6 +112,8 @@ internal fun SessionListScreen(
     onRefresh: () -> Unit = {},
     onRefreshWorkingPresence: () -> Unit = {},
     onLoadManagementSettings: (String) -> Unit = {},
+    /** Switches the visible profile without pulling its management data (see the VM). */
+    onSelectProfile: (String) -> Unit = {},
     onRefreshDurableSessions: (Boolean) -> Unit = {},
     onConfigureServer: () -> Unit,
     onRetryConnection: () -> Unit = {},
@@ -195,6 +200,13 @@ internal fun SessionListScreen(
     val pinnedOnly = currentFilter.pinnedOnly
     val archivedOnly = currentFilter.archivedOnly
     val normalizedSearch = currentFilter.query
+    // Sessions by default, and the choice is kept across configuration changes and navigation — a
+    // cold start opens on Sessions again, which is what was asked for. Not persisted to disk on
+    // purpose.
+    var showProjects by rememberSaveable { mutableStateOf(false) }
+    // Scheduled runs (the backend's `source: "cron"`) are hidden outright: an hourly job writes a
+    // session each time it fires, and those would bury every conversation the user actually had.
+    // There is deliberately no control to bring them back — a session list is for conversations.
     val visibleProjects = projects.filter { project ->
         normalizedSearch.isEmpty() ||
             project.label.contains(normalizedSearch, ignoreCase = true) ||
@@ -207,6 +219,7 @@ internal fun SessionListScreen(
         session.id != pendingDelete?.id &&
             (!pinnedOnly || session.pinned) &&
             (!archivedOnly || session.archived) &&
+            session.isConversation &&
             (
                 normalizedSearch.isEmpty() ||
                     session.title.contains(normalizedSearch, ignoreCase = true) ||
@@ -406,6 +419,64 @@ internal fun SessionListScreen(
                         }
                     },
                 )
+                // One compact line: the view toggle is fixed on the left, the profile chips scroll beside it.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FilterChip(
+                        selected = !showProjects,
+                        onClick = { showProjects = false },
+                        modifier = Modifier.testTag("Home view mode:Sessions"),
+                        label = { Text("Sessions", style = MaterialTheme.typography.labelMedium) },
+                    )
+                    FilterChip(
+                        selected = showProjects,
+                        onClick = { showProjects = true },
+                        modifier = Modifier.testTag("Home view mode:Projects"),
+                        label = { Text("Projects", style = MaterialTheme.typography.labelMedium) },
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(width = 1.dp, height = 18.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant)
+                    )
+                    // Which profile this list — and any new task — belongs to. The switch is the
+                    // dedicated one (see the VM): it must not be re-derived and snapped back.
+                    if (snapshot.profiles.isNotEmpty() && snapshot.authenticationState == AuthenticationState.Authenticated) {
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "Profile",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            snapshot.profiles.forEach { profile ->
+                                FilterChip(
+                                    selected = profile == snapshot.selectedProfile,
+                                    onClick = { onSelectProfile(profile) },
+                                    label = {
+                                        Text(
+                                            profile,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = MaterialTheme.typography.labelMedium,
+                                        )
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
                 if (snapshot.sessionMetadataSource == CacheSource.Cached) {
                     Text(
                         "Cached offline data — reconnecting to Hermes",
@@ -633,7 +704,7 @@ internal fun SessionListScreen(
                         )
                     }
                 }
-                if (visibleProjects.isNotEmpty() && projectState is ProjectLoadState.Loaded) {
+                if (showProjects && visibleProjects.isNotEmpty() && projectState is ProjectLoadState.Loaded) {
                     val sendingSessionIds = snapshot.chatSessions
                         .filterValues(ChatSessionSnapshot::isSending)
                         .keys
@@ -652,7 +723,9 @@ internal fun SessionListScreen(
                             "Projects",
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                            modifier = Modifier
+                                .padding(horizontal = 16.dp, vertical = 12.dp)
+                                .testTag("Projects section heading"),
                         )
                     }
                     items(visibleProjects, key = { "project:${it.id.value}" }) { project ->
@@ -664,10 +737,12 @@ internal fun SessionListScreen(
                     }
                 }
                 item(key = "recent-sessions-heading") {
+                    if (!showProjects) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                            .testTag("Recent sessions section heading"),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
@@ -683,8 +758,9 @@ internal fun SessionListScreen(
                             },
                         ) { Text("View all") }
                     }
+                    }
                 }
-                if (visibleSessions.isEmpty()) {
+                if (!showProjects && visibleSessions.isEmpty()) {
                     item(key = "recent-sessions-empty") {
                         Text(
                             "No recent sessions",
@@ -692,7 +768,7 @@ internal fun SessionListScreen(
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                         )
                     }
-                } else {
+                } else if (!showProjects) {
                     items(visibleSessions, key = { "session:${it.id.value}" }) { session ->
                         val isCurrent = session.id in activeControllerSessionIds
                         val row: @Composable () -> Unit = {

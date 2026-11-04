@@ -7,26 +7,21 @@ import androidx.lifecycle.viewModelScope
 import com.unsupportedpastels.hermesandroid.app.ComposerAttachment
 import com.unsupportedpastels.hermesandroid.app.DurableProgress
 import com.unsupportedpastels.hermesandroid.app.DurableSessionId
+import com.unsupportedpastels.hermesandroid.app.ProcessListIdentity
+import com.unsupportedpastels.hermesandroid.app.ProcessRowsState
 import com.unsupportedpastels.hermesandroid.app.ProjectId
 import com.unsupportedpastels.hermesandroid.app.ProjectLoadState
 import com.unsupportedpastels.hermesandroid.app.ProjectSessionLoadState
 import com.unsupportedpastels.hermesandroid.app.ProjectSessionsResult
 import com.unsupportedpastels.hermesandroid.app.ProjectSummary
 import com.unsupportedpastels.hermesandroid.app.ProjectTreeResult
-import com.unsupportedpastels.hermesandroid.app.ProcessListIdentity
-import com.unsupportedpastels.hermesandroid.app.ProcessRowsState
 import com.unsupportedpastels.hermesandroid.app.RunEventState
 import com.unsupportedpastels.hermesandroid.app.RunInteractionLifecycle
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
+import com.unsupportedpastels.hermesandroid.app.isNoProjectBucket
 import com.unsupportedpastels.hermesandroid.app.observe
 import com.unsupportedpastels.hermesandroid.app.reconcileProjectSession
-import com.unsupportedpastels.hermesandroid.app.isNoProjectBucket
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
-import com.unsupportedpastels.mercury.core.attachment.AttachmentAddResult
-import com.unsupportedpastels.mercury.core.notifications.NotificationTextPolicy
-import com.unsupportedpastels.mercury.core.relay.RelayAdmissionEnvelope
-import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
-import com.unsupportedpastels.mercury.core.relay.RelayTargetStatus
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentByteReader
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentPolicy
 import com.unsupportedpastels.hermesandroid.attachment.AttachmentReadException
@@ -37,46 +32,80 @@ import com.unsupportedpastels.hermesandroid.cache.CacheScope
 import com.unsupportedpastels.hermesandroid.cache.CachedSession
 import com.unsupportedpastels.hermesandroid.cache.EncryptedOfflineCacheRepository
 import com.unsupportedpastels.hermesandroid.cache.OfflineCacheRepository
-import com.unsupportedpastels.hermesandroid.files.ManagedVideoCache
-import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
-import java.io.File
-import java.util.concurrent.ConcurrentHashMap
+import com.unsupportedpastels.hermesandroid.cache.forLaunchRestore
+import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
 import com.unsupportedpastels.hermesandroid.files.HostFileContent
 import com.unsupportedpastels.hermesandroid.files.HostFileListing
-import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
-import com.unsupportedpastels.hermesandroid.gateway.ChatConnectionPhase
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoCache
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
 import com.unsupportedpastels.hermesandroid.gateway.ActiveRuntimeSession
+import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
+import com.unsupportedpastels.hermesandroid.gateway.CacheSource
+import com.unsupportedpastels.hermesandroid.gateway.ChatBillingNotice
+import com.unsupportedpastels.hermesandroid.gateway.ChatConnectionPhase
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
 import com.unsupportedpastels.hermesandroid.gateway.ChatMessageRole
-import com.unsupportedpastels.hermesandroid.gateway.ChatBillingNotice
 import com.unsupportedpastels.hermesandroid.gateway.ChatSessionSnapshot
-import com.unsupportedpastels.hermesandroid.gateway.CacheSource
 import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
-import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnector
+import com.unsupportedpastels.hermesandroid.gateway.CronJobAction
+import com.unsupportedpastels.hermesandroid.gateway.CronJobRunsState
+import com.unsupportedpastels.hermesandroid.gateway.CronJobScope
+import com.unsupportedpastels.hermesandroid.gateway.CronJobsState
+import com.unsupportedpastels.hermesandroid.gateway.CronRestCapability
+import com.unsupportedpastels.hermesandroid.gateway.HERMES_CHAT_MAX_FRAME_BYTES
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnection
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnector
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatEvent
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatException
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatGateway
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatMethodNotFoundException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatProtocolException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatResponseStatus
-import com.unsupportedpastels.hermesandroid.gateway.HermesChatGateway
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatSession
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatSessionNotFoundException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatTransportException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatUnauthorizedException
 import com.unsupportedpastels.hermesandroid.gateway.HermesGatewaySnapshot
 import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryListing
-import com.unsupportedpastels.hermesandroid.gateway.RecentSessionsState
-import com.unsupportedpastels.hermesandroid.gateway.HERMES_CHAT_MAX_FRAME_BYTES
 import com.unsupportedpastels.hermesandroid.gateway.KtorChatWebSocketFactory
-import com.unsupportedpastels.hermesandroid.notifications.AndroidTurnNotificationController
-import com.unsupportedpastels.hermesandroid.notifications.NoOpTurnNotificationController
-import com.unsupportedpastels.hermesandroid.notifications.TurnNotificationController
 import com.unsupportedpastels.hermesandroid.gateway.KtorWsTicketClient
 import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
 import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
 import com.unsupportedpastels.hermesandroid.gateway.ModelSwitchResult
 import com.unsupportedpastels.hermesandroid.gateway.OperationalSnapshot
 import com.unsupportedpastels.hermesandroid.gateway.OperationalStatusState
+import com.unsupportedpastels.hermesandroid.gateway.PromptSubmission
+import com.unsupportedpastels.hermesandroid.gateway.RecentSessionsState
+import com.unsupportedpastels.hermesandroid.gateway.ResumedChatSession
+import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
+import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
+import com.unsupportedpastels.hermesandroid.gateway.SessionBranchResult
+import com.unsupportedpastels.hermesandroid.gateway.SessionContextBreakdown
+import com.unsupportedpastels.hermesandroid.gateway.SessionUsage
+import com.unsupportedpastels.hermesandroid.gateway.SlashCompletionResult
+import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
+import com.unsupportedpastels.hermesandroid.gateway.canonicalReasoningEffort
+import com.unsupportedpastels.hermesandroid.gateway.lastGoodOrNull
+import com.unsupportedpastels.hermesandroid.notifications.AndroidTurnNotificationController
+import com.unsupportedpastels.hermesandroid.notifications.NoOpTurnNotificationController
+import com.unsupportedpastels.hermesandroid.notifications.TurnNotificationController
+import com.unsupportedpastels.hermesandroid.relay.RelayConnector
+import com.unsupportedpastels.hermesandroid.relay.RelayFoldersClient
+import com.unsupportedpastels.hermesandroid.relay.RelayHermesChatSocket
+import com.unsupportedpastels.hermesandroid.relay.RelayLeaseCheckpoint
+import com.unsupportedpastels.hermesandroid.relay.RelayLeaseRecoverySocket
+import com.unsupportedpastels.hermesandroid.relay.TlsRelayBinarySocketFactory
+import com.unsupportedpastels.hermesandroid.relay.recoverRelayTasks
+import com.unsupportedpastels.hermesandroid.session.DataStoreSessionFilterRepository
+import com.unsupportedpastels.hermesandroid.session.MAX_BULK_SELECTION
+import com.unsupportedpastels.hermesandroid.session.SavedSessionFilter
+import com.unsupportedpastels.hermesandroid.session.SessionFilterRepository
+import com.unsupportedpastels.hermesandroid.session.SessionFilterScope
+import com.unsupportedpastels.hermesandroid.session.SessionListFilter
+import com.unsupportedpastels.hermesandroid.session.evaluateBulkDeleteSelection
+import com.unsupportedpastels.hermesandroid.session.toggleBulkSelection
+import com.unsupportedpastels.hermesandroid.ssh.SshTunnelRuntime
+import com.unsupportedpastels.hermesandroid.ui.isSlashCommandContext
 import com.unsupportedpastels.hermesandroid.voice.ElevenLabsVoice
 import com.unsupportedpastels.hermesandroid.voice.KtorSpeechWebSocketFactory
 import com.unsupportedpastels.hermesandroid.voice.SpeechAudio
@@ -86,48 +115,25 @@ import com.unsupportedpastels.hermesandroid.voice.StreamingSpeechTransport
 import com.unsupportedpastels.hermesandroid.voice.TranscriptionResult
 import com.unsupportedpastels.hermesandroid.voice.VoiceCapabilities
 import com.unsupportedpastels.hermesandroid.voice.VoiceServerConfig
-import com.unsupportedpastels.hermesandroid.gateway.lastGoodOrNull
-import com.unsupportedpastels.hermesandroid.gateway.ResumedChatSession
-import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
-import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
-import com.unsupportedpastels.hermesandroid.gateway.CronJobAction
-import com.unsupportedpastels.hermesandroid.gateway.CronJobRunsState
-import com.unsupportedpastels.hermesandroid.gateway.CronJobScope
-import com.unsupportedpastels.hermesandroid.gateway.CronJobsState
-import com.unsupportedpastels.hermesandroid.gateway.CronRestCapability
-import com.unsupportedpastels.hermesandroid.gateway.SessionBranchResult
-import com.unsupportedpastels.hermesandroid.gateway.SessionContextBreakdown
-import com.unsupportedpastels.hermesandroid.gateway.SessionUsage
-import com.unsupportedpastels.hermesandroid.gateway.SlashCompletionResult
-import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
-import com.unsupportedpastels.hermesandroid.gateway.canonicalReasoningEffort
-import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
-import com.unsupportedpastels.hermesandroid.session.DataStoreSessionFilterRepository
-import com.unsupportedpastels.hermesandroid.session.MAX_BULK_SELECTION
-import com.unsupportedpastels.hermesandroid.session.SavedSessionFilter
-import com.unsupportedpastels.hermesandroid.session.SessionFilterRepository
-import com.unsupportedpastels.hermesandroid.session.SessionFilterScope
-import com.unsupportedpastels.hermesandroid.session.evaluateBulkDeleteSelection
-import com.unsupportedpastels.hermesandroid.session.SessionListFilter
-import com.unsupportedpastels.hermesandroid.session.toggleBulkSelection
-import com.unsupportedpastels.hermesandroid.relay.RelayFoldersClient
-import com.unsupportedpastels.hermesandroid.relay.TlsRelayBinarySocketFactory
-import com.unsupportedpastels.hermesandroid.relay.RelayConnector
-import com.unsupportedpastels.hermesandroid.relay.RelayHermesChatSocket
-import com.unsupportedpastels.hermesandroid.relay.RelayLeaseCheckpoint
-import com.unsupportedpastels.hermesandroid.relay.RelayLeaseRecoverySocket
-import com.unsupportedpastels.hermesandroid.relay.recoverRelayTasks
-import com.unsupportedpastels.hermesandroid.ui.isSlashCommandContext
+import com.unsupportedpastels.mercury.core.attachment.AttachmentAddResult
+import com.unsupportedpastels.mercury.core.notifications.NotificationTextPolicy
+import com.unsupportedpastels.mercury.core.relay.RelayAdmissionEnvelope
+import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
+import com.unsupportedpastels.mercury.core.relay.RelayTargetStatus
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.plugins.websocket.WebSockets
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -135,25 +141,42 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
-import kotlinx.coroutines.cancel
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 
 /** How often a chat re-asks the gateway registry about unresolved delegated children. */
 private const val BACKGROUND_REGISTRY_POLL_MILLIS = 30_000L
+
+/** Auth states in which a transport may be re-armed without going through sign-in again. */
+private val AUTHENTICATED_STATES = setOf(
+    AuthenticationState.Authenticated,
+    AuthenticationState.NotRequired,
+)
+
+/** Shown when a rebuilt tunnel forced a reconnect on a connection that still looked healthy. */
+private const val TUNNEL_REBUILT_RECONNECTING =
+    "The SSH tunnel was rebuilt; reconnecting to Hermes Serve."
+
+/**
+ * Shown when the backend behind a tunnel rejected the bearer the app holds.
+ *
+ * A tunnel token is minted by the host backend (a one-time token file), so this is a rotation, not a
+ * sign-out: the app re-reads it from the host instead of asking for credentials it cannot collect.
+ */
+private const val TUNNEL_TOKEN_ROTATED =
+    "Hermes Serve rotated this tunnel's token — re-reading it from the host."
 
 class HermesConnectionViewModel(
     settingsStates: Flow<ServerSettingsState>,
@@ -281,6 +304,17 @@ class HermesConnectionViewModel(
     private var consecutiveAuthProviderUnavailable: Int
         get() = connectionCoordinator.consecutiveAuthProviderUnavailable
         set(value) { connectionCoordinator.consecutiveAuthProviderUnavailable = value }
+
+    /**
+     * The active origin whose only credential is an SSH tunnel's session token, if any.
+     *
+     * Set on every connect. Two decisions depend on it, and both exist because a tunnel origin is
+     * the one server the app cannot sign in to: its `/api/status` says `auth_required=false` with no
+     * providers, and its bearer is minted by the host backend rather than by the user. So a rejected
+     * bearer there is a rotation the app can undo by re-reading it, and `SignInRequired` — which is a
+     * terminal state for OAuth origins by design — must never be where such an origin ends up.
+     */
+    private var tunnelBackedOrigin: String? = null
 
     private val liveControllers: MutableMap<DurableSessionId, PerSessionController>
         get() = sessionControllerRegistry.controllers
@@ -474,13 +508,97 @@ class HermesConnectionViewModel(
                 if (foreground) {
                     maybeReconnectOnForeground()
                     if (wasBackground) {
-                        // One bounded read per recently viewed session on actual foreground return;
-                        // never a heartbeat timer or a prompt/controller operation.
-                        mutableSnapshots.value.chatSessions.keys.toList().takeLast(10).forEach(::refreshSessionProgress)
+                        // One bounded read, for the chat the user is actually on. The previous loop
+                        // refreshed up to ten open chats and every progress read is a full transcript
+                        // page (measured ~100 KB each), so each resume pulled roughly 1 MB across the
+                        // tunnel for data that was not on screen. Chats that are not open refresh
+                        // themselves through openSession()/onGetProgress when they come back into view.
+                        visibleChatSession()?.let(::refreshSessionProgress)
                     }
                 }
                 wasBackground = !foreground
             }
+        }
+        // A rebuilt SSH tunnel announces itself here. Confirm the transport right away instead of
+        // waiting for the next user action to fail: the tunnel watch already proved the host is
+        // back, so this only has to prove *our* sockets agree with it.
+        SshTunnelRuntime.registerTunnelRestored { origin ->
+            viewModelScope.launch { confirmTransportAfterTunnelRebuild(origin) }
+        }
+    }
+
+    /**
+     * Reconciles the connection layer with a tunnel that was just rebuilt.
+     *
+     * The tunnel watch proves the *host* is reachable; this proves the connection layer's own view
+     * is not stale, which is the difference between "the tunnel came back" and "the app noticed".
+     * Three cases, and nothing else:
+     *
+     * - pre-auth or a different origin — the settings collector owns the first connect, so stay out
+     *   of its way (acting here at cold start once pre-empted it and left the app disconnected);
+     * - already dropped — reconnect at once, keeping the transcript, list and project tree on screen;
+     * - still marked connected — one cheap `/api/status` probe. If it fails, the sockets went stale
+     *   while the state said otherwise, so demote to disconnected and reconnect instead of serving
+     *   a transport that cannot answer.
+     */
+    private suspend fun confirmTransportAfterTunnelRebuild(origin: String) {
+        if (activeOrigin?.value != origin) return
+        val snapshot = mutableSnapshots.value
+        val tunnelBacked = tunnelBackedOrigin == origin
+        // A tunnel origin never legitimately needs a sign-in, so ending up in that state is itself the
+        // bug: the tunnel that just came back is holding a freshly adopted token, which is exactly the
+        // moment to retry instead of leaving the user on a screen with no sign-in to complete.
+        if (snapshot.authenticationState == AuthenticationState.SignInRequired) {
+            if (!tunnelBacked) return
+            mutableSnapshots.value = snapshot.copy(
+                connectionState = ConnectionState.Disconnected,
+                connectionError = null,
+            )
+            maybeReconnectOnForeground()
+            return
+        }
+        if (snapshot.authenticationState !in AUTHENTICATED_STATES) {
+            // Nothing authenticated to verify, so the tunnel that just came back is the only new fact.
+            // Retry only when this ViewModel already knows the origin is tunnel-backed (a prior
+            // connect got that far) and nothing is in flight: at cold start the settings collector
+            // owns the first connect, and an early nudge here used to abort it.
+            if (tunnelBacked && snapshot.connectionState == ConnectionState.Disconnected) {
+                maybeReconnectOnForeground()
+            }
+            return
+        }
+        when (snapshot.connectionState) {
+            ConnectionState.Disconnected, ConnectionState.Recovering -> maybeReconnectOnForeground()
+            ConnectionState.Connected -> {
+                val probeOrigin = lastReadySettings?.activeOrigin ?: return
+                val token = accessTokenForRequest(probeOrigin, generation)
+                val usable = try {
+                    // Reachable is not the same as usable: `/api/status` needs no auth, so on its own
+                    // it reported "Server reachable" while the screen sat on "Sign in required" —
+                    // a relaunched backend had minted a new one-time token and the old bearer was
+                    // dead. Both halves are checked, and a dead token reconnects (which re-adopts it).
+                    client.probe(probeOrigin)
+                    // No token means the server needs no login — except behind a tunnel, where the
+                    // absence of a token is precisely why every /api/* call answers 401.
+                    if (tunnelBacked) {
+                        token != null && client.verifyAccessToken(probeOrigin, token)
+                    } else {
+                        token == null || client.verifyAccessToken(probeOrigin, token)
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    false
+                }
+                if (usable) return
+                if (mutableSnapshots.value.connectionState != ConnectionState.Connected) return
+                mutableSnapshots.value = mutableSnapshots.value.copy(
+                    connectionState = ConnectionState.Disconnected,
+                    connectionError = TUNNEL_REBUILT_RECONNECTING,
+                )
+                maybeReconnectOnForeground()
+            }
+            else -> Unit
         }
     }
 
@@ -513,7 +631,7 @@ class HermesConnectionViewModel(
         if (durableSessionId in pendingDraftSessions || chat?.connectionRecoveryAvailable != true) {
             return viewModelScope.launch { }
         }
-        if (automatic && mutableSnapshots.value.authenticationState == AuthenticationState.SignInRequired) {
+        if (automatic && signInIsTerminal()) {
             return viewModelScope.launch { }
         }
         // Direct-mode durable IDs do not prove that this client still owns the
@@ -718,10 +836,21 @@ class HermesConnectionViewModel(
         }
     }
 
+    /**
+     * Whether the current `SignInRequired` is a state only the user can leave.
+     *
+     * True for an OAuth origin: no new token can exist until the sign-in completes, so an automatic
+     * reconnect would just overwrite the prompt. False for a tunnel origin, where there is no sign-in
+     * to complete and the bearer can be re-read from the host whenever the transport is healthy.
+     */
+    private fun signInIsTerminal(): Boolean =
+        mutableSnapshots.value.authenticationState == AuthenticationState.SignInRequired &&
+            tunnelBackedOrigin != lastReadySettings?.activeOrigin?.value
+
     private fun maybeReconnectOnForeground() {
         if (foregroundReconnectJob?.isActive == true) return
         val snapshot = mutableSnapshots.value
-        if (snapshot.authenticationState == AuthenticationState.SignInRequired) return
+        if (signInIsTerminal()) return
         val globalReconnect = if (snapshot.connectionState == ConnectionState.Disconnected) {
             val relayTarget = activeRelayTarget
             if (relayTarget != null) {
@@ -763,14 +892,20 @@ class HermesConnectionViewModel(
         val settings = lastReadySettings ?: return
         if (activeOrigin != settings.activeOrigin) return
         if (mutableSnapshots.value.connectionState == ConnectionState.Connecting) return
+        // A connect that has been launched but has not reached `Connecting` yet must not be
+        // superseded: bumping the generation here would abort it and leave nothing retrying.
+        if (connectionJob?.isActive == true) return
         // A deliberate sign-in prompt (e.g. after persistent auth-provider 503s)
         // must not be silently overwritten by an auto-reconnect: the user needs
         // to complete sign-in to mint a fresh token. Leave the sign-in state in
-        // place; the sign-in flow drives the next connect.
-        if (mutableSnapshots.value.authenticationState == AuthenticationState.SignInRequired) return
+        // place; the sign-in flow drives the next connect. A tunnel origin is
+        // excluded by signInIsTerminal(): it has no sign-in to complete.
+        if (signInIsTerminal()) return
         val currentGeneration = connectionCoordinator.beginReconnect()
         val job = viewModelScope.launch {
-            connect(settings.activeOrigin, currentGeneration)
+            // Same origin, same identity: keep what is on screen (list, open transcripts, project
+            // tree) and show "Reconnecting" instead of rebuilding every screen from cache.
+            connect(settings.activeOrigin, currentGeneration, preserveState = true)
         }
         connectionJob = job
         job.join()
@@ -800,7 +935,7 @@ class HermesConnectionViewModel(
             liveMetadataIsAuthoritative
         ) return
         mutableSnapshots.value = currentSnapshot.copy(
-            durableSessions = cached.sessions.map(CachedSession::summary),
+            durableSessions = cached.sessions.forLaunchRestore().map(CachedSession::summary),
             sessionMetadataSource = CacheSource.Cached,
             chatSessions = cached.sessions.fold(mutableSnapshots.value.chatSessions) { chats, session ->
                 if (session.messages.isEmpty() || chats[session.summary.id]?.owningProfile != null) chats else chats + (
@@ -873,28 +1008,56 @@ class HermesConnectionViewModel(
         }
     }
 
-    private suspend fun connect(serverOrigin: ServerOrigin?, currentGeneration: Long) {
+    private suspend fun connect(
+        serverOrigin: ServerOrigin?,
+        currentGeneration: Long,
+        preserveState: Boolean = false,
+    ) {
         if (serverOrigin == null) {
             mutableSnapshots.value = HermesGatewaySnapshot()
             return
         }
 
         val currentSnapshot = mutableSnapshots.value
-        mutableSnapshots.value = if (currentSnapshot.sessionMetadataSource == CacheSource.Cached) {
-            currentSnapshot.copy(
+        // A reconnect against the SAME origin is a transport event, not a new identity. Keeping
+        // the existing snapshot (sessions, open transcripts, project tree) and marking the state
+        // `Recovering` is what stops a tunnel blip from re-downloading every screen: the old code
+        // rebuilt `HermesGatewaySnapshot(Connecting)`, which dropped every list, every open chat
+        // and every project, so all of them had to be fetched again before the UI was usable.
+        // Only an origin/profile change (handled by the settings collector) may discard state.
+        val keepExisting = preserveState &&
+            currentSnapshot.authenticationState in setOf(
+                AuthenticationState.Authenticated,
+                AuthenticationState.NotRequired,
+            )
+        mutableSnapshots.value = when {
+            keepExisting -> currentSnapshot.copy(
+                connectionState = ConnectionState.Recovering,
+                connectionError = null,
+            )
+            currentSnapshot.sessionMetadataSource == CacheSource.Cached -> currentSnapshot.copy(
                 connectionState = ConnectionState.Connecting,
                 connectionError = null,
             )
-        } else {
-            HermesGatewaySnapshot(connectionState = ConnectionState.Connecting)
+            else -> HermesGatewaySnapshot(connectionState = ConnectionState.Connecting)
         }
+        // The reconnect keeps what was on screen; the fresh values below are merged into it.
+        val preserveBase: HermesGatewaySnapshot? = if (keepExisting) currentSnapshot else null
         try {
             val store = tokenStore
             val startup = if (store != null) {
                 probeAndLoadSavedTokenConcurrently(
                     probe = { client.probe(serverOrigin) },
                     loadSavedToken = { store.load(serverOrigin) },
-                    needsSavedToken = { it.authRequired },
+                    // A backend spawned over an SSH tunnel reports auth_required = false
+                    // (it has no interactive sign-in flow) while still rejecting
+                    // unauthenticated /api/* with 401 — its tunnel session token is the
+                    // only credential it accepts. Presenting the stored token for such an
+                    // origin is what keeps connect() from declaring "authentication not
+                    // required" and then eating a 401 from /api/auth/me.
+                    needsSavedToken = { probe ->
+                        probe.authRequired || store.hasSshSessionToken(serverOrigin)
+                    },
                 )
             } else {
                 client.probe(serverOrigin) to null
@@ -903,16 +1066,23 @@ class HermesConnectionViewModel(
             val stored = startup.second
             currentCoroutineContext().ensureActive()
             if (generation != currentGeneration || activeOrigin != serverOrigin) return
+            // Decide how this origin authenticates before anything can fail: the rejection path below
+            // and the tunnel-restored hook both use it to tell a recoverable rotation from a real
+            // sign-out.
+            tunnelBackedOrigin = serverOrigin.value.takeIf { store?.hasSshSessionToken(serverOrigin) == true }
 
-            if (!info.authRequired) {
-                mutableSnapshots.value = HermesGatewaySnapshot(
-                    connectionState = ConnectionState.Connected,
-                    authenticationState = AuthenticationState.NotRequired,
-                    serverVersion = info.version,
-                    nativeOAuthSupported = info.nativeOAuthSupported,
-                    authProviders = info.providers,
-                    durableSessions = info.sessions,
-                    sessionMetadataSource = CacheSource.Live,
+            if (!info.authRequired && stored == null) {
+                mutableSnapshots.value = carryOverContent(
+                    HermesGatewaySnapshot(
+                        connectionState = ConnectionState.Connected,
+                        authenticationState = AuthenticationState.NotRequired,
+                        serverVersion = info.version,
+                        nativeOAuthSupported = info.nativeOAuthSupported,
+                        authProviders = info.providers,
+                        durableSessions = info.sessions,
+                        sessionMetadataSource = CacheSource.Live,
+                    ),
+                    preserveBase,
                 )
                 persistCachedMetadata(serverOrigin, "default", info.sessions, currentGeneration)
                 return
@@ -981,14 +1151,17 @@ class HermesConnectionViewModel(
                 }
                 activeTokens = ActiveTokenRecord(serverOrigin, currentGeneration, usableTokens)
                 consecutiveAuthProviderUnavailable = 0
-                mutableSnapshots.value = HermesGatewaySnapshot(
-                    connectionState = ConnectionState.Connected,
-                    authenticationState = AuthenticationState.Authenticated,
-                    serverVersion = info.version,
-                    nativeOAuthSupported = info.nativeOAuthSupported,
-                    authProviders = info.providers,
-                    durableSessions = authenticated.sessions,
-                    sessionMetadataSource = CacheSource.Live,
+                mutableSnapshots.value = carryOverContent(
+                    HermesGatewaySnapshot(
+                        connectionState = ConnectionState.Connected,
+                        authenticationState = AuthenticationState.Authenticated,
+                        serverVersion = info.version,
+                        nativeOAuthSupported = info.nativeOAuthSupported,
+                        authProviders = info.providers,
+                        durableSessions = authenticated.sessions,
+                        sessionMetadataSource = CacheSource.Live,
+                    ),
+                    preserveBase,
                 )
                 persistCachedMetadata(
                     serverOrigin,
@@ -1032,6 +1205,23 @@ class HermesConnectionViewModel(
         } catch (_: HermesAuthenticationRejectedException) {
             if (generation != currentGeneration || activeOrigin != serverOrigin) return
             consecutiveAuthProviderUnavailable = 0
+            if (tunnelBackedOrigin == serverOrigin.value) {
+                // The bearer came from a backend that no longer exists (a host reboot respawns the
+                // backend with a fresh one-time token), and this origin has no sign-in to offer —
+                // `/api/status` reports auth_required=false with no providers. Clearing the token
+                // here deletes the app's only credential and parks the screen on "Server reachable ·
+                // Sign in required" with nothing to tap, which is a dead end the user can only leave
+                // by reconnecting the tunnel by hand. Ask the tunnel to re-read what the host serves;
+                // it announces itself when the new token is stored.
+                activeTokens = null
+                disconnectChat()
+                mutableSnapshots.value = mutableSnapshots.value.copy(
+                    connectionState = ConnectionState.Disconnected,
+                    connectionError = TUNNEL_TOKEN_ROTATED,
+                )
+                SshTunnelRuntime.notifyTokenRejected(serverOrigin.value)
+                return
+            }
             tokenStore?.clear(serverOrigin)
             activeTokens = null
             disconnectChat()
@@ -1069,10 +1259,62 @@ class HermesConnectionViewModel(
             } else {
                 mutableSnapshots.value = mutableSnapshots.value.copy(
                     connectionState = ConnectionState.Disconnected,
-                    connectionError = "Could not reach Hermes Serve",
+                    connectionError = unreachableMessage(error),
                 )
             }
         }
+    }
+
+    /**
+     * Keeps screen content across a same-origin reconnect.
+     *
+     * `connect(preserveState = true)` calls this with the snapshot that was on screen before the
+     * reconnect: the authoritative fields come from [fresh] (state, auth, versions, session list),
+     * while everything the user was looking at (open transcripts, project tree, recent-session
+     * paging, selected profile) is carried over. Without it a tunnel blip re-fetched every screen —
+     * the transcript page, the project tree and the session list — because the reconnect replaced
+     * the snapshot with an empty one.
+     */
+    private fun carryOverContent(
+        fresh: HermesGatewaySnapshot,
+        base: HermesGatewaySnapshot?,
+    ): HermesGatewaySnapshot {
+        if (base == null) return fresh
+        return fresh.copy(
+            chatSessions = base.chatSessions,
+            projects = base.projects,
+            projectState = base.projectState,
+            projectSessions = base.projectSessions,
+            projectSessionStates = base.projectSessionStates,
+            recentSessions = base.recentSessions,
+            selectedProfile = base.selectedProfile,
+            profiles = base.profiles,
+            activeProjectId = base.activeProjectId,
+            scopedSessionIds = base.scopedSessionIds,
+        )
+    }
+
+    /**
+     * "Could not reach Hermes Serve" plus the *transport* cause.
+     *
+     * The distinction matters and is not guessable from a generic message:
+     * `Connection refused` means nothing is listening at that address (for an SSH
+     * tunnel: the forwarded local port), `Connect timed out` means the address is
+     * unreachable (tunnel up but the far side is not answering), and an HTTP status
+     * means the server answered and rejected the request. Walk to the deepest cause
+     * because the outer layers only restate "could not connect".
+     */
+    private fun unreachableMessage(error: Exception): String {
+        val message = generateSequence<Throwable>(error) { it.cause }
+            .toList()
+            .lastOrNull { !it.message.isNullOrBlank() }
+            ?.message
+            ?.lineSequence()
+            ?.first()
+            ?.trim()
+            ?.take(160) // Keep the banner one line; the cause prefix is what matters.
+            ?: error.javaClass.simpleName
+        return "Could not reach Hermes Serve — $message"
     }
 
     private fun startProjectTreeLoad(
@@ -1928,6 +2170,47 @@ class HermesConnectionViewModel(
         }
     }
 
+    /**
+     * Switch the profile the app is scoped to, and make it visible immediately.
+     *
+     * Deliberately separate from [loadManagementSettings], which also pulls the profile's
+     * management data and then re-derives the selection from the server's list — a list that does
+     * not contain the tapped name silently snaps the selection back, which reads as "the tap did
+     * nothing". Here the choice stands, and the session list refetches for it.
+     */
+    /**
+     * Drops every visible session list when the profile scope changes.
+     *
+     * Each list is its own fetch (Home's page, the View-all pager, per-project lists), so clearing them
+     * is what stops one profile's sessions from sitting under another's while the new query runs.
+     */
+    private fun clearSessionListsForProfileSwitch() {
+        mutableSnapshots.value = mutableSnapshots.value.copy(
+            durableSessions = emptyList(),
+            projectSessions = emptyMap(),
+            recentSessions = RecentSessionsState(),
+        )
+    }
+
+    fun selectProfile(profile: String): Job {
+        val bounded = profile.trim().take(64).ifEmpty { "default" }
+        val origin = activeOrigin ?: return viewModelScope.launch { }
+        if (mutableSnapshots.value.selectedProfile == bounded) {
+            return refreshDurableSessions(archivedOnly = false)
+        }
+        setSessionFilterScope(origin, bounded)
+        // A scope change must start from the unfiltered list, exactly as in loadManagementSettings.
+        activeSessionArchivedFilter = false
+        lastDurableSessionsFetchKey = null
+        connectionCoordinator.advanceProfileGeneration()
+        // Never leave the previous profile's rows on screen while the new ones load: a slow or
+        // failed fetch would otherwise strand them there, which reads as "another profile's
+        // sessions are still showing".
+        clearSessionListsForProfileSwitch()
+        mutableSnapshots.value = mutableSnapshots.value.copy(selectedProfile = bounded)
+        return refreshDurableSessions(archivedOnly = false)
+    }
+
     fun loadManagementSettings(
         profile: String = mutableSnapshots.value.selectedProfile,
         refreshStatus: Boolean = true,
@@ -1941,6 +2224,7 @@ class HermesConnectionViewModel(
         val previousProfile = mutableSnapshots.value.selectedProfile
         if (previousProfile != boundedProfile) {
             connectionCoordinator.advanceProfileGeneration()
+            clearSessionListsForProfileSwitch()
             // The Home list clears its filter when the scope changes; reloads for
             // the new profile must start from the unfiltered (exclude) list.
             activeSessionArchivedFilter = false
@@ -2487,6 +2771,9 @@ class HermesConnectionViewModel(
         updateSession(sessionId, archived = archived)
     }
 
+    /** Compression chains are short; more passes than this means the server is not collapsing. */
+    private val MAX_CHAIN_COLLAPSE_PASSES = 4
+
     suspend fun deleteSession(sessionId: DurableSessionId) {
         check(mutableSnapshots.value.chatSessions[sessionId]?.isSending != true) {
             "Stop the active turn before deleting this session"
@@ -2494,11 +2781,39 @@ class HermesConnectionViewModel(
         val origin = checkNotNull(activeOrigin) { "No Hermes server configured" }
         val expectedGeneration = generation
         val token = checkNotNull(accessTokenForRequest(origin, expectedGeneration)) { "Sign in required" }
-        client.deleteSession(origin, token, sessionId, mutableSnapshots.value.selectedProfile)
-        cacheRepository?.deleteSession(
-            CacheScope(origin, mutableSnapshots.value.selectedProfile),
-            sessionId,
-        )
+        // Delete against the session's own profile, not whichever one the list happens to be scoped
+        // to: the server answers 200 {"already_absent": true} for the wrong store, which removed the
+        // row from this device only and let the next refresh resurrect it.
+        val profile = owningProfile(sessionId)
+        val title = mutableSnapshots.value.durableSessions.firstOrNull { it.id == sessionId }?.title
+            ?: cachedSummary(sessionId)?.title
+        try {
+            client.deleteSession(origin, token, sessionId, profile)
+        } catch (absent: HermesSessionAlreadyAbsentException) {
+            // One retry, because a stale profile guess is the only recoverable case here.
+            val retryProfile = profile.takeIf { it != mutableSnapshots.value.selectedProfile }
+                ?: mutableSnapshots.value.selectedProfile
+            if (retryProfile == profile) throw absent
+            client.deleteSession(origin, token, sessionId, retryProfile)
+        }
+        // The listing carries the tip of a compression chain and the endpoint deletes only that
+        // physical row, so the chain's root becomes the new tip and the conversation comes back on the
+        // next refresh (#57543). Collapse the rest of the chain here: the server will not.
+        var remaining = client.loadSessionsForProfile(origin, token, profile)
+            .rowsForDeletedConversation(title)
+        var pass = 0
+        while (remaining.isNotEmpty() && pass < MAX_CHAIN_COLLAPSE_PASSES) {
+            pass += 1
+            remaining.forEach { id -> runCatching { client.deleteSession(origin, token, id, profile) } }
+            remaining = client.loadSessionsForProfile(origin, token, profile)
+                .rowsForDeletedConversation(title)
+        }
+        if (remaining.isNotEmpty()) {
+            throw HermesConnectionException(
+                "Hermes still lists this conversation after $pass extra delete(s) — its compression chain could not be collapsed",
+            )
+        }
+        cacheRepository?.deleteSession(CacheScope(origin, mutableSnapshots.value.selectedProfile), sessionId)
         detachFailedRuntime(sessionId)
         mutableSnapshots.value = mutableSnapshots.value.removeSession(sessionId)
     }
@@ -2818,6 +3133,18 @@ class HermesConnectionViewModel(
         withHermesRestOperation { serverOrigin, accessToken ->
             client.downloadManagedFile(serverOrigin, accessToken, path)
         }
+
+    /**
+     * Saves a managed host file by streaming it into [sink], so an attachment the in-memory readers
+     * refuse for size still lands and the caller can report real progress.
+     */
+    suspend fun streamManagedFileInto(
+        path: String,
+        sink: java.io.OutputStream,
+        onProgress: (written: Long, total: Long?) -> Unit,
+    ): Long = withHermesRestOperation { serverOrigin, accessToken ->
+        client.streamManagedFileInto(serverOrigin, accessToken, path, sink, onProgress)
+    }
 
     suspend fun createHostDirectory(
         parentPath: String,
@@ -3304,6 +3631,18 @@ class HermesConnectionViewModel(
     private var progressRefreshSequence = 0L
 
     /** Reads persisted state only: no prompt, resume, activation, or controller replacement. */
+    /**
+     * The chat the user last had open, which is what a foreground return should refresh.
+     *
+     * Falling back to the newest open chat keeps the resume useful when the app was killed while a
+     * chat was open (the field is not persisted) — and returns null when nothing was ever opened, so
+     * a pure list view still costs zero transcript reads.
+     */
+    private fun visibleChatSession(): DurableSessionId? {
+        val open = mutableSnapshots.value.chatSessions.keys
+        return lastOpenedChat?.takeIf { it in open } ?: open.lastOrNull()
+    }
+
     fun refreshSessionProgress(durableSessionId: DurableSessionId): Job {
         pinChatProfile(durableSessionId)
         val origin = activeOrigin
@@ -3383,6 +3722,7 @@ class HermesConnectionViewModel(
 
     fun openSession(durableSessionId: DurableSessionId): Job {
         pinChatProfile(durableSessionId)
+        lastOpenedChat = durableSessionId
         sessionControllerRegistry.chatJobs[durableSessionId]?.takeIf { it.isActive }?.let { return it }
         if (durableSessionId in pendingDraftSessions) {
             // Selecting a local draft is UI navigation only. Its runtime is opened
@@ -3424,21 +3764,34 @@ class HermesConnectionViewModel(
                 profileGeneration != expectedProfileGeneration ||
                 mutableSnapshots.value.selectedProfile != selectedProfile
             ) return@launch
+            val inMemoryMessages =
+                mutableSnapshots.value.chatSessions[durableSessionId]?.messages.orEmpty()
             val hasCachedMessages = cached?.messages?.isNotEmpty() == true
-            if (cached != null) {
+            // Prefer what is already on screen over the disk cache: after a transport reconnect the
+            // preserved snapshot still holds this session's transcript, so re-opening it must not
+            // blank the view (or show a spinner) while the same rows are fetched again.
+            val seedMessages =
+                if (inMemoryMessages.isNotEmpty()) inMemoryMessages else cached?.messages.orEmpty()
+            if (seedMessages.isNotEmpty()) {
                 updateChat(durableSessionId) {
                     it.copy(
-                        messages = cached.messages,
+                        messages = seedMessages,
                         isLoading = false,
                         error = null,
-                        transcriptSource = if (hasCachedMessages) CacheSource.Cached else CacheSource.Live,
+                        transcriptSource = if (inMemoryMessages.isNotEmpty()) {
+                            it.transcriptSource
+                        } else if (hasCachedMessages) {
+                            CacheSource.Cached
+                        } else {
+                            CacheSource.Live
+                        },
                     )
                 }
             }
             automaticChatReconnects.remove(durableSessionId)
             updateChat(durableSessionId) {
                 it.copy(
-                    isLoading = !hasCachedMessages,
+                    isLoading = seedMessages.isEmpty(),
                     error = null,
                     connectionRecoveryAvailable = false,
                 )
@@ -3707,9 +4060,20 @@ class HermesConnectionViewModel(
                 if (activeRelayTarget != null) {
                     // Host SessionLease accepts params.submission_id (1..128 chars).
                     // IDs are lease-local; never retry an ambiguously accepted prompt.
+                    //
+                    // The runtime-recovery helper is deliberately NOT used here: a Relay lease is a
+                    // different contract (its own close codes, no gateway session registry), so a
+                    // 4001 from that path would not mean what the helper assumes.
                     session.submitPrompt(runtimeId, submittedText, interrupted, java.util.UUID.randomUUID().toString())
                 } else {
-                    session.submitPrompt(runtimeId, submittedText, interrupted)
+                    submitPromptWithRuntimeRecovery(
+                        session = session,
+                        durableSessionId = durableSessionId,
+                        runtimeSessionId = runtimeId,
+                        text = submittedText,
+                        interrupted = interrupted,
+                        submissionId = null,
+                    )
                 }
                 val resolution = sessionControllerRegistry.resolvePromptSubmission(
                     durableSessionId = durableSessionId,
@@ -4982,6 +5346,9 @@ class HermesConnectionViewModel(
             ?: cachedSummary(durableSessionId)?.profile
             ?: mutableSnapshots.value.selectedProfile
 
+    /** Last chat opened in this process; drives the single resume-time progress read. */
+    private var lastOpenedChat: DurableSessionId? = null
+
     private fun pinChatProfile(durableSessionId: DurableSessionId) {
         if (mutableSnapshots.value.chatSessions[durableSessionId]?.owningProfile != null) return
         val profile = owningProfile(durableSessionId)
@@ -5075,6 +5442,42 @@ class HermesConnectionViewModel(
         )
         updateChat(durableSessionId) { chat ->
             if (chat.processRows == next.rows) chat else chat.copy(processRows = next.rows)
+        }
+    }
+
+    /**
+     * Submit a prompt, recovering once from a reaped session runtime.
+     *
+     * The gateway answers JSON-RPC 4001 when the runtime id it was handed is no longer in memory:
+     * the backend detached that session and orphan-reaped it (20 s grace), evicted it under the
+     * session cap, or lost it with the process — all of which happen to a phone that reconnects, sits
+     * backgrounded, or has its tunnel rebuilt by the SSH restore. The server's own prescription, in
+     * the same log line, is to resume the STORED session, which mints a fresh runtime. A rejected
+     * request was never executed, so one retry cannot double-submit.
+     */
+    private suspend fun submitPromptWithRuntimeRecovery(
+        session: HermesChatSession,
+        durableSessionId: DurableSessionId,
+        runtimeSessionId: RuntimeSessionId,
+        text: String,
+        interrupted: Boolean,
+        submissionId: String?,
+    ): PromptSubmission = try {
+        session.submitPrompt(runtimeSessionId, text, interrupted, submissionId)
+    } catch (reaped: HermesChatSessionNotFoundException) {
+        val resumed = runCatching {
+            session.resume(
+                serverDurableId(durableSessionId),
+                profile = owningProfile(durableSessionId),
+            )
+        }.getOrElse { throw reaped }
+        applyResume(durableSessionId, resumed)
+        try {
+            session.submitPrompt(resumed.runtimeSessionId, text, interrupted, submissionId)
+        } catch (again: HermesChatSessionNotFoundException) {
+            // A runtime that vanished again right after being resumed is the same condition; do not
+            // loop on it.
+            throw reaped
         }
     }
 

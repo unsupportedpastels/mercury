@@ -10,20 +10,21 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.Text
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -321,6 +322,26 @@ internal fun RecentSessionHomeRow(
                         style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier.weight(1f, fill = false),
                     )
+                    // Which channel the session came in on. Without it, a list mixing WeChat, the
+                    // desktop UI, the CLI and scheduled runs is a wall of indistinguishable titles.
+                    session.channelLabel()?.let { label ->
+                        Spacer(Modifier.width(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.testTag(
+                                "Recent session channel:${session.id.value}",
+                            ),
+                        ) {
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                            )
+                        }
+                    }
                     if (isWorking) {
                         Spacer(Modifier.width(8.dp))
                         WorkingIndicator()
@@ -341,4 +362,19 @@ internal fun RecentSessionHomeRow(
             Text("›", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleMedium)
         }
     }
+}
+
+/**
+ * The channel a session belongs to, as the short label a user recognises — the backend's `source`.
+ * Null when the backend did not say which: an older backend leaves the row unlabelled rather than
+ * having the client guess a channel it was never told about.
+ */
+internal fun SessionSummary.channelLabel(): String? = when (source?.lowercase()) {
+    null -> null
+    "weixin" -> "WeChat"
+    "desktop" -> "Desktop"
+    "cli" -> "CLI"
+    "local" -> "Local"
+    "cron" -> "Scheduled"
+    else -> source.replaceFirstChar(Char::uppercase)
 }

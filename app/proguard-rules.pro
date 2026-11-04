@@ -23,6 +23,16 @@
     volatile <fields>;
 }
 
+# --- JSch (SSH transport) ---
+# JSch instantiates its ciphers, compressors, MACs and key-exchange classes by
+# name at runtime, so R8 cannot see them: a minified build lost jzlib and the
+# GCM cipher classes, and every SSH handshake then failed at negotiation while
+# the identical unminified build worked. Keep the whole library rather than a
+# subset — the reflective surface spans jce, jzlib and bc, and the package is
+# small next to its own consumers.
+-keep class com.jcraft.jsch.** { *; }
+-dontwarn com.jcraft.jsch.**
+
 # --- Tink (AndroidKeystore AEAD token store) ---
 # Tink registers key managers reflectively over protobuf-lite messages.
 -keep class com.google.crypto.tink.proto.** { *; }

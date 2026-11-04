@@ -15,6 +15,7 @@ cryptography = "0.6.0"
 bcprov = "1.85.2"
 datastore = "1.2.1"
 junit = "4.13.2"
+jsch = "0.2.20"
 kotlin = "2.4.20"
 fragment = "1.9.0"
 ktor = "3.5.2"
@@ -48,6 +49,7 @@ androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "a
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidxTestRunner" }
 androidx-test-espresso-core = { module = "androidx.test.espresso:espresso-core", version.ref = "espresso" }
 junit = { module = "junit:junit", version.ref = "junit" }
+jsch = { module = "com.github.mwiede:jsch", version.ref = "jsch" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }

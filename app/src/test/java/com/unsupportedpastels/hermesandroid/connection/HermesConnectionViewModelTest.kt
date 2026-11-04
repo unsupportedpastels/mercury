@@ -1,64 +1,66 @@
 package com.unsupportedpastels.hermesandroid.connection
 
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
+import com.unsupportedpastels.hermesandroid.app.DelegatedSubagent
+import com.unsupportedpastels.hermesandroid.app.DelegationStatus
+import com.unsupportedpastels.hermesandroid.app.DurableSessionId
+import com.unsupportedpastels.hermesandroid.app.NO_PROJECT_BUCKET_ID
+import com.unsupportedpastels.hermesandroid.app.ProcessRow
+import com.unsupportedpastels.hermesandroid.app.ProjectId
+import com.unsupportedpastels.hermesandroid.app.ProjectLoadState
+import com.unsupportedpastels.hermesandroid.app.ProjectSessionLoadState
+import com.unsupportedpastels.hermesandroid.app.ProjectSessionsResult
+import com.unsupportedpastels.hermesandroid.app.ProjectSummary
+import com.unsupportedpastels.hermesandroid.app.ProjectTreeResult
+import com.unsupportedpastels.hermesandroid.app.RunToolState
+import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.cache.CacheScope
 import com.unsupportedpastels.hermesandroid.cache.CachedSession
 import com.unsupportedpastels.hermesandroid.cache.OfflineCacheRepository
 import com.unsupportedpastels.hermesandroid.cache.OfflineCacheSnapshot
 import com.unsupportedpastels.hermesandroid.files.ManagedVideoCache
 import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
-import com.unsupportedpastels.hermesandroid.gateway.CacheSource
-import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
-import com.unsupportedpastels.hermesandroid.gateway.ChatConnectionPhase
+import com.unsupportedpastels.hermesandroid.ssh.SshTunnelRuntime
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
+import com.unsupportedpastels.hermesandroid.gateway.CacheSource
+import com.unsupportedpastels.hermesandroid.gateway.ChatConnectionPhase
+import com.unsupportedpastels.hermesandroid.gateway.ChatMessage
 import com.unsupportedpastels.hermesandroid.gateway.ConnectionState
-import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnector
-import com.unsupportedpastels.hermesandroid.gateway.HermesChatEvent
-import com.unsupportedpastels.hermesandroid.gateway.HermesChatMethodNotFoundException
-import com.unsupportedpastels.hermesandroid.gateway.HermesChatSession
-import com.unsupportedpastels.hermesandroid.gateway.HermesChatTransportException
-import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryEntry
-import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryListing
-import com.unsupportedpastels.hermesandroid.gateway.OperationalStatus
-import com.unsupportedpastels.hermesandroid.gateway.OperationalStatusState
-import com.unsupportedpastels.hermesandroid.gateway.OperationalHealth
-import com.unsupportedpastels.hermesandroid.gateway.OperationalPressure
-import com.unsupportedpastels.hermesandroid.gateway.lastGoodOrNull
-import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
-import com.unsupportedpastels.hermesandroid.gateway.CurrentModelInfo
-import com.unsupportedpastels.hermesandroid.gateway.ModelCapabilities
-import com.unsupportedpastels.hermesandroid.gateway.ModelProviderOption
-import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
-import com.unsupportedpastels.hermesandroid.gateway.ModelSwitchResult
-import com.unsupportedpastels.hermesandroid.gateway.PromptSubmission
-import com.unsupportedpastels.hermesandroid.app.ProjectSessionsResult
-import com.unsupportedpastels.hermesandroid.app.ProjectTreeResult
-import com.unsupportedpastels.hermesandroid.gateway.ResumedChatSession
-import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
-import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
 import com.unsupportedpastels.hermesandroid.gateway.CronJob
 import com.unsupportedpastels.hermesandroid.gateway.CronJobAction
 import com.unsupportedpastels.hermesandroid.gateway.CronJobRun
 import com.unsupportedpastels.hermesandroid.gateway.CronJobRunsState
 import com.unsupportedpastels.hermesandroid.gateway.CronJobScope
-import com.unsupportedpastels.hermesandroid.gateway.CronRestCapability
 import com.unsupportedpastels.hermesandroid.gateway.CronJobsState
+import com.unsupportedpastels.hermesandroid.gateway.CronRestCapability
+import com.unsupportedpastels.hermesandroid.gateway.CurrentModelInfo
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatConnector
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatEvent
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatMethodNotFoundException
 import com.unsupportedpastels.hermesandroid.gateway.HermesChatProtocolException
-import com.unsupportedpastels.hermesandroid.app.DurableSessionId
-import com.unsupportedpastels.hermesandroid.app.DelegatedSubagent
-import com.unsupportedpastels.hermesandroid.app.DelegationStatus
-import com.unsupportedpastels.hermesandroid.app.NO_PROJECT_BUCKET_ID
-import com.unsupportedpastels.hermesandroid.app.ProjectId
-import com.unsupportedpastels.hermesandroid.app.ProjectLoadState
-import com.unsupportedpastels.hermesandroid.app.ProjectSessionLoadState
-import com.unsupportedpastels.hermesandroid.app.ProjectSummary
-import com.unsupportedpastels.hermesandroid.app.ProcessRow
-import com.unsupportedpastels.hermesandroid.app.RunToolState
-import com.unsupportedpastels.hermesandroid.app.SessionSummary
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.ViewModelStore
-import androidx.lifecycle.ViewModelStoreOwner
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatSession
+import com.unsupportedpastels.hermesandroid.gateway.HermesChatTransportException
+import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryEntry
+import com.unsupportedpastels.hermesandroid.gateway.HostDirectoryListing
+import com.unsupportedpastels.hermesandroid.gateway.ModelCapabilities
+import com.unsupportedpastels.hermesandroid.gateway.ModelOptions
+import com.unsupportedpastels.hermesandroid.gateway.ModelProviderOption
+import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
+import com.unsupportedpastels.hermesandroid.gateway.ModelSwitchResult
+import com.unsupportedpastels.hermesandroid.gateway.OperationalHealth
+import com.unsupportedpastels.hermesandroid.gateway.OperationalPressure
+import com.unsupportedpastels.hermesandroid.gateway.OperationalStatus
+import com.unsupportedpastels.hermesandroid.gateway.OperationalStatusState
+import com.unsupportedpastels.hermesandroid.gateway.PromptSubmission
+import com.unsupportedpastels.hermesandroid.gateway.ResumedChatSession
+import com.unsupportedpastels.hermesandroid.gateway.RuntimeAccess
+import com.unsupportedpastels.hermesandroid.gateway.RuntimeSessionId
+import com.unsupportedpastels.hermesandroid.gateway.lastGoodOrNull
+import java.io.File
+import java.nio.file.Files
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -66,17 +68,13 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.withContext
-import java.io.File
-import java.nio.file.Files
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.receiveAsFlow
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -84,6 +82,9 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -103,6 +104,236 @@ class HermesConnectionViewModelTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun anSshTunnelTokenIsPresentedEvenWhenTheProbeReportsAuthNotRequired() = runTest(dispatcher) {
+        // Verified against a real backend: `hermes serve --isolated` spawned over SSH
+        // answers auth_required = false, yet /api/auth/me and /api/sessions both answer
+        // 401 without the tunnel token and 200 with it. Declaring "authentication not
+        // required" here is exactly what made the Android client eat that 401.
+        val origin = ServerOrigin.parse("http://127.0.0.1:37835")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val sshTokens = NativeTokenSet(
+            accessToken = "ssh-session-token",
+            refreshToken = "",
+            expiresAt = 2_000_000_000L,
+            provider = SSH_SESSION_TOKEN_PROVIDER,
+            userId = "user@203.0.113.10",
+        )
+        val tokenStore = object : NativeTokenStore {
+            override suspend fun load(serverOrigin: ServerOrigin) = sshTokens
+
+            override suspend fun save(serverOrigin: ServerOrigin, tokens: NativeTokenSet) = Unit
+
+            override suspend fun clear(serverOrigin: ServerOrigin) = Unit
+
+            override suspend fun hasSshSessionToken(serverOrigin: ServerOrigin) =
+                load(serverOrigin)?.provider == SSH_SESSION_TOKEN_PROVIDER
+        }
+        val client = AuthenticatingHermesConnectionClient()
+        val viewModel = HermesConnectionViewModel(settings, client, tokenStore = tokenStore)
+
+        runCurrent()
+        client.probeResponse.complete(
+            HermesConnectionInfo(
+                version = "0.22.5",
+                authRequired = false, // no interactive sign-in flow — but still 401s bare
+                nativeOAuthSupported = false,
+                providers = emptyList(),
+            ),
+        )
+        runCurrent()
+        client.authenticationResponse.complete(AuthenticatedHermesConnection("user", emptyList()))
+        advanceUntilIdle()
+
+        assertEquals(AuthenticationState.Authenticated, viewModel.snapshots.value.authenticationState)
+        assertEquals(1, client.authenticateCalls)
+        assertEquals("ssh-session-token", client.authenticatedWith)
+    }
+
+    @Test
+    fun aRejectedTunnelTokenIsReReadInsteadOfSigningOut() = runTest(dispatcher) {
+        // The identical failure this app shipped: a host reboot respawns the backend with a new
+        // one-time token, the app presents the one it cached, and `/api/auth/me` answers 401. Clearing
+        // the token there left the screen on "Server reachable · Sign in required" — a tunnel origin
+        // has no sign-in to complete (auth_required=false, no providers), so nothing could move it.
+        val origin = ServerOrigin.parse("http://127.0.0.1:45231")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val sshTokens = NativeTokenSet(
+            accessToken = "stale-tunnel-token",
+            refreshToken = "",
+            expiresAt = 2_000_000_000L,
+            provider = SSH_SESSION_TOKEN_PROVIDER,
+            userId = "user@203.0.113.10",
+        )
+        var clearCalls = 0
+        val tokenStore = object : NativeTokenStore {
+            override suspend fun load(serverOrigin: ServerOrigin) = sshTokens
+
+            override suspend fun save(serverOrigin: ServerOrigin, tokens: NativeTokenSet) = Unit
+
+            override suspend fun clear(serverOrigin: ServerOrigin) {
+                clearCalls += 1
+            }
+
+            override suspend fun hasSshSessionToken(serverOrigin: ServerOrigin) = true
+        }
+        val client = AuthenticatingHermesConnectionClient().apply {
+            authenticateFailure = HermesAuthenticationRejectedException("rejected")
+        }
+        val reAdoptRequests = mutableListOf<String>()
+        SshTunnelRuntime.registerTokenReAdopt { reAdoptRequests += it }
+        try {
+            val viewModel = HermesConnectionViewModel(settings, client, tokenStore = tokenStore)
+
+            runCurrent()
+            client.probeResponse.complete(
+                HermesConnectionInfo(
+                    version = "0.22.5",
+                    authRequired = false,
+                    nativeOAuthSupported = false,
+                    providers = emptyList(),
+                ),
+            )
+            advanceUntilIdle()
+
+            val snapshot = viewModel.snapshots.value
+            assertEquals("the tunnel token is the app's only credential", 0, clearCalls)
+            assertEquals(
+                "a rotated tunnel token must not become a dead sign-in screen",
+                AuthenticationState.Unknown,
+                snapshot.authenticationState,
+            )
+            assertEquals(ConnectionState.Disconnected, snapshot.connectionState)
+            assertEquals(
+                "the connection layer has to ask the tunnel for the token it now serves",
+                listOf(origin.value),
+                reAdoptRequests,
+            )
+        } finally {
+            SshTunnelRuntime.registerTokenReAdopt(null)
+        }
+    }
+
+    @Test
+    fun anOAuthOriginStillSignsOutWhenItsTokenIsRejected() = runTest(dispatcher) {
+        // The counterpart: an OAuth origin has no tunnel to re-read, so a rejected bearer is a real
+        // sign-out and the token must still be cleared.
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val tokenStore = FixedTokenStore()
+        val client = AuthenticatingHermesConnectionClient().apply {
+            authenticateFailure = HermesAuthenticationRejectedException("rejected")
+        }
+        val viewModel = HermesConnectionViewModel(
+            MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin)),
+            client,
+            tokenStore = tokenStore,
+        )
+
+        runCurrent()
+        client.probeResponse.complete(authRequiredInfo())
+        advanceUntilIdle()
+
+        assertEquals(1, tokenStore.clearCalls)
+        assertEquals(AuthenticationState.SignInRequired, viewModel.snapshots.value.authenticationState)
+    }
+
+    @Test
+    fun aTunnelOriginReconnectsAfterTheTunnelAdoptsANewToken() = runTest(dispatcher) {
+        // End of the reboot story: the rejection left the app disconnected, the tunnel re-read the
+        // token the host now serves and announced itself — the app has to pick that token up and
+        // reconnect on its own, which is what "restart the computer and it is stuck" was missing.
+        val origin = ServerOrigin.parse("http://127.0.0.1:45231")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val sshTokens = NativeTokenSet(
+            accessToken = "stale-tunnel-token",
+            refreshToken = "",
+            expiresAt = 2_000_000_000L,
+            provider = SSH_SESSION_TOKEN_PROVIDER,
+            userId = "user@203.0.113.10",
+        )
+        val tokenStore = object : NativeTokenStore {
+            override suspend fun load(serverOrigin: ServerOrigin) = sshTokens
+
+            override suspend fun save(serverOrigin: ServerOrigin, tokens: NativeTokenSet) = Unit
+
+            override suspend fun clear(serverOrigin: ServerOrigin) = Unit
+
+            override suspend fun hasSshSessionToken(serverOrigin: ServerOrigin) = true
+        }
+        val client = AuthenticatingHermesConnectionClient().apply {
+            authenticateFailure = HermesAuthenticationRejectedException("rejected")
+        }
+        SshTunnelRuntime.registerTokenReAdopt { }
+        try {
+            val viewModel = HermesConnectionViewModel(settings, client, tokenStore = tokenStore)
+
+            runCurrent()
+            client.probeResponse.complete(
+                HermesConnectionInfo(
+                    version = "0.22.5",
+                    authRequired = false,
+                    nativeOAuthSupported = false,
+                    providers = emptyList(),
+                ),
+            )
+            advanceUntilIdle()
+            assertEquals(ConnectionState.Disconnected, viewModel.snapshots.value.connectionState)
+
+            // The tunnel re-established and stored the token its backend now serves.
+            client.authenticateFailure = null
+            client.authenticationResponse.complete(
+                AuthenticatedHermesConnection("user", listOf(SessionSummary(DurableSessionId("live-1"), "Live"))),
+            )
+            val callsBefore = client.authenticateCalls
+            SshTunnelRuntime.notifyTunnelRestored(origin.value)
+            advanceUntilIdle()
+
+            assertEquals("the announce has to drive a reconnect", callsBefore + 1, client.authenticateCalls)
+            assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+            assertEquals(AuthenticationState.Authenticated, viewModel.snapshots.value.authenticationState)
+        } finally {
+            SshTunnelRuntime.registerTokenReAdopt(null)
+            SshTunnelRuntime.registerTunnelRestored(null)
+        }
+    }
+
+    @Test
+    fun aServerWithoutATokenStillConnectsWithoutAuthentication() = runTest(dispatcher) {
+        // The counterpart, so the fix cannot silently turn every local server into an
+        // authenticated one: no stored token + authRequired = false stays as before.
+        val origin = ServerOrigin.parse("http://127.0.0.1:37835")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val client = AuthenticatingHermesConnectionClient()
+        val viewModel = HermesConnectionViewModel(
+            settings,
+            client,
+            tokenStore = object : NativeTokenStore {
+                override suspend fun load(serverOrigin: ServerOrigin) = null
+
+                override suspend fun save(serverOrigin: ServerOrigin, tokens: NativeTokenSet) = Unit
+
+                override suspend fun clear(serverOrigin: ServerOrigin) = Unit
+            },
+        )
+
+        runCurrent()
+        client.probeResponse.complete(
+            HermesConnectionInfo(
+                version = "0.22.5",
+                authRequired = false,
+                nativeOAuthSupported = false,
+                providers = emptyList(),
+            ),
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            AuthenticationState.NotRequired,
+            viewModel.snapshots.value.authenticationState,
+        )
+        assertEquals(0, client.authenticateCalls)
     }
 
     @Test
@@ -3747,6 +3978,230 @@ class HermesConnectionViewModelTest {
 
         assertTrue(closed)
     }
+    @Test
+    fun automaticReconnectKeepsWhatIsOnScreenInsteadOfRebuildingEveryScreen() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val live = listOf(
+            SessionSummary(DurableSessionId("live-1"), "Live session"),
+            SessionSummary(DurableSessionId("live-2"), "Second session"),
+        )
+        val client = AuthenticatingHermesConnectionClient()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin)),
+            client = client,
+            tokenStore = FixedTokenStore(),
+        )
+        runCurrent()
+        client.probeResponse.complete(authRequiredInfo())
+        client.authenticationResponse.complete(AuthenticatedHermesConnection("user", live))
+        advanceUntilIdle()
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+        assertEquals(live, viewModel.snapshots.value.durableSessions)
+
+        // The tunnel drops. The retry re-arms the transport for the SAME origin; hold it mid-flight
+        // and assert the session list never leaves the screen (the old code replaced the snapshot
+        // with an empty one, so every screen had to re-fetch).
+        val barrier = CompletableDeferred<Unit>()
+        client.authenticateBarriers.addLast(barrier)
+        val retry = viewModel.retryConnection()
+        runCurrent()
+        assertEquals(ConnectionState.Recovering, viewModel.snapshots.value.connectionState)
+        assertEquals(live, viewModel.snapshots.value.durableSessions)
+
+        // A retry that ultimately fails keeps the stale-but-useful content on screen.
+        client.authenticateFailure = HermesConnectionException("tunnel dropped")
+        barrier.complete(Unit)
+        retry.join()
+        advanceUntilIdle()
+        assertEquals(ConnectionState.Disconnected, viewModel.snapshots.value.connectionState)
+        assertEquals(live, viewModel.snapshots.value.durableSessions)
+    }
+
+    @Test
+    fun aTunnelRestoredBeforeTheFirstConnectDoesNotPreemptIt() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val live = listOf(SessionSummary(DurableSessionId("live-1"), "Live session"))
+        val client = AuthenticatingHermesConnectionClient()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin)),
+            client = client,
+            tokenStore = FixedTokenStore(),
+        )
+        runCurrent()
+
+        // The launch-time tunnel restore finishes while the first connect is still waiting on the
+        // probe. It must not be treated as a recovery of an established connection: doing so bumped
+        // the generation, aborted the first connect, and left the app with no connection at all.
+        SshTunnelRuntime.notifyTunnelRestored(origin.value)
+        runCurrent()
+        assertEquals(ConnectionState.Connecting, viewModel.snapshots.value.connectionState)
+
+        client.probeResponse.complete(authRequiredInfo())
+        client.authenticationResponse.complete(AuthenticatedHermesConnection("user", live))
+        advanceUntilIdle()
+
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+        assertEquals(1, client.probedOrigins.size)
+    }
+
+    @Test
+    fun aForegroundReturnRefreshesOnlyTheChatThatIsOpen() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val settings = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin))
+        val foreground = MutableStateFlow(true)
+        val client = AuthenticatingHermesConnectionClient()
+        val live = listOf(
+            SessionSummary(DurableSessionId("chat-a"), "A"),
+            SessionSummary(DurableSessionId("chat-b"), "B"),
+            SessionSummary(DurableSessionId("chat-c"), "C"),
+        )
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = settings,
+            client = client,
+            tokenStore = FixedTokenStore(),
+            appForegroundStates = foreground,
+            chatConnector = HermesChatConnector { _, _ -> ScriptedEventChatSession(emptyList()) },
+            projectConnector = null,
+        )
+        runCurrent()
+        client.probeResponse.complete(authRequiredInfo())
+        client.authenticationResponse.complete(AuthenticatedHermesConnection("user", live))
+        advanceUntilIdle()
+
+        viewModel.openSession(DurableSessionId("chat-a"))
+        advanceUntilIdle()
+        viewModel.openSession(DurableSessionId("chat-c"))
+        advanceUntilIdle()
+        client.transcriptReads.clear()
+
+        foreground.value = false
+        runCurrent()
+        foreground.value = true
+        advanceUntilIdle()
+
+        // A resume used to read a full transcript page for every open chat (up to ten, ~100 KB
+        // each). Only the chat that is actually open should be refreshed.
+        assertEquals(listOf("chat-c"), client.transcriptReads)
+    }
+
+    @Test
+    fun aRebuiltTunnelProbesOnceAndLeavesAHealthyConnectionAlone() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val live = listOf(SessionSummary(DurableSessionId("live-1"), "Live session"))
+        val client = AuthenticatingHermesConnectionClient()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin)),
+            client = client,
+            tokenStore = FixedTokenStore(),
+        )
+        runCurrent()
+        client.probeResponse.complete(authRequiredInfo())
+        client.authenticationResponse.complete(AuthenticatedHermesConnection("user", live))
+        advanceUntilIdle()
+        val authenticationsBefore = client.authenticateCalls
+        client.probeCalls = 0
+
+        SshTunnelRuntime.notifyTunnelRestored(origin.value)
+        advanceUntilIdle()
+
+        // Exactly one confirmation probe, and no reconnect: the transport is fine, so nothing else
+        // may be thrown away.
+        assertEquals(1, client.probeCalls)
+        assertEquals(authenticationsBefore, client.authenticateCalls)
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+        assertEquals(live, viewModel.snapshots.value.durableSessions)
+    }
+
+    @Test
+    fun aRebuiltTunnelReconnectsWhenTheBackendRotatedItsToken() = runTest(dispatcher) {
+        // The failure this pins: a relaunched backend mints a new one-time token, but `/api/status`
+        // needs no auth and still answers 200 — so the screen reported "Server reachable" next to
+        // "Sign in required" and never recovered. Reachability alone must not count as healthy.
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val live = listOf(SessionSummary(DurableSessionId("live-1"), "Live session"))
+        val client = AuthenticatingHermesConnectionClient()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin)),
+            client = client,
+            tokenStore = FixedTokenStore(),
+        )
+        runCurrent()
+        client.probeResponse.complete(authRequiredInfo())
+        client.authenticationResponse.complete(AuthenticatedHermesConnection("user", live))
+        advanceUntilIdle()
+        val authenticationsBefore = client.authenticateCalls
+
+        client.probeCalls = 0
+        client.verifiedTokens.clear()
+        client.verifyTokenAccepts = false
+        SshTunnelRuntime.notifyTunnelRestored(origin.value)
+        advanceUntilIdle()
+
+        assertEquals("the token must actually be checked", 1, client.verifiedTokens.size)
+        assertEquals("a dead bearer has to trigger the reconnect", authenticationsBefore + 1, client.authenticateCalls)
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+        assertEquals("the screen survives the reconnect", live, viewModel.snapshots.value.durableSessions)
+    }
+
+    @Test
+    fun aRebuiltTunnelReconnectsWhenTheSocketsWentStaleButTheStateSaidConnected() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val live = listOf(SessionSummary(DurableSessionId("live-1"), "Live session"))
+        val client = AuthenticatingHermesConnectionClient()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin)),
+            client = client,
+            tokenStore = FixedTokenStore(),
+        )
+        runCurrent()
+        client.probeResponse.complete(authRequiredInfo())
+        client.authenticationResponse.complete(AuthenticatedHermesConnection("user", live))
+        advanceUntilIdle()
+        val authenticationsBefore = client.authenticateCalls
+
+        // The tunnel was rebuilt while the UI still believed it was connected; the first probe
+        // through the new forward fails, which is the evidence that our sockets were stale.
+        client.probeFailureOnce = HermesConnectionException("stale socket")
+        SshTunnelRuntime.notifyTunnelRestored(origin.value)
+        advanceUntilIdle()
+
+        assertEquals(authenticationsBefore + 1, client.authenticateCalls)
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+        // Still the same screen content: the forced reconnect must not wipe the list.
+        assertEquals(live, viewModel.snapshots.value.durableSessions)
+    }
+
+    @Test
+    fun aRebuiltTunnelAlsoConfirmsOnServersThatNeedNoLogin() = runTest(dispatcher) {
+        val origin = ServerOrigin.parse("https://hermes.example")
+        val live = listOf(SessionSummary(DurableSessionId("live-1"), "Live session"))
+        val client = AuthenticatingHermesConnectionClient()
+        val viewModel = HermesConnectionViewModel(
+            settingsStates = MutableStateFlow<ServerSettingsState>(ServerSettingsState.Ready(origin)),
+            client = client,
+            tokenStore = FixedTokenStore(),
+        )
+        runCurrent()
+        client.probeResponse.complete(
+            HermesConnectionInfo(
+                version = "0.20.0",
+                authRequired = false,
+                nativeOAuthSupported = false,
+                providers = emptyList(),
+            ),
+        )
+        advanceUntilIdle()
+        assertEquals(ConnectionState.Connected, viewModel.snapshots.value.connectionState)
+        assertEquals(AuthenticationState.NotRequired, viewModel.snapshots.value.authenticationState)
+        client.probeCalls = 0
+
+        SshTunnelRuntime.notifyTunnelRestored(origin.value)
+        advanceUntilIdle()
+
+        // A no-login backend used to be skipped entirely, so it never auto-recovered.
+        assertEquals(1, client.probeCalls)
+    }
+
 }
 
 private fun operationalStatus(profile: String, version: String) = OperationalStatus(
@@ -3929,6 +4384,7 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
     var authenticateCalls = 0
     var authenticateFailure: Throwable? = null
     var authenticatedSessionsOverride: List<SessionSummary>? = null
+    val transcriptReads = mutableListOf<String>()
     val authenticateBarriers = ArrayDeque<CompletableDeferred<Unit>>()
     var hostDirectoryResponse = HostDirectoryListing("/srv", emptyList())
     val hostDirectoryRequests = mutableListOf<Triple<ServerOrigin, String?, String?>>()
@@ -3980,8 +4436,23 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
         return sessionsForProfileLoader(serverOrigin, accessToken, profile, archivedOnly)
     }
 
+    var probeCalls = 0
+    var probeFailureOnce: Throwable? = null
+    var verifiedTokens = mutableListOf<String>()
+    var verifyTokenAccepts = true
+
+    override suspend fun verifyAccessToken(serverOrigin: ServerOrigin, accessToken: String): Boolean {
+        verifiedTokens += accessToken
+        return verifyTokenAccepts
+    }
+
     override suspend fun probe(serverOrigin: ServerOrigin): HermesConnectionInfo {
         probedOrigins += serverOrigin
+        probeCalls += 1
+        probeFailureOnce?.let { failure ->
+            probeFailureOnce = null
+            throw failure
+        }
         return probeResponse.await()
     }
 
@@ -4059,6 +4530,7 @@ private class AuthenticatingHermesConnectionClient : HermesConnectionClient {
         durableSessionId: DurableSessionId,
         profile: String,
     ): List<com.unsupportedpastels.hermesandroid.gateway.ChatMessage> {
+        transcriptReads += durableSessionId.value
         transcriptFailure?.let { throw it }
         return emptyList()
     }

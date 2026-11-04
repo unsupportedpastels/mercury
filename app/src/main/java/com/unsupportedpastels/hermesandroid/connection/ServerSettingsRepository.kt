@@ -10,10 +10,10 @@ import java.io.IOException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.retryWhen
-import kotlinx.coroutines.flow.first
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -73,6 +73,21 @@ interface ServerSettingsRepository {
 
     /** Returns true when a catalog entry was removed; active removal selects the best remaining entry. */
     suspend fun remove(serverOrigin: ServerOrigin): Boolean = false
+
+    /**
+     * Drop catalog entries that belong to the same host as [keep].
+     *
+     * A tunnel rebuild forwards a new local port, so every previous `127.0.0.1:<port>` row for one
+     * SSH target is stale by construction; without this the catalog grew one duplicate row per
+     * reconnect.
+     *
+     * **Callers must save the replacement entry first.** The keep test is by origin, so running
+     * this before the save deletes the live row and leaves the catalog empty — and an empty catalog
+     * makes the shell read the app as never configured, which sends the user to the setup screen
+     * after every launch restore. (The catalog invariant `activeOrigin ∈ entries` also means the
+     * emptiness is not detectable from `activeOrigin`: it is null in both cases.)
+     */
+    suspend fun removeMatchingLabel(labelPrefix: String, keep: ServerOrigin): Boolean = false
 }
 
 @Serializable
@@ -192,6 +207,27 @@ class DataStoreServerSettingsRepository(
                 )
                 ?.value
                 ?.origin
+            removed = true
+            writeCatalog(
+                preferences = preferences,
+                catalog = ServerCatalog.normalized(remaining, nextActive),
+            )
+        }
+        return removed
+    }
+
+    override suspend fun removeMatchingLabel(labelPrefix: String, keep: ServerOrigin): Boolean {
+        var removed = false
+        dataStore.edit { preferences ->
+            val current = readCatalog(preferences)
+            val stale = current.entries.filter {
+                it.origin != keep && it.label.isNotEmpty() && it.label.startsWith(labelPrefix)
+            }
+            if (stale.isEmpty()) return@edit
+            val remaining = current.entries.filterNot { entry -> stale.any { it.origin == entry.origin } }
+            val nextActive = current.activeOrigin
+                ?.takeIf { origin -> remaining.any { it.origin == origin } }
+                ?: remaining.firstOrNull()?.origin
             removed = true
             writeCatalog(
                 preferences = preferences,

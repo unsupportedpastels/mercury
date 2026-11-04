@@ -176,11 +176,35 @@ internal object SessionNotificationPoster {
     }
 
     private fun ensureChannels(manager: NotificationManager) {
-        manager.createNotificationChannels(listOf(
-            NotificationChannel(CHANNEL_ACTIVE, "Active Hermes tasks", NotificationManager.IMPORTANCE_LOW),
-            NotificationChannel(CHANNEL_ATTENTION, "Hermes needs attention", NotificationManager.IMPORTANCE_HIGH),
-            NotificationChannel(CHANNEL_COMPLETE, "Completed Hermes tasks", NotificationManager.IMPORTANCE_DEFAULT),
-        ))
+        // A channel's settings are immutable once created, so the reported problem ("the task
+        // notification vibrates far too hard") can only be fixed by shipping a new channel id and
+        // retiring the old one. The first version set no vibration pattern at all, which left the
+        // system default — a long, hard buzz — on the two channels that make a sound.
+        listOf(LEGACY_CHANNEL_ATTENTION, LEGACY_CHANNEL_COMPLETE).forEach(manager::deleteNotificationChannel)
+        val attention = NotificationChannel(
+            CHANNEL_ATTENTION,
+            "Hermes needs attention",
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            enableVibration(true)
+            vibrationPattern = LIGHT_VIBRATION_PATTERN
+        }
+        val complete = NotificationChannel(
+            CHANNEL_COMPLETE,
+            "Completed Hermes tasks",
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            enableVibration(true)
+            vibrationPattern = LIGHT_VIBRATION_PATTERN
+        }
+        manager.createNotificationChannels(
+            listOf(
+                // LOW: silently updates while a task is running, no vibration of its own.
+                NotificationChannel(CHANNEL_ACTIVE, "Active Hermes tasks", NotificationManager.IMPORTANCE_LOW),
+                attention,
+                complete,
+            ),
+        )
     }
 
     private fun notificationId(sessionId: String, kind: Int): Int = 31 * sessionId.hashCode() + kind
@@ -205,9 +229,15 @@ internal object SessionNotificationPoster {
         )
     }
 
+    // v2 because a channel's vibration pattern cannot be changed after it is created.
     private const val CHANNEL_ACTIVE = "hermes_active_tasks"
-    private const val CHANNEL_ATTENTION = "hermes_task_attention"
-    private const val CHANNEL_COMPLETE = "hermes_task_complete"
+    private const val CHANNEL_ATTENTION = "hermes_task_attention_v2"
+    private const val CHANNEL_COMPLETE = "hermes_task_complete_v2"
+    private const val LEGACY_CHANNEL_ATTENTION = "hermes_task_attention"
+    private const val LEGACY_CHANNEL_COMPLETE = "hermes_task_complete"
+
+    /** One short tick. The old inert settings fell back to the system's long, hard buzz. */
+    private val LIGHT_VIBRATION_PATTERN = longArrayOf(0L, 15L)
     private const val INPUT_KIND = 1
     private const val COMPLETE_KIND = 2
 }
