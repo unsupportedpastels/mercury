@@ -7,7 +7,20 @@ import java.io.File
 const val MAX_HOST_FILE_ENTRIES = 500
 const val MAX_HOST_FILE_PATH_LENGTH = 1_024
 const val MAX_HOST_FILE_NAME_LENGTH = 255
-const val MAX_HOST_FILE_BYTES = 10 * 1024 * 1024
+/**
+ * The in-memory ceiling for a managed file.
+ *
+ * The server's own limit on these routes is 100 MB (`web_server.py: _MANAGED_FILE_MAX_BYTES`); the
+ * client sitting far below it is what made a save look like it worked while producing a 0-byte file —
+ * the system picker creates the empty document *first*, and only then was the fetch refused for size.
+ */
+const val MAX_HOST_FILE_BYTES = 100 * 1024 * 1024
+
+/** The same ceiling for the streaming saver, which never holds the file in memory. */
+const val MAX_HOST_FILE_STREAM_BYTES = 100 * 1024 * 1024
+
+/** How much is read from the network between progress reports. */
+const val HOST_FILE_STREAM_CHUNK_BYTES = 64 * 1024
 
 /** Metadata returned by the official managed-files listing. */
 data class HostFileEntry(

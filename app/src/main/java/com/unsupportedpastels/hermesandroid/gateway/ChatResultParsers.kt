@@ -147,6 +147,10 @@ internal fun parseProjectSummary(
     val parsedPreview = previewSessions
         .orEmpty()
         .mapNotNull { element -> parseSessionSummary(element as? JsonObject, id) }
+        // A project card's preview is a list of sessions like any other: scheduled runs and
+        // internal children are not conversations, and are filtered before the cap so real
+        // ones are not crowded out of the preview.
+        .filter { it.isConversation }
         .take(ProjectSummary.MAX_PREVIEW_SESSIONS)
     val sessionCount = value?.longValue("sessionCount")?.toInt()
         ?: value?.longValue("session_count")?.toInt()
@@ -187,6 +191,9 @@ private fun parseSessionSummary(
         profile = value?.stringValue("profile"),
         pinned = value?.booleanValue("pinned") ?: false,
         archived = value?.booleanValue("archived") ?: false,
+        source = value?.stringValue("source")?.take(32),
+        isInternal = (value?.booleanValue("hidden") ?: false) ||
+            (value?.booleanValue("is_internal_child") ?: false),
     )
 }
 
@@ -319,8 +326,15 @@ private fun String.isSafeProcessText(): Boolean = all {
 internal fun JsonObject.stringValue(name: String): String? =
     (this[name] as? JsonPrimitive)?.contentOrNull
 
-internal fun JsonObject.booleanValue(name: String): Boolean? =
-    (this[name] as? JsonPrimitive)?.booleanOrNull
+/**
+ * Boolean-ish JSON tolerance. A backend may send a real boolean or a string/number ("0"/"1");
+ * `booleanOrNull` throws on the latter, which would fail an entire response for one flag.
+ */
+internal fun JsonObject.booleanValue(name: String): Boolean? {
+    val primitive = this[name] as? JsonPrimitive ?: return null
+    primitive.booleanOrNull?.let { return it }
+    return primitive.content.trim().lowercase() in setOf("1", "true", "yes", "y", "on")
+}
 
 internal fun JsonObject.longValue(name: String): Long? =
     (this[name] as? JsonPrimitive)?.longOrNull

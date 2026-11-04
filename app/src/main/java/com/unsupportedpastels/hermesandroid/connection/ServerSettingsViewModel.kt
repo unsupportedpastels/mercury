@@ -42,6 +42,12 @@ class ServerSettingsViewModel(
         }
     }
 
+    /** Prune the stale catalog rows of an SSH host before registering its new local port. */
+    fun removeStaleSshEntries(labelPrefix: String, keep: ServerOrigin): Deferred<Result<Unit>> =
+        viewModelScope.async {
+            runCatching { repository.removeMatchingLabel(labelPrefix, keep) }.map { }
+        }
+
     class Factory(context: Context) : ViewModelProvider.Factory {
         private val applicationContext = context.applicationContext
 

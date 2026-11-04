@@ -7,19 +7,19 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
-import io.ktor.http.HttpStatusCode
 import io.ktor.http.HttpMethod
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.yield
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.advanceUntilIdle
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonObject
@@ -61,6 +61,64 @@ class HermesChatGatewayTest {
         assertEquals("opaque-password", requests[1]["params"]!!.jsonObject["password"]!!.jsonPrimitive.content)
         assertEquals("", requests[2]["params"]!!.jsonObject["text"]!!.jsonPrimitive.content)
         connection.close()
+    }
+
+    /**
+     * The ungated-dashboard path. A loopback dashboard with no auth provider answers
+     * 401 on `/api/auth/ws-ticket`, and its WebSocket takes the session token itself
+     * as `?token=` — which is what the dashboard's own client builds
+     * (`authParam = ["token", window.__HERMES_SESSION_TOKEN__]`). Verified against a
+     * real `hermes serve --isolated`: `?token=<served>` → 101, no credential → 403,
+     * `?ticket=…` → 403.
+     */
+    @Test
+    fun loopbackDashboardFallsBackToTheSessionTokenQueryParam() = runTest {
+        val factory = RecordingSocketFactory(ScriptedSocket())
+        HermesChatGateway(
+            origin = ServerOrigin.parse("http://127.0.0.1:42409"),
+            accessToken = "session-token",
+            ticketClient = UnauthorizedTicketClient(),
+            socketFactory = factory,
+            parentScope = backgroundScope,
+        ).connect()
+
+        assertEquals(listOf("ws://127.0.0.1:42409/api/ws?token=session-token"), factory.urls)
+    }
+
+    /** A gated dashboard keeps today's semantics: an unauthorized ticket means re-auth. */
+    @Test
+    fun gatedDashboardKeepsTheUnauthorizedTicketFailure() = runTest {
+        val factory = RecordingSocketFactory(ScriptedSocket())
+        try {
+            HermesChatGateway(
+                origin = ServerOrigin.parse("https://hermes.example"),
+                accessToken = "stale-bearer",
+                ticketClient = UnauthorizedTicketClient(),
+                socketFactory = factory,
+                parentScope = backgroundScope,
+            ).connect()
+            fail("expected HermesChatUnauthorizedException")
+        } catch (expected: HermesChatUnauthorizedException) {
+            assertTrue("no socket should be dialled", factory.urls.isEmpty())
+        }
+    }
+
+    /** Nothing to present: the original unauthorized error must survive untouched. */
+    @Test
+    fun loopbackDashboardWithoutATokenStillFailsAsUnauthorized() = runTest {
+        val factory = RecordingSocketFactory(ScriptedSocket())
+        try {
+            HermesChatGateway(
+                origin = ServerOrigin.parse("http://127.0.0.1:42409"),
+                accessToken = "",
+                ticketClient = UnauthorizedTicketClient(),
+                socketFactory = factory,
+                parentScope = backgroundScope,
+            ).connect()
+            fail("expected HermesChatUnauthorizedException")
+        } catch (expected: HermesChatUnauthorizedException) {
+            assertTrue("no socket should be dialled", factory.urls.isEmpty())
+        }
     }
 
     @Test
@@ -519,7 +577,43 @@ class HermesChatGatewayTest {
         }.exceptionOrNull()
 
         assertTrue(failure is HermesChatProtocolException)
-        assertEquals("Hermes RPC request failed (-32602)", failure?.message)
+        // The server's own wording is kept now: it is what tells a user (and a report) which refusal
+        // this is — see the reaped-runtime test below for the same idea.
+        assertEquals("Hermes RPC request failed (-32602): details omitted", failure?.message)
+        connection.close()
+    }
+
+    @Test
+    fun aReapedRuntimeIsReportedAsSessionNotFoundSoCallersCanResume() = runTest {
+        val socket = ScriptedSocket()
+        socket.onSend = { frame ->
+            val request = Json.parseToJsonElement(frame).jsonObject
+            // What the gateway answers for a runtime it no longer holds (reaped after the orphan
+            // grace, evicted, or lost with the process).
+            socket.offer(
+                """{"jsonrpc":"2.0","id":${request["id"]!!.jsonPrimitive.content},"error":{"code":4001,"message":"session not found"}}""",
+            )
+        }
+        val connection = HermesChatGateway(
+            origin = ServerOrigin.parse("https://hermes.example"),
+            accessToken = "opaque-access",
+            ticketClient = RecordingTicketClient("ticket-1"),
+            socketFactory = RecordingSocketFactory(socket),
+            parentScope = backgroundScope,
+        ).connect()
+
+        val failure = runCatching {
+            connection.resume(
+                com.unsupportedpastels.hermesandroid.app.DurableSessionId("durable-1"),
+            )
+        }.exceptionOrNull()
+
+        // Typed on purpose: the generic "Hermes RPC request failed (4001)" cannot tell a caller
+        // whether retrying is safe. This one says the request never ran, so resuming the STORED
+        // session and retrying once cannot double-submit.
+        assertTrue(failure is HermesChatSessionNotFoundException)
+        assertEquals(4001L, (failure as HermesChatSessionNotFoundException).rpcCode)
+        assertFalse(failure is HermesChatMethodNotFoundException)
         connection.close()
     }
 
@@ -1655,6 +1749,12 @@ class HermesChatGatewayTest {
 
         connection.close()
     }
+}
+
+/** Stands in for `/api/auth/ws-ticket` on a dashboard with no auth provider. */
+private class UnauthorizedTicketClient : WsTicketClient {
+    override suspend fun mintTicket(origin: ServerOrigin, accessToken: String): WsTicket =
+        throw HermesChatUnauthorizedException("Hermes ticket request was unauthorized (HTTP 401)")
 }
 
 private class RecordingTicketClient(

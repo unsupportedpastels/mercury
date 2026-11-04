@@ -452,3 +452,25 @@ private data class StoredMessage(
         )
     }.getOrNull()
 }
+
+/**
+ * How many cached sessions a launch may put on screen before the server answers.
+ *
+ * The store keeps up to [OfflineCachePolicy.MAX_SESSION_COUNT] rows for offline use, but replaying all
+ * of them at launch shows a list that is mostly history the user has moved past. A short, recent
+ * window keeps the offline case useful without pretending the app still has that many sessions.
+ */
+internal const val LAUNCH_RESTORE_MAX = 25
+
+/**
+ * What a launch should show from the cache: conversations only, most recent first, bounded.
+ *
+ * The conversation rule belongs *here* rather than at the call site — the cache still holds rows for
+ * sessions the app no longer lists (scheduled runs cached before they were filtered out), and the first
+ * attempt at this fix applied every other list's rule but not this one, so launch was the one place
+ * they still appeared.
+ */
+internal fun List<CachedSession>.forLaunchRestore(): List<CachedSession> =
+    filter { it.summary.isConversation }
+        .sortedByDescending { it.summary.lastActiveEpochSeconds ?: 0.0 }
+        .take(LAUNCH_RESTORE_MAX)

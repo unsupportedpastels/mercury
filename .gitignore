@@ -46,3 +46,9 @@ local.properties
 /tools/*-local.md
 /tools/*-local.sh
 **/DIAGNOSTICS.md
+# ssh-lifecycle offline verify harness (jars are re-fetched by fetch-libs.sh)
+tools/ssh-lifecycle-verify/lib/
+tools/ssh-lifecycle-verify/out/
+tools/ssh-lifecycle-verify/reports/
+# android build outputs
+app/build/

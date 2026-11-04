@@ -111,6 +111,9 @@ internal fun parseRelaySessionRows(result: JsonObject): List<SessionSummary> =
                     profile = string("profile")?.take(64),
                     pinned = (row["pinned"] as? JsonPrimitive)?.booleanOrNull ?: false,
                     archived = (row["archived"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                    source = string("source")?.take(32),
+                    isInternal = ((row["hidden"] as? JsonPrimitive)?.booleanOrNull ?: false) ||
+                        ((row["is_internal_child"] as? JsonPrimitive)?.booleanOrNull ?: false),
                 )
             }.getOrNull()
         }

@@ -18,6 +18,14 @@ import java.nio.charset.StandardCharsets
 
 private const val MAX_TICKET_RESPONSE_BYTES = 16 * 1024
 
+/**
+ * The user-facing sentence names the stage; without the cause it is all anyone can see, because the
+ * exception is swallowed into a transport error. Keep the message and append the library's own words.
+ */
+private fun causeSuffix(error: Throwable): String =
+    error.message?.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""
+
+
 class KtorWsTicketClient(
     private val client: HttpClient,
     private val json: Json = Json { ignoreUnknownKeys = true },
@@ -54,7 +62,9 @@ class KtorWsTicketClient(
         } catch (error: HermesChatException) {
             throw error
         } catch (error: Exception) {
-            throw HermesChatTransportException("Could not mint Hermes chat ticket", error)
+            throw HermesChatTransportException(
+                "Could not mint Hermes chat ticket" + causeSuffix(error), error,
+            )
         }
     }
 }
@@ -68,7 +78,9 @@ class KtorChatWebSocketFactory(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
-            throw HermesChatTransportException("Could not connect to Hermes chat", error)
+            throw HermesChatTransportException(
+                "Could not connect to Hermes chat" + causeSuffix(error), error,
+            )
         }
     }
 }

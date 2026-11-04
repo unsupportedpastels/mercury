@@ -8,62 +8,36 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
-import androidx.compose.runtime.mutableLongStateOf
-import kotlinx.coroutines.delay
-import com.unsupportedpastels.mercury.core.activity.ActivityLineInput
-import com.unsupportedpastels.mercury.core.activity.ActivityLinePolicy
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.DragInteraction
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.IntrinsicSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.InputChip
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Add
@@ -72,13 +46,34 @@ import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.InputChip
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -91,54 +86,62 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.dropUnlessResumed
 import com.unsupportedpastels.hermesandroid.app.ComposerAttachment
+import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.RunEventState
 import com.unsupportedpastels.hermesandroid.app.RunInteractionLifecycle
 import com.unsupportedpastels.hermesandroid.app.RunToolState
-import com.unsupportedpastels.hermesandroid.app.DurableSessionId
 import com.unsupportedpastels.hermesandroid.app.SessionSummary
 import com.unsupportedpastels.hermesandroid.app.isNoProjectBucket
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
-import com.unsupportedpastels.hermesandroid.attachment.AttachmentPolicy
 import com.unsupportedpastels.hermesandroid.artifacts.ArtifactExtractor
+import com.unsupportedpastels.hermesandroid.artifacts.ArtifactOrigin
+import com.unsupportedpastels.hermesandroid.artifacts.ArtifactType
+import com.unsupportedpastels.hermesandroid.attachment.AttachmentPolicy
+import com.unsupportedpastels.hermesandroid.connection.SlashCompletionState
+import com.unsupportedpastels.hermesandroid.files.HostFileContent
+import com.unsupportedpastels.hermesandroid.files.HostFileListing
+import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
+import com.unsupportedpastels.hermesandroid.gateway.CacheSource
+import com.unsupportedpastels.hermesandroid.gateway.ChatConnectionPhase
+import com.unsupportedpastels.hermesandroid.gateway.ChatMessageRole
+import com.unsupportedpastels.hermesandroid.gateway.ChatSessionSnapshot
+import com.unsupportedpastels.hermesandroid.gateway.SlashCompletionItem
+import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
+import com.unsupportedpastels.hermesandroid.gateway.ValidReasoningEfforts
+import com.unsupportedpastels.hermesandroid.theme.LocalHermesSemanticColors
 import com.unsupportedpastels.hermesandroid.voice.AutoSpeakEffect
 import com.unsupportedpastels.hermesandroid.voice.ComposerVoiceConversation
+import com.unsupportedpastels.hermesandroid.voice.DeviceSpeechInputButton
+import com.unsupportedpastels.hermesandroid.voice.DeviceSpeechRecognizerController
 import com.unsupportedpastels.hermesandroid.voice.MessageReadAloud
 import com.unsupportedpastels.hermesandroid.voice.VoiceConversationBar
 import com.unsupportedpastels.hermesandroid.voice.VoiceConversationState
 import com.unsupportedpastels.hermesandroid.voice.VoiceConversationToggleButton
 import com.unsupportedpastels.hermesandroid.voice.rememberReadAloudSession
 import com.unsupportedpastels.hermesandroid.voice.rememberVoiceConversationHost
-import com.unsupportedpastels.hermesandroid.voice.DeviceSpeechRecognizerController
-import com.unsupportedpastels.hermesandroid.voice.DeviceSpeechInputButton
-import com.unsupportedpastels.hermesandroid.connection.SlashCompletionState
-import com.unsupportedpastels.hermesandroid.gateway.ChatMessageRole
-import com.unsupportedpastels.hermesandroid.gateway.CacheSource
-import com.unsupportedpastels.hermesandroid.gateway.ChatConnectionPhase
-import com.unsupportedpastels.hermesandroid.gateway.ChatSessionSnapshot
-import com.unsupportedpastels.hermesandroid.gateway.UnsupportedBlockingKind
-import com.unsupportedpastels.hermesandroid.gateway.SlashCompletionItem
-import com.unsupportedpastels.hermesandroid.gateway.ValidReasoningEfforts
-import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
-import com.unsupportedpastels.hermesandroid.files.HostFileContent
-import com.unsupportedpastels.hermesandroid.files.HostFileListing
-import com.unsupportedpastels.hermesandroid.theme.LocalHermesSemanticColors
-import kotlinx.coroutines.launch
+import com.unsupportedpastels.mercury.core.activity.ActivityLineInput
+import com.unsupportedpastels.mercury.core.activity.ActivityLinePolicy
 import com.unsupportedpastels.mercury.core.composer.ComposerAction
 import com.unsupportedpastels.mercury.core.composer.ComposerRejection
 import com.unsupportedpastels.mercury.core.composer.ComposerRoutingPolicy
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private data class PendingComposerSend(
     val draft: String,
@@ -226,6 +229,9 @@ internal fun SessionDetailScreen(
     onPeekManagedVideo: (suspend (String) -> ManagedVideoMedia?)? = null,
     onLoadHostFiles: suspend (String?) -> Result<HostFileListing>,
     onLoadManagedFile: suspend (String) -> Result<HostFileContent>,
+    onStreamManagedFile: (
+        suspend (String, java.io.OutputStream, (Long, Long?) -> Unit) -> Long
+    )? = null,
     onAttachHostReference: (String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -440,6 +446,16 @@ internal fun SessionDetailScreen(
                         }
                     }
                 },
+                actions = {
+                    IconButton(
+                        onClick = { showArtifacts = true },
+                        modifier = Modifier
+                            .testTag("Open artifacts")
+                            .semantics { contentDescription = "Open artifacts" },
+                    ) {
+                        Icon(Icons.Rounded.Folder, contentDescription = null)
+                    }
+                },
             )
         },
     ) { innerPadding ->
@@ -610,6 +626,25 @@ internal fun SessionDetailScreen(
                                             peekManagedVideo = onPeekManagedVideo,
                                         )
                                     }
+                                }
+                                // Files the assistant delivered with this message (MEDIA: paths that
+                                // are neither image nor video) shown where they are read, rather than
+                                // only in the artifact sheet. Images and videos keep their own blocks.
+                                val deliveredFiles = remember(renderedText) {
+                                    ArtifactExtractor.extract(renderedText).filter { artifact ->
+                                        artifact.origin == ArtifactOrigin.ManagedPath &&
+                                            (
+                                                artifact.type == ArtifactType.File ||
+                                                    artifact.type == ArtifactType.Audio
+                                                )
+                                    }
+                                }
+                                deliveredFiles.forEach { artifact ->
+                                    ManagedFileCard(
+                                        artifact = artifact,
+                                        onLoadManagedFile = onLoadManagedFile,
+                                        onStreamManagedFile = onStreamManagedFile,
+                                    )
                                 }
                             }
                         }

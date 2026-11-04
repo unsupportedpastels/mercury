@@ -2,26 +2,29 @@ package com.unsupportedpastels.hermesandroid.ui
 
 import android.net.Uri
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -39,9 +42,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
-import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -56,32 +56,32 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.dropUnlessResumed
 import androidx.navigation3.runtime.NavKey
-import com.unsupportedpastels.hermesandroid.voice.VoiceSettings
-import com.unsupportedpastels.hermesandroid.voice.VoiceSettingsSection
-import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
+import com.unsupportedpastels.hermesandroid.connection.MAX_SERVER_LABEL_CHARS
 import com.unsupportedpastels.hermesandroid.connection.ServerCatalog
 import com.unsupportedpastels.hermesandroid.connection.ServerCatalogEntry
-import com.unsupportedpastels.hermesandroid.connection.MAX_SERVER_LABEL_CHARS
+import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
 import com.unsupportedpastels.hermesandroid.gateway.AuthenticationState
 import com.unsupportedpastels.hermesandroid.gateway.CronJobAction
 import com.unsupportedpastels.hermesandroid.gateway.HermesGatewaySnapshot
 import com.unsupportedpastels.hermesandroid.gateway.ModelSelection
 import com.unsupportedpastels.hermesandroid.gateway.ModelSwitchResult
-import com.unsupportedpastels.hermesandroid.relay.RelayUiState
-import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
 import com.unsupportedpastels.hermesandroid.navigation.ServerSettingsRoute
-import com.unsupportedpastels.hermesandroid.navigation.SettingsServersRoute
-import com.unsupportedpastels.hermesandroid.navigation.SettingsConnectionRoute
-import com.unsupportedpastels.hermesandroid.navigation.SettingsModelRoute
-import com.unsupportedpastels.hermesandroid.navigation.SettingsVoiceRoute
-import com.unsupportedpastels.hermesandroid.navigation.SettingsOfflineRoute
-import com.unsupportedpastels.hermesandroid.navigation.SettingsJobsRoute
 import com.unsupportedpastels.hermesandroid.navigation.SettingsAccountRoute
+import com.unsupportedpastels.hermesandroid.navigation.SettingsConnectionRoute
+import com.unsupportedpastels.hermesandroid.navigation.SettingsJobsRoute
+import com.unsupportedpastels.hermesandroid.navigation.SettingsModelRoute
+import com.unsupportedpastels.hermesandroid.navigation.SettingsOfflineRoute
+import com.unsupportedpastels.hermesandroid.navigation.SettingsServersRoute
+import com.unsupportedpastels.hermesandroid.navigation.SettingsVoiceRoute
+import com.unsupportedpastels.hermesandroid.relay.RelayUiState
+import com.unsupportedpastels.hermesandroid.voice.VoiceSettings
+import com.unsupportedpastels.hermesandroid.voice.VoiceSettingsSection
+import com.unsupportedpastels.mercury.core.relay.RelayPairedTarget
 import kotlinx.coroutines.launch
 /**
  * The distinct areas of the settings surface. Each maps to a hub row and a
@@ -219,6 +219,8 @@ internal fun ServerSettingsScreen(
     onCloudSelectAgent: suspend (com.unsupportedpastels.hermesandroid.connection.CloudAgent) -> Result<Unit> = {
         Result.success(Unit)
     },
+    /** Optional slot: the "Connect over SSH" card, hosted by the app shell. */
+    sshPanel: (@Composable () -> Unit)? = null,
 ) {
     var value by rememberSaveable(serverOrigin?.value) {
         mutableStateOf(serverOrigin?.value.orEmpty())
@@ -313,6 +315,7 @@ internal fun ServerSettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 if (SettingsSection.Servers in visibleSections) {
+                    sshPanel?.invoke()
                     if (isInitialOnboarding) {
                         Text("Connect to Hermes", style = MaterialTheme.typography.headlineMedium)
                         Text(
@@ -342,7 +345,7 @@ internal fun ServerSettingsScreen(
                                     activeContainerColor = MaterialTheme.colorScheme.primary,
                                     activeContentColor = MaterialTheme.colorScheme.onPrimary,
                                 ),
-                            ) { Text("Self-hosted") }
+                            ) { Text("Self-hosted", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) }
                             SegmentedButton(
                                 selected = connectMode == ConnectMode.Cloud,
                                 onClick = { connectMode = ConnectMode.Cloud },
@@ -352,7 +355,7 @@ internal fun ServerSettingsScreen(
                                     activeContainerColor = MaterialTheme.colorScheme.primary,
                                     activeContentColor = MaterialTheme.colorScheme.onPrimary,
                                 ),
-                            ) { Text("Hermes Cloud") }
+                            ) { Text("Hermes Cloud", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) }
                             SegmentedButton(
                                 selected = connectMode == ConnectMode.Relay,
                                 onClick = { connectMode = ConnectMode.Relay },
@@ -362,7 +365,7 @@ internal fun ServerSettingsScreen(
                                     activeContainerColor = MaterialTheme.colorScheme.primary,
                                     activeContentColor = MaterialTheme.colorScheme.onPrimary,
                                 ),
-                            ) { Text("Relay") }
+                            ) { Text("Relay", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) }
                         }
                     }
                     if (isInitialOnboarding) {

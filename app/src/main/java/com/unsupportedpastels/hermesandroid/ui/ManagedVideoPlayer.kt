@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -20,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
@@ -59,6 +61,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import com.unsupportedpastels.hermesandroid.attachment.MediaExport
 import com.unsupportedpastels.hermesandroid.files.ManagedVideoMedia
 import java.io.File
 import java.io.FileOutputStream
@@ -195,6 +198,24 @@ internal fun ManagedVideoBlock(
         }
     }
 
+    val downloadAction: () -> Unit = {
+        scope.launch {
+            val loaded = media
+            val name = MediaExport.fileNameFor(source, "mp4")
+            val saved = loaded != null &&
+                MediaExport.saveFile(
+                    context = context,
+                    displayName = name,
+                    mimeType = MediaExport.mimeTypeFor(name, "video/mp4"),
+                    source = loaded.file,
+                ) != null
+            Toast.makeText(
+                context,
+                if (saved) "Saved to Downloads" else "Could not save video",
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+    }
     val player = remember(media) {
         media?.let { loaded ->
             ExoPlayer.Builder(context).build().apply {
@@ -338,18 +359,33 @@ internal fun ManagedVideoBlock(
                 modifier = Modifier.fillMaxSize(),
             )
             IconButton(
-                onClick = { fullscreen = true },
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .size(40.dp)
-                    .semantics { contentDescription = "Open fullscreen video" },
-            ) {
-                Icon(
-                    Icons.Rounded.Fullscreen,
-                    contentDescription = null,
-                    tint = Color.White,
-                )
-            }
+                    onClick = { fullscreen = true },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(40.dp)
+                        .semantics { contentDescription = "Open fullscreen video" },
+                ) {
+                    Icon(
+                        Icons.Rounded.Fullscreen,
+                        contentDescription = null,
+                        tint = Color.White,
+                    )
+                }
+                if (media != null) {
+                    IconButton(
+                        onClick = downloadAction,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .size(40.dp)
+                            .semantics { contentDescription = "Download video" },
+                    ) {
+                        Icon(
+                            Icons.Rounded.Download,
+                            contentDescription = null,
+                            tint = Color.White,
+                        )
+                    }
+                }
         }
 
         if (fullscreen && player != null) {

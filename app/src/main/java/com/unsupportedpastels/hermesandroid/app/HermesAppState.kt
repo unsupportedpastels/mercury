@@ -24,7 +24,26 @@ data class SessionSummary(
     val profile: String? = null,
     val pinned: Boolean = false,
     val archived: Boolean = false,
-)
+    /** Where the backend says this session came from: `cron`, `weixin`, `desktop`, `cli`, … */
+    val source: String? = null,
+    /** The backend asked for this session to stay out of the way, or it is a sub-agent's child. */
+    val isInternal: Boolean = false,
+) {
+    /**
+     * A scheduled run's transcript is not a conversation anyone started. The backend stamps these
+     * with `source: "cron"`, and an hourly job buries every real session under its own history.
+     */
+    val isScheduled: Boolean
+        get() = source?.equals("cron", ignoreCase = true) == true
+
+    /**
+     * The single rule every surface that lists sessions has to apply. Screens that page straight from
+     * the backend (the "View all" list) do not share Home's filter, so keeping this in one place is
+     * what stops the next list from quietly showing scheduled runs again.
+     */
+    val isConversation: Boolean
+        get() = !isInternal && !isScheduled
+}
 
 data class HermesAppState(
     val sessions: List<SessionSummary> = emptyList(),
