@@ -12,6 +12,7 @@ import com.unsupportedpastels.hermesandroid.app.MAX_PROCESS_ROWS
 import com.unsupportedpastels.hermesandroid.app.validProjectWorkspacePath
 import com.unsupportedpastels.hermesandroid.connection.ServerOrigin
 import com.unsupportedpastels.mercury.core.files.RelayFoldersContract
+import com.unsupportedpastels.mercury.core.interaction.ServerRequestPolicy
 import com.unsupportedpastels.mercury.core.profiles.ProfileCatalogPolicy
 import com.unsupportedpastels.mercury.core.sessions.SessionPresencePolicy
 import com.unsupportedpastels.mercury.core.rpc.RpcResultDecoder
@@ -58,10 +59,17 @@ internal const val HERMES_CHAT_MAX_MESSAGE_TEXT_CHARS = ChatEventDecoder.MAX_MES
 internal const val HERMES_CHAT_MAX_EVENT_CHOICE_CHARS = ChatEventDecoder.MAX_EVENT_CHOICE_CHARS
 private const val MAX_PROJECT_PREVIEW_LIMIT = 3
 private const val MAX_PROJECT_SESSION_LIMIT = 500
+private const val MAX_OPEN_SERVER_REQUESTS = 32
+private const val ADVERTISE_TIMEOUT_MILLIS = 10_000L
 
 /**
  * Ticketed JSON-RPC chat transport. The access token is consumed only by the ticket client;
  * the WebSocket factory receives a URL containing only the fresh single-use ticket.
+ *
+ * [answersServerRequests]: every connection advertises and answers Hermes server→client requests
+ * (clarify, approval, secret, sudo). Hermes withholds a request from *all* clients attached to a
+ * session while any one of them has not advertised, so production turns this on for every
+ * connection it opens.
  */
 class HermesChatGateway(
     private val origin: ServerOrigin,
@@ -70,6 +78,7 @@ class HermesChatGateway(
     private val socketFactory: ChatWebSocketFactory,
     private val maxFrameBytes: Int = DEFAULT_MAX_FRAME_BYTES,
     private val parentScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val answersServerRequests: Boolean = false,
 ) {
     init {
         // A blank access token is valid for cookie-backed sessions (basic auth):
@@ -97,7 +106,8 @@ class HermesChatGateway(
             socket = socket,
             maxFrameBytes = maxFrameBytes,
             parentScope = parentScope,
-        )
+            answersServerRequests = answersServerRequests,
+        ).also { it.advertiseServerRequests() }
     }
 
     private fun websocketUrl(origin: ServerOrigin, ticket: String): String {
@@ -122,12 +132,30 @@ private data class PendingApproval(
         )
 }
 
+/**
+ * A server→client request this connection surfaced and still owes an answer. [legacyRequestId]
+ * is the id the card answers with (see [ServerRequestPolicy.Disposition.Surface]).
+ */
+private data class OpenServerRequest(
+    val id: String,
+    val method: String,
+    val sessionId: String,
+    val legacyRequestId: String,
+    val questionIds: List<String>,
+)
+
+/**
+ * [answersServerRequests]: advertise `client.capabilities {server_requests: true}` and answer
+ * Hermes server→client requests (clarify, approval, secret, sudo) on this connection. Without it
+ * current Hermes fails approvals closed and auto-skips clarify for this client.
+ */
 class HermesChatConnection internal constructor(
     private val socket: HermesChatSocket,
     private val maxFrameBytes: Int,
     parentScope: CoroutineScope,
     private val nextRequestId: AtomicLong = AtomicLong(1),
     private val projectPathPreflight: Boolean = true,
+    private val answersServerRequests: Boolean = false,
 ) : HermesChatSession {
     override val relayLeaseSnapshot: com.unsupportedpastels.hermesandroid.relay.RelayLeaseSnapshot?
         get() = (socket as? com.unsupportedpastels.hermesandroid.relay.RelayLeaseRecoverySocket)?.snapshot
@@ -234,6 +262,7 @@ class HermesChatConnection internal constructor(
     private val pendingRequestMethods = ConcurrentHashMap<Long, String>()
     private val interactionLock = Any()
     private val pendingApprovals = HashMap<String, ArrayDeque<PendingApproval>>()
+    private val openServerRequests = LinkedHashMap<String, OpenServerRequest>()
     // DROP_OLDEST: a slow Main-thread collector (fold/unfold recomposition jank
     // during a fast delta stream) must degrade to lost intermediate deltas, not a
     // torn-down connection. Terminal events arrive last, so they are the least
@@ -249,6 +278,29 @@ class HermesChatConnection internal constructor(
 
     override val events: Flow<HermesChatEvent> = eventChannel.receiveAsFlow()
 
+    /**
+     * Tells Hermes this connection answers server→client requests. The capability is per
+     * connection (Hermes forgets it on disconnect), so every new connection advertises it before
+     * it is handed out. Best effort: an older Hermes without the method keeps using the legacy
+     * notification events, and a failure here must not fail the connection.
+     */
+    internal suspend fun advertiseServerRequests() {
+        if (!answersServerRequests) return
+        try {
+            kotlinx.coroutines.withTimeout(ADVERTISE_TIMEOUT_MILLIS) {
+                request(
+                    ServerRequestPolicy.CAPABILITIES_METHOD,
+                    json.parseToJsonElement(ServerRequestPolicy.capabilitiesParams()).jsonObject,
+                )
+            }
+        } catch (cancelled: CancellationException) {
+            if (cancelled is kotlinx.coroutines.TimeoutCancellationException) return
+            throw cancelled
+        } catch (_: Exception) {
+            // Older Hermes: legacy events still flow.
+        }
+    }
+
     override suspend fun resume(
         durableSessionId: DurableSessionId,
         profile: String?,
@@ -258,7 +310,13 @@ class HermesChatConnection internal constructor(
             profile?.let { put("profile", it) }
             put("close_on_disconnect", false)
         }
-        return parseResumeResult(request("session.resume", params), durableSessionId)
+        val result = request("session.resume", params)
+        val resumed = parseResumeResult(result, durableSessionId)
+        // Questions already waiting when this client attached ride on the resume snapshot.
+        if (answersServerRequests) {
+            ServerRequestPolicy.openRequests(result.toString()).forEach(::handleServerRequest)
+        }
+        return resumed
     }
 
     override suspend fun loadProjectTree(
@@ -472,6 +530,9 @@ class HermesChatConnection internal constructor(
         questionId: String?,
         answer: String,
     ): HermesChatResponse {
+        openServerRequest(requestId, "clarify")?.let { open ->
+            return lockClarifyAnswer(open, questionId, answer)
+        }
         val params = buildJsonObject {
             put("request_id", boundedRpcInput(requestId, HERMES_CHAT_MAX_EVENT_ID_CHARS, "request ID"))
             questionId?.let { put("question_id", boundedRpcInput(it, HERMES_CHAT_MAX_EVENT_ID_CHARS, "question ID")) }
@@ -536,6 +597,20 @@ class HermesChatConnection internal constructor(
         requestId: String,
         value: String,
     ): HermesChatResponse {
+        val serverMethod = when (kind) {
+            UnsupportedBlockingKind.Secret -> "secret"
+            UnsupportedBlockingKind.Sudo -> "sudo"
+            else -> null
+        }
+        serverMethod?.let { openServerRequest(requestId, it) }?.let { open ->
+            val boundedValue = boundedRpcInput(value, HERMES_CHAT_MAX_EVENT_TEXT_CHARS, "response", allowBlank = true)
+            val params = json.parseToJsonElement(
+                ServerRequestPolicy.requestAnswerParams(open.id, ServerRequestPolicy.valueResult(boundedValue)),
+            ).jsonObject
+            val response = parseInteractionResponse(request(ServerRequestPolicy.REQUEST_ANSWER_METHOD, params))
+            forgetServerRequest(open.id)
+            return response
+        }
         val (method, valueKey) = when (kind) {
             UnsupportedBlockingKind.Secret -> "secret.respond" to "value"
             UnsupportedBlockingKind.Sudo -> "sudo.respond" to "password"
@@ -813,6 +888,12 @@ class HermesChatConnection internal constructor(
             return
         }
 
+        // A string id plus a method is a server→client request (client ids are integers).
+        if (answersServerRequests && ServerRequestPolicy.method(message) != null) {
+            handleServerRequest(message)
+            return
+        }
+
         val id = message.longValue("id") ?: return
         val deferred = pendingRequests.remove(id) ?: return
         val method = pendingRequestMethods.remove(id).orEmpty()
@@ -849,6 +930,10 @@ class HermesChatConnection internal constructor(
             ?: return
         val type = params.stringValue("type") ?: return
         val payloadElement = params["payload"] ?: return
+        if (type == ServerRequestPolicy.CANCEL_EVENT) {
+            (payloadElement as? JsonObject)?.let { handleServerRequestCancel(it) }
+            return
+        }
         (payloadElement as? JsonObject)?.let { payload ->
             decodeBackgroundTaskEvent(type, sessionId, payload)?.let { event ->
                 val eventId = params.boundedRequired("relay_event_id", 512)
@@ -897,6 +982,104 @@ class HermesChatConnection internal constructor(
             else -> Unit
         }
         eventChannel.trySend(event)
+    }
+
+    /**
+     * One Hermes server→client request ([ServerRequestPolicy]): surfaced through the existing
+     * interaction cards, or declined at once so the agent does not wait out the deadline.
+     */
+    private fun handleServerRequest(frame: JsonObject) {
+        val id = ServerRequestPolicy.requestId(frame) ?: return
+        val method = ServerRequestPolicy.method(frame) ?: return
+        val params = frame["params"] as? JsonObject ?: JsonObject(emptyMap())
+        val sessionId = params.boundedRequired("session_id", ChatEventDecoder.MAX_EVENT_ID_CHARS)
+        val disposition = ServerRequestPolicy.classify(method, id, params.toString())
+        when (disposition) {
+            is ServerRequestPolicy.Disposition.Surface -> {
+                if (sessionId == null) {
+                    declineServerRequest(id, ServerRequestPolicy.METHOD_NOT_FOUND_CODE, ServerRequestPolicy.METHOD_NOT_FOUND_MESSAGE)
+                    return
+                }
+                val fresh = synchronized(interactionLock) {
+                    // A live frame and the resume snapshot can both carry the same request.
+                    if (openServerRequests.containsKey(id)) return@synchronized false
+                    if (openServerRequests.size >= MAX_OPEN_SERVER_REQUESTS) {
+                        openServerRequests.remove(openServerRequests.keys.first())
+                    }
+                    openServerRequests[id] = OpenServerRequest(
+                        id = id,
+                        method = method,
+                        sessionId = sessionId,
+                        legacyRequestId = disposition.legacyRequestId,
+                        questionIds = disposition.questionIds,
+                    )
+                    true
+                }
+                if (!fresh) return
+                handleSharedEvent(syntheticEvent(sessionId, disposition.eventType, json.parseToJsonElement(disposition.payloadJson)))
+            }
+            is ServerRequestPolicy.Disposition.Decline -> declineServerRequest(id, disposition.code, disposition.message)
+            ServerRequestPolicy.Disposition.Ignore -> Unit
+        }
+    }
+
+    /** `request.cancel`: Hermes withdrew a request (answered elsewhere, timed out, interrupted). */
+    private fun handleServerRequestCancel(payload: JsonObject) {
+        val id = payload.boundedRequired("id", ServerRequestPolicy.MAX_REQUEST_ID_CHARS) ?: return
+        val open = forgetServerRequest(id) ?: return
+        val expireType = ServerRequestPolicy.expireEventType(open.method) ?: return
+        handleSharedEvent(
+            syntheticEvent(open.sessionId, expireType, buildJsonObject { put("request_id", open.legacyRequestId) }),
+        )
+    }
+
+    private fun declineServerRequest(id: String, code: Long, message: String) {
+        val frame = ServerRequestPolicy.errorFrame(id, code, message)
+        connectionScope.launch { runCatching { socket.sendText(frame) } }
+    }
+
+    private fun syntheticEvent(sessionId: String, type: String, payload: JsonElement): JsonObject = buildJsonObject {
+        put("jsonrpc", "2.0")
+        put("method", "event")
+        put("params", buildJsonObject {
+            put("session_id", sessionId)
+            put("type", type)
+            put("payload", payload)
+        })
+    }
+
+    private fun openServerRequest(legacyRequestId: String, method: String): OpenServerRequest? =
+        synchronized(interactionLock) {
+            openServerRequests.values.firstOrNull { it.method == method && it.legacyRequestId == legacyRequestId }
+        }
+
+    private fun forgetServerRequest(id: String): OpenServerRequest? =
+        synchronized(interactionLock) { openServerRequests.remove(id) }
+
+    /**
+     * Locks one clarify answer with `clarify.lock`; the server resolves the request once every
+     * question is locked. A card that answers without a question id answers every open question.
+     */
+    private suspend fun lockClarifyAnswer(open: OpenServerRequest, questionId: String?, answer: String): HermesChatResponse {
+        val boundedAnswer = boundedRpcInput(answer, HERMES_CHAT_MAX_EVENT_TEXT_CHARS, "answer", allowBlank = true)
+        val targets = questionId?.let { listOf(boundedRpcInput(it, HERMES_CHAT_MAX_EVENT_ID_CHARS, "question ID")) }
+            ?: open.questionIds
+        var response = HermesChatResponse(HermesChatResponseStatus.Expired)
+        var settled = false
+        for (target in targets) {
+            val params = json.parseToJsonElement(
+                ServerRequestPolicy.clarifyLockParams(open.id, target, boundedAnswer),
+            ).jsonObject
+            val result = request(ServerRequestPolicy.CLARIFY_LOCK_METHOD, params)
+            response = parseInteractionResponse(result)
+            val remaining = (result["remaining"] as? JsonArray)?.size ?: 0
+            if (response.status != HermesChatResponseStatus.Ok || remaining == 0) {
+                settled = true
+                break
+            }
+        }
+        if (settled) forgetServerRequest(open.id)
+        return response
     }
 
     private fun ensureFrameSize(frame: String) {

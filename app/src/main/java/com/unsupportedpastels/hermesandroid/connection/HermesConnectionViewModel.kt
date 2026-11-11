@@ -7252,6 +7252,7 @@ class HermesConnectionViewModel(
                     accessToken = accessToken,
                     ticketClient = KtorWsTicketClient(httpClient),
                     socketFactory = KtorChatWebSocketFactory(httpClient),
+                    answersServerRequests = true,
                 ).connect()
             }
             val chatConnector = newConnector()
