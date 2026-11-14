@@ -79,7 +79,7 @@ jobs:
         run: echo "name=$(grep -oP 'versionName\s*=\s*\"\K[^\"]+' app/build.gradle.kts)" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub release (side-load APK)
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: v${{ steps.ver.outputs.name }}
           prerelease: false
@@ -87,7 +87,7 @@ jobs:
           files: app/build/outputs/apk/release/app-release.apk
 
       - name: Upload AAB as workflow artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: app-release-aab
           path: app/build/outputs/bundle/release/app-release.aab
